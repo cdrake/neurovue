@@ -1,74 +1,105 @@
 import {
   type CSSProperties,
-  type Dispatch,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
-  type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
-  type SetStateAction,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState
 } from 'react'
-import { flushSync } from 'react-dom'
-import { listen } from '@tauri-apps/api/event'
+import type { NiiVueLocation } from '@niivue/niivue'
 import {
+  AlertTriangle,
+  Boxes,
   ChevronDown,
   CircleDot,
   Calculator,
+  CheckCircle2,
+  Copy,
+  Crosshair,
   Database,
   Eye,
+  EyeOff,
   FileJson,
   FolderOpen,
   GripHorizontal,
   GripVertical,
+  Layers,
   LoaderCircle,
   X,
   Maximize2,
   Minimize2,
   PanelLeftClose,
   PanelLeftOpen,
+  Package,
+  PackageOpen,
   PanelRightClose,
+  Share2,
   PanelRightOpen,
+  Plus,
   RotateCcw,
   Save,
   SlidersHorizontal,
   SquareTerminal,
-  Play,
   ZoomIn,
   ZoomOut
 } from 'lucide-react'
-import { NiivueStage } from './components/NiivueStage'
+import { DatasetDesktop, MAX_DESKTOP_ZOOM, MIN_DESKTOP_ZOOM, zoomBy } from './components/DatasetDesktop'
+import {
+  NiivueStage,
+  DEFAULT_VIEW_MODE,
+  type NiivueRenderLayer,
+  type ResolvedWindow,
+  type ViewModeId
+} from './components/NiivueStage'
+import { NiimathOperationsPanel } from './components/NiimathOperationsPanel'
 import { TerminalPanel } from './components/TerminalPanel'
+import { VolumeFilterPanel } from './components/VolumeFilterPanel'
 import type {
   Backend,
   ClipPlane,
-  DatasetOpenResult,
   DesktopItem,
   DesktopManifest,
+  JsonValue,
   VolumeMetadata,
-  WorldRect
+  WarmProgress
 } from './domain/desktop'
 import {
   defaultClipPlanes,
-  fetchDesktopManifest,
-  openDatasetByPath,
-  openDatasetDirectory,
-  resolveServerInfo,
-  resolveServerUrl
+  fetchVolumeMetadata,
+  openOverlayVolume,
+  resolveRuntimeCapabilities
 } from './domain/desktop'
-import { runNiimathTask, type NiimathOperation, type NiimathTaskResult } from './domain/niimath'
-import { acquirePreviewSlot } from './domain/previewLoadQueue'
 import {
-  isDerivedItem,
-  volumeFacetCounts,
-  volumeFacetValue,
+  buildBundleViewState,
+  bundleVerifyFailures,
+  bundleVolumeId,
+  exportDatasetBundle,
+  formatBundleBytes,
+  isBundlePath,
+  pickBundle,
+  readBundle,
+  shareViewViaAirDrop,
+  type BundleViewState
+} from './domain/bundle'
+import {
+  BLOCK_GRID_OPTIONS,
+  DEFAULT_BLOCK_SETTINGS,
+  MAX_EXPLODE,
+  MIN_EXPLODE,
+  blockGridLabel,
+  blocksAreTiled,
+  type BlockSettings
+} from './domain/blocks'
+import {
   volumeImageTypeLabel,
-  volumeRoleLabel
+  volumeRoleLabel,
+  volumeSession,
+  volumeSubject
 } from './domain/volumeFacets'
 import { useClipPlanes } from './hooks/useClipPlanes'
+import { useDatasetManifest } from './hooks/useDatasetManifest'
 import { recentDatasetLabel, useRecentDatasets } from './hooks/useRecentDatasets'
 import { useTerminalDock } from './hooks/useTerminalDock'
 import { useVolumeFilters } from './hooks/useVolumeFilters'
@@ -77,63 +108,52 @@ import neurovueIconUrl from '../src-tauri/icons/neurovue-icon.svg?url'
 
 const MIN_SPLIT = 34
 const MAX_SPLIT = 68
-const MIN_DESKTOP_ZOOM = 0.5
-const MAX_DESKTOP_ZOOM = 4
-const SIDEBAR_PREVIEW_SIZE = 96
-const DESKTOP_PREVIEW_TIERS = [96, 192, 384, 768, 1024] as const
-const PREVIEW_TIER_SETTLE_MS = 180
-const PREVIEW_IMAGE_VERSION = 5
-// Abandon a preview load that never fires load/error, so it can't hold a queue
-// slot forever and stall all other preview loading.
-const PREVIEW_LOAD_TIMEOUT_MS = 15000
+const DEFAULT_BASE_COLORMAP = 'gray'
+const DEFAULT_ATLAS_COLORMAP = 'actc'
+const DEFAULT_OVERLAY_COLORMAPS = ['magma', 'viridis', 'actc'] as const
+// Default layer opacities (used when a layer has no explicit opacity setting).
+const DEFAULT_OVERLAY_OPACITY = 0.48
+const DEFAULT_ATLAS_OPACITY = 0.34
+const COLORMAP_OPTIONS = [
+  { value: 'gray', label: 'Gray' },
+  { value: 'viridis', label: 'Viridis' },
+  { value: 'magma', label: 'Magma' },
+  { value: 'actc', label: 'ACTC' },
+  { value: 'warm_cool', label: 'Warm/Cool (diverging)' }
+] as const
+// The anatomical base is restricted to grayscale-family maps: pseudocolor
+// (viridis/magma/actc) on a structural volume invites intensity misreading.
+// Stat/label overlays keep the full COLORMAP_OPTIONS set.
+const BASE_COLORMAP_OPTIONS = [
+  { value: 'gray', label: 'Gray' },
+  { value: 'bone', label: 'Bone' }
+] as const
+
+// A colormap selection of 'warm_cool' is the NiiVue idiom for signed/stat data:
+// a warm map for positive intensities paired with a cool map for negatives, so
+// the rendering diverges around zero. Everything else is a single sequential map.
+function resolveColormap(name: string): { colormap: string; colormapNegative?: string } {
+  if (name === 'warm_cool') return { colormap: 'warm', colormapNegative: 'cool' }
+  return { colormap: name }
+}
 // Prefer WebGPU when the platform exposes it, falling back to WebGL2 otherwise.
 function preferredBackend(): Backend {
-  return typeof navigator !== 'undefined' && 'gpu' in navigator ? 'webgpu' : 'webgl2'
+  if (typeof navigator === 'undefined') return 'webgl2'
+  // iOS WebKit exposes `navigator.gpu`, but NiiVue's WebGPU path renders
+  // unreliably in the iOS WKWebView (black canvas). WebGL2 is the guaranteed
+  // baseline on iOS — see AGENTS.md — so force it there regardless of gpu.
+  if (isAppleMobile()) return 'webgl2'
+  return 'gpu' in navigator ? 'webgpu' : 'webgl2'
 }
 
-const NIIMATH_OPERATIONS: Array<{
-  id: NiimathOperation
-  label: string
-  needsOperand: boolean
-  needsMask: boolean
-  help: string
-}> = [
-  {
-    id: 'smooth',
-    label: 'Smooth',
-    needsOperand: true,
-    needsMask: false,
-    help: 'Apply Gaussian smoothing to a temporary output volume.'
-  },
-  {
-    id: 'threshold',
-    label: 'Threshold',
-    needsOperand: true,
-    needsMask: false,
-    help: 'Keep values above the lower threshold.'
-  },
-  {
-    id: 'upperThreshold',
-    label: 'Upper Threshold',
-    needsOperand: true,
-    needsMask: false,
-    help: 'Keep values below the upper threshold.'
-  },
-  {
-    id: 'binarize',
-    label: 'Binarize',
-    needsOperand: false,
-    needsMask: false,
-    help: 'Convert non-zero voxels to a binary mask.'
-  },
-  {
-    id: 'mask',
-    label: 'Apply Mask',
-    needsOperand: false,
-    needsMask: true,
-    help: 'Apply another NIfTI volume as a mask.'
-  }
-]
+function isAppleMobile(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  if (/iPad|iPhone|iPod/.test(ua)) return true
+  // iPadOS 13+ presents a desktop (Macintosh) UA; disambiguate via touch.
+  return ua.includes('Macintosh') && navigator.maxTouchPoints > 1
+}
+
 const FLIPPED_CLIP_ORIENTATIONS: Record<string, Pick<ClipPlane, 'azimuth' | 'elevation'>> = {
   anterior: { azimuth: 0, elevation: 0 },
   inferior: { azimuth: 0, elevation: 90 },
@@ -142,36 +162,111 @@ const FLIPPED_CLIP_ORIENTATIONS: Record<string, Pick<ClipPlane, 'azimuth' | 'ele
 type MouseContext = 'desktop' | 'niivue' | null
 type SidePanelTab = 'inspect' | 'operations'
 
-interface DesktopDragState {
-  pointerId: number
-  startX: number
-  startY: number
-  scrollLeft: number
-  scrollTop: number
-  moved: boolean
+// Per-layer display settings, keyed by item id. An absent entry (or absent
+// field) means "use the default": NiiVue's robust auto range for `window`, the
+// role-based fallback for `colormap`. Opacity/hidden/threshold land in later
+// phases of the layer-controls redesign.
+// A layer's world-space (mm) axis-aligned bounding box, as reported by NiiVue.
+interface LayerExtent {
+  min: number[]
+  max: number[]
 }
 
-interface MinimapViewport {
-  left: number
-  top: number
-  width: number
-  height: number
+interface LayerSettings {
+  colormap?: string
+  opacity?: number
+  // Visibility override. `hidden` renders the layer at opacity 0 without
+  // touching `opacity`, so toggling it back on restores the stored value.
+  hidden?: boolean
+  window?: { min: number; max: number }
+}
+
+// Phone-width viewport: the workbench collapses to a single full-screen viewer
+// with the dataset/inspector panels as slide-in drawers (see the `max-width:
+// 700px` block in styles.css). iPad (~desktop width) keeps the 3-column layout.
+function isPhoneViewport(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches
 }
 
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
-  const manifestRef = useRef<DesktopManifest | null>(null)
-  const selectedIdRef = useRef<string | null>(null)
-  const isOpeningDatasetRef = useRef(false)
-  const [serverUrl, setServerUrl] = useState('')
-  const [datasetRoot, setDatasetRoot] = useState('')
-  const [bidsName, setBidsName] = useState('')
-  const [bidsDatasetDoi, setBidsDatasetDoi] = useState('')
-  const [cacheRoot, setCacheRoot] = useState('')
-  const [manifest, setManifest] = useState<DesktopManifest | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const backend = useMemo<Backend>(preferredBackend, [])
-  const [colormap, setColormap] = useState('gray')
+  const { recentDatasets, promoteRecent, removeRecent, pruneExtractedBundleDirs } =
+    useRecentDatasets()
+  const {
+    bidsDatasetDoi,
+    bidsName,
+    cacheRoot,
+    datasetRevision,
+    datasetRoot,
+    isOpeningDataset,
+    items,
+    manifest,
+    openLocalDataset,
+    openLocalVolumeFile,
+    openRecentDataset,
+    refreshDesktopManifest,
+    refreshDesktopManifestData,
+    selected,
+    serverUrl,
+    setSelectedId,
+    setStatus,
+    status,
+    warmProgress
+  } = useDatasetManifest({ promoteRecent })
+  // Drop recents left over from when a bundle import recorded its extracted
+  // `data/` dir. Needs the server's real cacheRoot, so it runs once that arrives.
+  useEffect(() => {
+    if (cacheRoot) pruneExtractedBundleDirs(cacheRoot)
+  }, [cacheRoot, pruneExtractedBundleDirs])
+  const [layerSettings, setLayerSettings] = useState<Record<string, LayerSettings>>({})
+  // Effective intensity window NiiVue applied per layer (incl. auto-seeded
+  // thresholds), reported back from NiivueStage so the UI can show the real
+  // cutoff instead of a bare "auto".
+  const [resolvedWindows, setResolvedWindows] = useState<Record<string, ResolvedWindow>>({})
+  const handleResolvedWindows = useCallback(
+    (next: Record<string, ResolvedWindow>) => {
+      setResolvedWindows((prev) => {
+        const prevKeys = Object.keys(prev)
+        const nextKeys = Object.keys(next)
+        const unchanged =
+          prevKeys.length === nextKeys.length &&
+          nextKeys.every(
+            (id) =>
+              prev[id] &&
+              prev[id].min === next[id].min &&
+              prev[id].max === next[id].max &&
+              prev[id].robustMin === next[id].robustMin &&
+              prev[id].robustMax === next[id].robustMax
+          )
+        return unchanged ? prev : next
+      })
+    },
+    []
+  )
+  // Per-layer world-space bounding boxes, reported from NiivueStage after load,
+  // used to flag overlays that land in a different space than the base.
+  const [layerExtents, setLayerExtents] = useState<Record<string, LayerExtent>>({})
+  const handleLayerExtents = useCallback((next: Record<string, LayerExtent>) => {
+    setLayerExtents((prev) => (extentsEqual(prev, next) ? prev : next))
+  }, [])
+  const [overlayIds, setOverlayIds] = useState<Set<string>>(() => new Set())
+  // Phones land on a 2D axial slice (clearer on a small screen than the 3D
+  // render); desktop/iPad keep the 3D render default.
+  const [viewMode, setViewMode] = useState<ViewModeId>(() =>
+    isPhoneViewport() ? 'axial' : DEFAULT_VIEW_MODE
+  )
+  const [atlasId, setAtlasId] = useState<string | null>(null)
+  const [locationReadout, setLocationReadout] = useState<NiiVueLocation | null>(null)
+  // One-shot crosshair "go-to" request handed to NiivueStage; a fresh object per
+  // request re-fires the move even for a repeated coordinate.
+  const [crosshairTarget, setCrosshairTarget] = useState<{ mm: [number, number, number] } | null>(null)
+  // Block (volume-chunk explode) settings, applied across every loaded layer and
+  // persisted into the bundle/session.
+  const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
+  const goToCoordinate = useCallback((x: number, y: number, z: number) => {
+    setCrosshairTarget({ mm: [x, y, z] })
+  }, [])
   const {
     clipPlanes,
     activeClipPlaneId,
@@ -181,29 +276,32 @@ export function App(): JSX.Element {
     bindActiveClipPlane,
     updateClipPlane,
     changeClipPlaneDepth,
-    resetClipPlanes
+    resetClipPlanes,
+    applyClipPlanes
   } = useClipPlanes()
-  const [status, setStatus] = useState('Starting NeuroVue.')
   const [splitPercent, setSplitPercent] = useState(52)
   const [desktopZoom, setDesktopZoom] = useState(1)
   const [mouseContext, setMouseContext] = useState<MouseContext>(null)
-  const [isFileListCollapsed, setIsFileListCollapsed] = useState(false)
-  const [isControlsCollapsed, setIsControlsCollapsed] = useState(false)
+  // On a phone both side panels start collapsed (off-screen drawers) so the
+  // viewer is the landing surface; on desktop/iPad they start open.
+  const [isFileListCollapsed, setIsFileListCollapsed] = useState(isPhoneViewport)
+  const [isControlsCollapsed, setIsControlsCollapsed] = useState(isPhoneViewport)
   const [isRenderMaximized, setIsRenderMaximized] = useState(false)
   const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('inspect')
-  const [isOpeningDataset, setIsOpeningDataset] = useState(false)
-  const { recentDatasets, promoteRecent, removeRecent } = useRecentDatasets()
+  const [isOpeningOverlay, setIsOpeningOverlay] = useState(false)
+  const [isExportingBundle, setIsExportingBundle] = useState(false)
+  const [isImportingBundle, setIsImportingBundle] = useState(false)
+  // Mirrors `isImportingBundle` for re-entrancy: the state value a handler closes
+  // over is stale within the same tick, so the button's `disabled` reads state
+  // while the handlers guard on the ref.
+  const isImportingBundleRef = useRef(false)
+  const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
+  const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
+  const [isSharingBundle, setIsSharingBundle] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
   const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } = useTerminalDock()
-
-  useEffect(() => {
-    manifestRef.current = manifest
-  }, [manifest])
-
-  useEffect(() => {
-    selectedIdRef.current = selectedId
-  }, [selectedId])
+  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen
 
   useEffect(() => {
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
@@ -218,47 +316,28 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     let cancelled = false
-
-    async function load(): Promise<void> {
-      try {
-        const serverInfo = await resolveServerInfo()
-        const resolved = serverInfo?.url ?? await resolveServerUrl()
-        if (cancelled) return
-        setServerUrl(resolved)
-        setDatasetRoot(serverInfo?.datasetRoot ?? '')
-        setBidsName(serverInfo?.bidsName ?? '')
-        setBidsDatasetDoi(serverInfo?.bidsDatasetDoi ?? '')
-        setCacheRoot(serverInfo?.cacheRoot ?? '')
-        const nextManifest = await fetchDesktopManifest(resolved)
-        if (cancelled) return
-        setManifest(nextManifest)
-        setSelectedId(nextManifest.items[0]?.id ?? null)
-        setStatus(`${nextManifest.itemCount} volume item(s) loaded.`)
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error))
-      }
-    }
-
-    void load()
+    void resolveRuntimeCapabilities().then((capabilities) => {
+      if (cancelled) return
+      setIsTerminalAvailable(capabilities.terminalAvailable)
+      setIsAirdropAvailable(capabilities.airdropAvailable)
+    })
     return () => {
       cancelled = true
     }
   }, [])
 
+  // `matchMedia` can be unsettled when the useState initializers above run on a
+  // cold WKWebView boot, so the phone defaults sometimes miss (app comes up in
+  // the 3D render with panels open instead of a collapsed axial view). Re-apply
+  // them once after mount, when the viewport is established. Runs a single time
+  // (app mounts once); a no-op on desktop and when the initial guess was right.
   useEffect(() => {
-    let unlisten: (() => void) | null = null
-
-    void listen('neurovue-open-directory', () => {
-      void openLocalDataset()
-    }).then((nextUnlisten) => {
-      unlisten = nextUnlisten
-    }).catch(() => {
-      unlisten = null
-    })
-
-    return () => {
-      unlisten?.()
+    if (isPhoneViewport()) {
+      setViewMode('axial')
+      setIsFileListCollapsed(true)
+      setIsControlsCollapsed(true)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -281,8 +360,6 @@ export function App(): JSX.Element {
     }
   }, [isRecentMenuOpen])
 
-  const items = manifest?.items ?? []
-  const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null
   const {
     query,
     selectedRoles,
@@ -299,74 +376,405 @@ export function App(): JSX.Element {
     toggleDtype,
     clearFilters
   } = useVolumeFilters(items)
-  const { metadata, metadataStatus } = useVolumeMetadata(selected)
 
-  async function refreshDesktopManifest(selectId?: string): Promise<void> {
-    if (!serverUrl) return
-    const nextManifest = await fetchDesktopManifest(serverUrl)
-    setManifest(nextManifest)
-    if (selectId && nextManifest.items.some((item) => item.id === selectId)) {
-      setSelectedId(selectId)
-    }
-    setStatus(`${nextManifest.itemCount} volume item(s) loaded.`)
-  }
-
-  async function applyDatasetOpenResult(result: DatasetOpenResult): Promise<void> {
-    setManifest(null)
-    setSelectedId(null)
-    setServerUrl(result.url)
-    setDatasetRoot(result.datasetRoot)
-    setBidsName(result.bidsName ?? '')
-    setBidsDatasetDoi(result.bidsDatasetDoi ?? '')
-    setCacheRoot(result.cacheRoot)
+  useEffect(() => {
     clearFilters()
     setActiveFilterItemId(null)
-    setStatus(`Loading ${result.datasetRoot}.`)
+    // Reset dataset-scoped filters when the backing dataset changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetRevision])
 
-    const nextManifest = await fetchDesktopManifest(result.url)
-    setManifest(nextManifest)
-    setSelectedId(nextManifest.items[0]?.id ?? null)
-    setStatus(`${nextManifest.itemCount} volume item(s) loaded from ${result.datasetRoot}.`)
-    promoteRecent(result.datasetRoot)
+  const { metadata, metadataStatus } = useVolumeMetadata(selected)
+  const renderLayers = useMemo<NiivueRenderLayer[]>(() => {
+    if (!selected) return []
+
+    const layers: NiivueRenderLayer[] = [
+      {
+        item: selected,
+        kind: 'base',
+        isAtlas: atlasId === selected.id,
+        ...resolveColormap(
+          atlasId === selected.id
+            ? layerColormapForItem(selected, layerSettings, DEFAULT_ATLAS_COLORMAP)
+            : baseColormap(layerColormapForItem(selected, layerSettings, DEFAULT_BASE_COLORMAP))
+        ),
+        ...windowForItem(selected.id, layerSettings),
+        // The base is always fully opaque (its row has no opacity slider); only
+        // its `hidden` flag applies. Reading a stored opacity here would leak a
+        // value left over from when this volume was an overlay/atlas.
+        opacity: layerSettings[selected.id]?.hidden ? 0 : 1
+      }
+    ]
+
+    let overlayIndex = 0
+    for (const item of items) {
+      if (!overlayIds.has(item.id) || item.id === selected.id || item.id === atlasId) continue
+      layers.push({
+        item,
+        kind: 'overlay',
+        ...resolveColormap(layerColormapForItem(item, layerSettings, overlayColormapForIndex(overlayIndex))),
+        ...windowForItem(item.id, layerSettings),
+        opacity: renderOpacityForItem(item.id, layerSettings, DEFAULT_OVERLAY_OPACITY)
+      })
+      overlayIndex += 1
+    }
+
+    const atlasItem = atlasId ? items.find((item) => item.id === atlasId) ?? null : null
+    if (atlasItem && atlasItem.id !== selected.id) {
+      layers.push({
+        item: atlasItem,
+        kind: 'overlay',
+        isAtlas: true,
+        colormap: layerColormapForItem(atlasItem, layerSettings, DEFAULT_ATLAS_COLORMAP),
+        opacity: renderOpacityForItem(atlasItem.id, layerSettings, DEFAULT_ATLAS_OPACITY)
+      })
+    }
+
+    return layers
+  }, [atlasId, items, layerSettings, overlayIds, selected])
+
+  useEffect(() => {
+    const validIds = new Set(items.map((item) => item.id))
+    setOverlayIds((current) => {
+      let changed = false
+      const next = new Set<string>()
+      for (const id of current) {
+        if (validIds.has(id) && id !== selected?.id && id !== atlasId) {
+          next.add(id)
+        } else {
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+    setAtlasId((current) => (current && validIds.has(current) ? current : null))
+    setLayerSettings((current) => {
+      let changed = false
+      const next: Record<string, LayerSettings> = {}
+      for (const [id, settings] of Object.entries(current)) {
+        if (validIds.has(id)) {
+          next[id] = settings
+        } else {
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [atlasId, items, selected?.id])
+
+  function changeLayerColormap(itemId: string, nextColormap: string): void {
+    setLayerSettings((current) => {
+      if (current[itemId]?.colormap === nextColormap) return current
+      return { ...current, [itemId]: { ...current[itemId], colormap: nextColormap } }
+    })
   }
 
-  async function openLocalDataset(): Promise<void> {
-    if (isOpeningDatasetRef.current) return
+  function changeLayerWindow(itemId: string, min: number, max: number): void {
+    setLayerSettings((current) => {
+      const existing = current[itemId]?.window
+      if (existing && existing.min === min && existing.max === max) return current
+      return { ...current, [itemId]: { ...current[itemId], window: { min, max } } }
+    })
+  }
 
-    isOpeningDatasetRef.current = true
-    setIsOpeningDataset(true)
-    setStatus('Choosing dataset directory.')
+  function resetLayerWindow(itemId: string): void {
+    setLayerSettings((current) => {
+      const existing = current[itemId]
+      if (!existing || existing.window === undefined) return current
+      const { window: _removed, ...rest } = existing
+      const next = { ...current }
+      // Drop the whole entry once no other settings remain, so the map stays
+      // a clean "only non-default layers" record.
+      if (Object.keys(rest).length === 0) {
+        delete next[itemId]
+      } else {
+        next[itemId] = rest
+      }
+      return next
+    })
+  }
+
+  function changeLayerOpacity(itemId: string, opacity: number): void {
+    const clamped = Math.min(1, Math.max(0, opacity))
+    setLayerSettings((current) => {
+      const existing = current[itemId]
+      if (existing?.opacity === clamped && !existing?.hidden) return current
+      // Adjusting opacity implies the layer should be visible, so clear hidden.
+      return { ...current, [itemId]: { ...existing, opacity: clamped, hidden: false } }
+    })
+  }
+
+  function setLayerHidden(itemId: string, hidden: boolean): void {
+    setLayerSettings((current) => {
+      if (!!current[itemId]?.hidden === hidden) return current
+      return { ...current, [itemId]: { ...current[itemId], hidden } }
+    })
+  }
+
+  useEffect(() => {
+    setLocationReadout(null)
+  }, [renderLayers])
+
+  function toggleOverlayLayer(itemId: string): void {
+    setOverlayIds((current) => {
+      const next = new Set(current)
+      if (next.has(itemId)) {
+        next.delete(itemId)
+      } else {
+        next.add(itemId)
+      }
+      return next
+    })
+  }
+
+  function changeAtlasLayer(itemId: string): void {
+    const nextAtlasId = itemId || null
+    setAtlasId(nextAtlasId)
+    if (!nextAtlasId) return
+    setLayerHidden(nextAtlasId, false)
+
+    setOverlayIds((current) => {
+      if (!current.has(nextAtlasId)) return current
+      const next = new Set(current)
+      next.delete(nextAtlasId)
+      return next
+    })
+  }
+
+  async function loadOverlayVolume(): Promise<void> {
+    if (isOpeningOverlay) return
+
+    setIsOpeningOverlay(true)
+    setStatus('Choosing overlay volume.')
     try {
-      const result = await openDatasetDirectory()
+      const result = await openOverlayVolume()
       if (!result) {
-        setStatus('Open directory cancelled.')
+        setStatus('Overlay load cancelled.')
         return
       }
-      await applyDatasetOpenResult(result)
+
+      const nextManifest = await refreshDesktopManifestData()
+      const overlayItem = nextManifest?.items.find((item) => item.id === result.id) ?? null
+      const isAtlas = overlayItem ? await volumeHasAtlasLabelSidecar(overlayItem) : false
+      if (isAtlas) {
+        setAtlasId(result.id)
+        setLayerHidden(result.id, false)
+        setOverlayIds((current) => {
+          if (!current.has(result.id)) return current
+          const next = new Set(current)
+          next.delete(result.id)
+          return next
+        })
+        setStatus(`Atlas ${result.label} added with label sidecar.`)
+      } else {
+        setOverlayIds((current) => {
+          const next = new Set(current)
+          next.add(result.id)
+          return next
+        })
+        setStatus(`Overlay ${result.label} added to every volume.`)
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
-      isOpeningDatasetRef.current = false
-      setIsOpeningDataset(false)
+      setIsOpeningOverlay(false)
     }
   }
 
-  async function openRecentDataset(path: string): Promise<void> {
-    if (isOpeningDatasetRef.current) return
+  // Compose the current view + its ordered volume ids for export/share. Order
+  // is base → overlays → atlas; the copied volumes derive from the same list so
+  // files and view stay in lockstep, and the importer replays it in that order.
+  function composeCurrentBundle(base: DesktopItem): { volumeIds: string[]; view: BundleViewState } {
+    const crosshairMm = locationReadout?.mm
+    const view = buildBundleViewState({
+      baseId: base.id,
+      overlayIds: Array.from(overlayIds),
+      atlasId,
+      layerSettings,
+      viewMode,
+      backend,
+      clipPlanes,
+      crosshairPos:
+        Array.isArray(crosshairMm) && crosshairMm.length >= 3
+          ? [crosshairMm[0], crosshairMm[1], crosshairMm[2]]
+          : null,
+      blocks
+    })
+    return { volumeIds: view.volumes.map((volume) => volume.id), view }
+  }
 
-    isOpeningDatasetRef.current = true
-    setIsOpeningDataset(true)
-    setIsRecentMenuOpen(false)
-    setStatus(`Opening ${path}.`)
+  async function handleExportBundle(): Promise<void> {
+    if (isExportingBundle) return
+    if (!selected) {
+      setStatus('Select a volume before exporting a bundle.')
+      return
+    }
+
+    const { volumeIds, view } = composeCurrentBundle(selected)
+
+    setIsExportingBundle(true)
+    setStatus(`Exporting bundle (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`)
     try {
-      const result = await openDatasetByPath(path)
-      await applyDatasetOpenResult(result)
+      const result = await exportDatasetBundle({
+        defaultName: selected.label ?? 'neurovue-bundle',
+        volumeIds,
+        view
+      })
+      if (!result) {
+        setStatus('Bundle export cancelled.')
+        return
+      }
+      setStatus(
+        `Exported ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
+          `(${formatBundleBytes(result.totalBytes)}) to ${result.bundlePath}.`
+      )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
     } finally {
-      isOpeningDatasetRef.current = false
-      setIsOpeningDataset(false)
+      setIsExportingBundle(false)
     }
+  }
+
+  async function handleShareBundle(): Promise<void> {
+    if (isSharingBundle) return
+    if (!selected || items.length === 0) {
+      setStatus('Open a dataset before sharing.')
+      return
+    }
+
+    // Share the *whole* dataset — every volume — so the recipient can browse and
+    // pick any of them. The current view is still embedded, so it opens to a
+    // sensible default; the rest show up in the recipient's dataset list.
+    const { view } = composeCurrentBundle(selected)
+    const volumeIds = items.map((item) => item.id)
+    const shareName = bidsName || datasetRoot?.split('/').pop() || selected.label || 'neurovue-dataset'
+
+    setIsSharingBundle(true)
+    setStatus(`Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`)
+    try {
+      const result = await shareViewViaAirDrop({
+        name: shareName,
+        volumeIds,
+        view
+      })
+      setStatus(
+        `AirDrop sheet opened — ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
+          `(${formatBundleBytes(result.totalBytes)}).`
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsSharingBundle(false)
+    }
+  }
+
+  // Hold the importing flag across the file dialog too, so the button stays
+  // disabled while the picker is open.
+  async function handleImportBundle(): Promise<void> {
+    if (isImportingBundleRef.current || isOpeningDataset) return
+
+    isImportingBundleRef.current = true
+    setIsImportingBundle(true)
+    setStatus('Choosing bundle to open.')
+    try {
+      const path = await pickBundle()
+      if (!path) {
+        setStatus('Bundle open cancelled.')
+        return
+      }
+      await runBundleImport(path)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      isImportingBundleRef.current = false
+      setIsImportingBundle(false)
+    }
+  }
+
+  /** Re-open a bundle straight from recents, skipping the file dialog. */
+  async function importBundleFromPath(path: string): Promise<void> {
+    if (isImportingBundleRef.current || isOpeningDataset) return
+
+    isImportingBundleRef.current = true
+    setIsImportingBundle(true)
+    try {
+      await runBundleImport(path)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      isImportingBundleRef.current = false
+      setIsImportingBundle(false)
+    }
+  }
+
+  // Verify a `.nvbundle`, open its extracted volumes as the working dataset, and
+  // replay the recorded view. Throws; callers own the importing flag.
+  async function runBundleImport(path: string): Promise<void> {
+    const bundle = await readBundle(path)
+    if (bundle.manifest?.nvbundle == null) {
+      setStatus('Not a NeuroVue bundle (no manifest.json).')
+      return
+    }
+
+    // Load the bundle's copied volumes as the working dataset (the data/ dir
+    // opens like any dataset; each volume's new id is its filename stem), but
+    // record the bundle itself in recents — `dataDir` is a temp extraction.
+    await openRecentDataset(bundle.dataDir, { promoteAs: path })
+    const nextManifest = await refreshDesktopManifestData()
+    const loadedIds = new Set((nextManifest?.items ?? []).map((item) => item.id))
+    if (loadedIds.size === 0) {
+      // openRecentDataset already surfaced the failure via setStatus.
+      return
+    }
+
+    // Map each recorded (original-dataset) id → its freshly-registered id.
+    const remap = new Map<string, string>()
+    for (const volume of bundle.manifest.volumes) {
+      remap.set(volume.id, bundleVolumeId(volume.data))
+    }
+
+    const view = bundle.manifest.view
+    if (view) {
+      const nextSettings: Record<string, LayerSettings> = {}
+      const nextOverlays = new Set<string>()
+      let nextAtlas: string | null = null
+      let nextBase: string | null = null
+
+      for (const docVolume of view.volumes) {
+        const newId = remap.get(docVolume.id) ?? docVolume.id
+        if (!loadedIds.has(newId)) continue
+
+        const settings: LayerSettings = {}
+        if (docVolume.colormap !== undefined) settings.colormap = docVolume.colormap
+        if (docVolume.opacity !== undefined) settings.opacity = docVolume.opacity
+        if (docVolume.hidden !== undefined) settings.hidden = docVolume.hidden
+        if (docVolume.calMin !== undefined && docVolume.calMax !== undefined) {
+          settings.window = { min: docVolume.calMin, max: docVolume.calMax }
+        }
+        if (Object.keys(settings).length > 0) nextSettings[newId] = settings
+
+        if (docVolume.role === 'base') nextBase = newId
+        else if (docVolume.role === 'overlay') nextOverlays.add(newId)
+        else if (docVolume.role === 'atlas') nextAtlas = newId
+      }
+
+      setLayerSettings(nextSettings)
+      setOverlayIds(nextOverlays)
+      setAtlasId(nextAtlas)
+      if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
+      setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
+      applyClipPlanes(view.scene?.clipPlanes ?? [])
+      if (nextBase) setSelectedId(nextBase)
+      const crosshair = view.scene?.crosshairPos
+      if (Array.isArray(crosshair) && crosshair.length >= 3) {
+        setCrosshairTarget({ mm: [crosshair[0], crosshair[1], crosshair[2]] })
+      }
+    }
+
+    const failures = bundleVerifyFailures(bundle.verification)
+    const integrity =
+      failures.length > 0 ? ` ⚠ ${failures.length} file(s) failed the integrity check` : ''
+    setStatus(`Imported ${bundle.manifest.volumes.length} volume(s) from bundle.${integrity}`)
   }
 
 
@@ -379,70 +787,25 @@ export function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [isRenderMaximized])
 
-  useEffect(() => {
-    if (!serverUrl) return
-    let cancelled = false
-    let inFlight = false
-
-    async function refreshChangedManifest(): Promise<void> {
-      // One refresh at a time: a slow response must not race a newer one and
-      // overwrite it with stale data.
-      if (cancelled || inFlight) return
-      inFlight = true
-      try {
-        const nextManifest = await fetchDesktopManifest(serverUrl)
-        if (cancelled) return
-        const currentManifest = manifestRef.current
-        if (
-          currentManifest &&
-          desktopManifestSignature(currentManifest) === desktopManifestSignature(nextManifest)
-        ) {
-          return
-        }
-
-        setManifest(nextManifest)
-        const currentSelectedId = selectedIdRef.current
-        if (!currentSelectedId || !nextManifest.items.some((item) => item.id === currentSelectedId)) {
-          setSelectedId(nextManifest.items[0]?.id ?? null)
-        }
-        setStatus(`${nextManifest.itemCount} volume item(s) loaded.`)
-      } catch {
-        try {
-          const serverInfo = await resolveServerInfo()
-          if (cancelled || !serverInfo || serverInfo.url === serverUrl) return
-          setServerUrl(serverInfo.url)
-          setDatasetRoot(serverInfo.datasetRoot ?? '')
-          setBidsName(serverInfo.bidsName ?? '')
-          setBidsDatasetDoi(serverInfo.bidsDatasetDoi ?? '')
-          setCacheRoot(serverInfo.cacheRoot ?? '')
-        } catch {
-          // Server unreachable; keep current state and retry on the next tick.
-        }
-      } finally {
-        inFlight = false
-      }
-    }
-
-    void refreshChangedManifest()
-    const interval = window.setInterval(() => {
-      // Back off while the window is hidden; the focus listener catches up.
-      if (!document.hidden) void refreshChangedManifest()
-    }, 5000)
-    const onFocus = (): void => {
-      void refreshChangedManifest()
-    }
-    window.addEventListener('focus', onFocus)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-      window.removeEventListener('focus', onFocus)
-    }
-  }, [serverUrl])
+  const warmStatus = warmProgressLabel(warmProgress, datasetRoot)
+  // The atlas layer's display name, used to bind the region readout to the named
+  // atlas (only atlas/label volumes carry per-voxel region labels).
+  const atlasName = useMemo(
+    () => (atlasId ? items.find((item) => item.id === atlasId)?.label ?? null : null),
+    [atlasId, items]
+  )
+  const locationStatus = useMemo(
+    () => locationStatusLabel(locationReadout, atlasName),
+    [locationReadout, atlasName]
+  )
+  const slicePosition = useMemo(
+    () => slicePositionLabel(locationReadout, viewMode),
+    [locationReadout, viewMode]
+  )
 
   return (
     <main
-      className={`nv-app ${isTerminalOpen ? 'has-terminal' : ''}`}
+      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''}`}
       style={{ '--terminal-height': `${terminalHeight}px` } as CSSProperties}
     >
       <header className="nv-topbar">
@@ -459,6 +822,19 @@ export function App(): JSX.Element {
         </div>
 
         <div className="nv-toolbar" aria-label="Viewer controls">
+          <button
+            aria-label={isFileListCollapsed ? 'Open dataset panel' : 'Close dataset panel'}
+            aria-expanded={!isFileListCollapsed}
+            className={`nv-icon-button nv-mobile-only ${!isFileListCollapsed ? 'is-active' : ''}`}
+            onClick={() => {
+              setIsFileListCollapsed((collapsed) => !collapsed)
+              setIsControlsCollapsed(true)
+            }}
+            title="Dataset panel"
+            type="button"
+          >
+            <Database size={16} />
+          </button>
           <div className="nv-open-group" ref={recentMenuRef}>
             <button
               className="nv-tool-button"
@@ -480,6 +856,19 @@ export function App(): JSX.Element {
                   disabled={isOpeningDataset}
                   onClick={() => {
                     setIsRecentMenuOpen(false)
+                    void openLocalVolumeFile()
+                  }}
+                  type="button"
+                  role="menuitem"
+                >
+                  <FileJson size={14} />
+                  <span className="nv-recent-item-name">Open NIfTI file…</span>
+                </button>
+                <button
+                  className="nv-recent-item nv-recent-open nv-desktop-only"
+                  disabled={isOpeningDataset}
+                  onClick={() => {
+                    setIsRecentMenuOpen(false)
                     void openLocalDataset()
                   }}
                   type="button"
@@ -495,7 +884,14 @@ export function App(): JSX.Element {
                       <div key={path} className="nv-recent-row">
                         <button
                           className="nv-recent-item"
-                          onClick={() => void openRecentDataset(path)}
+                          onClick={() => {
+                            setIsRecentMenuOpen(false)
+                            // A bundle must be re-verified and its view replayed,
+                            // not opened as a plain directory.
+                            void (isBundlePath(path)
+                              ? importBundleFromPath(path)
+                              : openRecentDataset(path))
+                          }}
                           title={path}
                           type="button"
                           role="menuitem"
@@ -548,16 +944,97 @@ export function App(): JSX.Element {
             <Save size={16} />
           </button>
           <button
-            aria-pressed={isTerminalOpen}
-            className={`nv-icon-button ${isTerminalOpen ? 'is-active' : ''}`}
-            title={isTerminalOpen ? 'Hide Python terminal' : 'Show Python terminal'}
-            onClick={toggleTerminal}
+            aria-label="Export bundle"
+            className="nv-icon-button"
+            title={
+              selected
+                ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                : 'Select a volume to export a bundle'
+            }
+            type="button"
+            disabled={!selected || isExportingBundle}
+            onClick={handleExportBundle}
+          >
+            {isExportingBundle ? (
+              <LoaderCircle className="nv-spin" size={16} />
+            ) : (
+              <Package size={16} />
+            )}
+          </button>
+          <button
+            aria-label="Open bundle"
+            className="nv-icon-button"
+            title="Open a NeuroVue bundle (.nvbundle) — loads its volumes and restores the saved view"
+            type="button"
+            disabled={isImportingBundle || isOpeningDataset}
+            onClick={handleImportBundle}
+          >
+            {isImportingBundle ? (
+              <LoaderCircle className="nv-spin" size={16} />
+            ) : (
+              <PackageOpen size={16} />
+            )}
+          </button>
+          {isAirdropAvailable ? (
+            <button
+              aria-label="Share dataset via AirDrop"
+              className="nv-icon-button"
+              title={
+                selected
+                  ? 'AirDrop the whole dataset — recipient can browse and pick any volume'
+                  : 'Open a dataset to share via AirDrop'
+              }
+              type="button"
+              disabled={!selected || isSharingBundle}
+              onClick={handleShareBundle}
+            >
+              {isSharingBundle ? (
+                <LoaderCircle className="nv-spin" size={16} />
+              ) : (
+                <Share2 size={16} />
+              )}
+            </button>
+          ) : null}
+          {isTerminalAvailable ? (
+            <button
+              aria-pressed={isTerminalOpen}
+              className={`nv-icon-button ${isTerminalOpen ? 'is-active' : ''}`}
+              title={isTerminalOpen ? 'Hide Python terminal' : 'Show Python terminal'}
+              onClick={toggleTerminal}
+              type="button"
+            >
+              <SquareTerminal size={16} />
+            </button>
+          ) : null}
+          <button
+            aria-label={isControlsCollapsed ? 'Open controls panel' : 'Close controls panel'}
+            aria-expanded={!isControlsCollapsed}
+            className={`nv-icon-button nv-mobile-only ${!isControlsCollapsed ? 'is-active' : ''}`}
+            onClick={() => {
+              setIsControlsCollapsed((collapsed) => !collapsed)
+              setIsFileListCollapsed(true)
+            }}
+            title="Controls panel"
             type="button"
           >
-            <SquareTerminal size={16} />
+            <SlidersHorizontal size={16} />
           </button>
         </div>
       </header>
+
+      {/* Tap-to-close backdrop for the mobile drawers (CSS hides it on desktop). */}
+      {!isFileListCollapsed || !isControlsCollapsed ? (
+        <button
+          aria-label="Close panel"
+          className="nv-mobile-scrim"
+          tabIndex={-1}
+          type="button"
+          onClick={() => {
+            setIsFileListCollapsed(true)
+            setIsControlsCollapsed(true)
+          }}
+        />
+      ) : null}
 
       <section
         className={`nv-workbench ${isFileListCollapsed ? 'is-file-list-collapsed' : ''} ${
@@ -654,9 +1131,11 @@ export function App(): JSX.Element {
               <span>NiiVue Window</span>
               <strong>{selected?.label ?? 'No selection'}</strong>
               <em>
-                {renderWheelMode === 'clip-plane'
-                  ? `wheel ${activeClipPlane?.label ?? 'clip'}`
-                  : backend.toUpperCase()}
+                {viewMode !== 'render'
+                  ? `${viewModeLabel(viewMode)}${slicePosition ? ` · ${slicePosition}` : ''}`
+                  : renderWheelMode === 'clip-plane'
+                    ? `wheel ${activeClipPlane?.label ?? 'clip'}`
+                    : backend.toUpperCase()}
               </em>
             </div>
             <button
@@ -672,12 +1151,20 @@ export function App(): JSX.Element {
             <NiivueStage
               activeClipPlaneId={activeClipPlaneId}
               backend={backend}
+              blocks={blocks}
               clipPlanes={clipPlanes}
-              colormap={colormap}
+              crosshairTarget={crosshairTarget}
               isActive={mouseContext === 'niivue'}
               item={selected}
+              layers={renderLayers}
               onClipPlaneDepthChange={changeClipPlaneDepth}
+              onClipPlaneActivate={bindActiveClipPlane}
+              onLayerExtents={handleLayerExtents}
+              onLocationChange={setLocationReadout}
+              onResolvedWindows={handleResolvedWindows}
+              onViewModeChange={setViewMode}
               renderWheelMode={renderWheelMode}
+              viewMode={viewMode}
             />
           </section>
         </section>
@@ -715,84 +1202,92 @@ export function App(): JSX.Element {
           <div className="nv-sidepanel-content">
             {sidePanelTab === 'inspect' ? (
               <>
-                <section className="nv-control-section">
-                  <div className="nv-panel-heading">
-                    <span>
-                      <ZoomIn size={15} />
-                      Zoom
-                    </span>
-                  </div>
+                {viewMode === 'render' ? (
+                  <>
+                    <section className="nv-control-section">
+                      <div className="nv-panel-heading">
+                        <span>
+                          <ZoomIn size={15} />
+                          Zoom
+                        </span>
+                      </div>
 
-                  <button
-                    aria-pressed={renderWheelMode === 'zoom'}
-                    className={`nv-clip-card nv-zoom-card ${renderWheelMode === 'zoom' ? 'is-active' : ''}`}
-                    onClick={() => setRenderWheelMode('zoom')}
-                    type="button"
-                  >
-                    <span className="nv-clip-card-header">
-                      <span className="nv-zoom-card-title">Zoom render</span>
-                      {renderWheelMode === 'zoom' ? <span className="nv-clip-active-badge">wheel</span> : null}
-                    </span>
-                    <span className="nv-zoom-card-hint">Scroll the render to zoom in and out.</span>
-                  </button>
-                </section>
+                      <button
+                        aria-pressed={renderWheelMode === 'zoom'}
+                        className={`nv-clip-card nv-zoom-card ${renderWheelMode === 'zoom' ? 'is-active' : ''}`}
+                        onClick={() => setRenderWheelMode('zoom')}
+                        type="button"
+                      >
+                        <span className="nv-clip-card-header">
+                          <span className="nv-zoom-card-title">Zoom render</span>
+                          {renderWheelMode === 'zoom' ? <span className="nv-clip-active-badge">wheel</span> : null}
+                        </span>
+                        <span className="nv-zoom-card-hint">Scroll the render to zoom in and out.</span>
+                      </button>
+                    </section>
 
-                <section className="nv-control-section">
-                  <div className="nv-panel-heading">
-                    <span>
-                      <SlidersHorizontal size={15} />
-                      Clip Planes
-                    </span>
-                    <em>
-                      {renderWheelMode === 'clip-plane'
-                        ? clipPlanes.find((plane) => plane.id === activeClipPlaneId)?.label ?? 'none'
-                        : 'none'}
-                    </em>
-                  </div>
+                    <section className="nv-control-section">
+                      <div className="nv-panel-heading">
+                        <span>
+                          <SlidersHorizontal size={15} />
+                          Clip Planes
+                        </span>
+                        <em>
+                          {renderWheelMode === 'clip-plane'
+                            ? clipPlanes.find((plane) => plane.id === activeClipPlaneId)?.label ?? 'none'
+                            : 'none'}
+                        </em>
+                      </div>
 
-                  <div className="nv-clip-list">
-                    {clipPlanes.map((plane) => (
-                      <ClipPlaneEditor
-                        active={renderWheelMode === 'clip-plane' && plane.id === activeClipPlaneId}
-                        key={plane.id}
-                        plane={plane}
-                        onActivate={() => bindActiveClipPlane(plane.id)}
-                        onChange={updateClipPlane}
-                      />
-                    ))}
-                  </div>
-                </section>
+                      <div className="nv-clip-list">
+                        {clipPlanes.map((plane) => (
+                          <ClipPlaneEditor
+                            active={renderWheelMode === 'clip-plane' && plane.id === activeClipPlaneId}
+                            key={plane.id}
+                            plane={plane}
+                            onActivate={() => bindActiveClipPlane(plane.id)}
+                            onChange={updateClipPlane}
+                          />
+                        ))}
+                      </div>
+                    </section>
+
+                    <BlockControls blocks={blocks} onChange={setBlocks} />
+                  </>
+                ) : (
+                  <section className="nv-control-section">
+                    <p className="nv-mode-note">
+                      Zoom and clip planes apply to the 3D render. In 2D modes, scroll to page through
+                      slices and click to move the crosshair. Switch to <strong>3D</strong> for render controls.
+                    </p>
+                  </section>
+                )}
+
+                <LayerPanel
+                  atlasId={atlasId}
+                  isOpeningOverlay={isOpeningOverlay}
+                  items={items}
+                  layerSettings={layerSettings}
+                  layerExtents={layerExtents}
+                  resolvedWindows={resolvedWindows}
+                  overlayIds={overlayIds}
+                  selected={selected}
+                  onAtlasChange={changeAtlasLayer}
+                  onLayerColormapChange={changeLayerColormap}
+                  onLayerHiddenChange={setLayerHidden}
+                  onLayerOpacityChange={changeLayerOpacity}
+                  onLayerWindowChange={changeLayerWindow}
+                  onLayerWindowReset={resetLayerWindow}
+                  onLoadOverlay={loadOverlayVolume}
+                  onOverlayToggle={toggleOverlayLayer}
+                />
 
                 <SelectionPanel item={selected} metadataStatus={metadataStatus} />
+                <CrosshairPanel location={locationReadout} onGoTo={goToCoordinate} />
                 <MetadataPanel item={selected} metadata={metadata} status={metadataStatus} />
               </>
             ) : (
               <>
-                <section className="nv-control-section">
-                  <div className="nv-panel-heading">
-                    <span>
-                      <Eye size={15} />
-                      Colormap
-                    </span>
-                  </div>
-                  {/* Per-volume display setting parked here for now; will move to a
-                      per-layer control later. */}
-                  <label className="nv-select">
-                    <span>Map</span>
-                    <select
-                      aria-label="Colormap"
-                      value={colormap}
-                      onChange={(event) => setColormap(event.target.value)}
-                    >
-                      <option value="gray">Gray</option>
-                      <option value="viridis">Viridis</option>
-                      <option value="magma">Magma</option>
-                      <option value="actc">ACTC</option>
-                    </select>
-                    <ChevronDown size={14} />
-                  </label>
-                </section>
-
                 <NiimathOperationsPanel
                   item={selected}
                   metadata={metadata}
@@ -805,7 +1300,7 @@ export function App(): JSX.Element {
         </aside>
       </section>
 
-      {isTerminalOpen ? (
+      {isTerminalDockOpen ? (
         <section className="nv-terminal-dock" aria-label="Python terminal">
           <button
             aria-label="Resize terminal"
@@ -825,9 +1320,93 @@ export function App(): JSX.Element {
           <CircleDot size={12} />
           {status}
         </span>
+        {warmStatus ? (
+          <span className="nv-warm-status">
+            {warmProgress?.active ? <LoaderCircle size={12} /> : <CheckCircle2 size={12} />}
+            {warmStatus}
+          </span>
+        ) : null}
+        {locationStatus ? (
+          <span className="nv-location-status" title={locationReadout?.string}>
+            <Crosshair size={12} />
+            {locationStatus}
+          </span>
+        ) : null}
         <span>{mouseContextLabel(mouseContext)}</span>
+        <span
+          className="nv-disclaimer"
+          role="note"
+          title="Research/preview tool — not a certified diagnostic device. Do not use for clinical diagnosis."
+        >
+          <AlertTriangle size={12} />
+          Research preview — not for clinical diagnosis
+        </span>
       </footer>
     </main>
+  )
+}
+
+// Block (volume-chunk explode) controls: pick a grid (Off / 2³…6³) that tiles
+// every loaded layer into bricks, then spread them apart in the 3D render with
+// the Explode slider. The slider is disabled while untiled (grid = Off).
+function BlockControls({
+  blocks,
+  onChange
+}: {
+  blocks: BlockSettings
+  onChange: (blocks: BlockSettings) => void
+}): JSX.Element {
+  const tiled = blocksAreTiled(blocks)
+  return (
+    <section className="nv-control-section">
+      <div className="nv-panel-heading">
+        <span>
+          <Boxes size={15} />
+          Blocks
+        </span>
+        <em>{tiled ? `${blockGridLabel(blocks.grid)} · ${blocks.explode.toFixed(2)}×` : 'off'}</em>
+      </div>
+
+      <div className="nv-block-grid" role="group" aria-label="Block grid">
+        {BLOCK_GRID_OPTIONS.map((grid) => (
+          <button
+            aria-pressed={blocks.grid === grid}
+            className={`nv-block-grid-option ${blocks.grid === grid ? 'is-active' : ''}`}
+            key={grid}
+            onClick={() => onChange({ ...blocks, grid })}
+            title={
+              grid <= 1
+                ? 'No blocks — render each layer as a single volume'
+                : `Tile every layer into ${grid}×${grid}×${grid} bricks`
+            }
+            type="button"
+          >
+            {blockGridLabel(grid)}
+          </button>
+        ))}
+      </div>
+
+      <label className="nv-block-explode">
+        <span className="nv-block-explode-label">
+          Explode
+          <em>{tiled ? `${blocks.explode.toFixed(2)}×` : '—'}</em>
+        </span>
+        <input
+          aria-label="Explode spacing"
+          disabled={!tiled}
+          max={MAX_EXPLODE}
+          min={MIN_EXPLODE}
+          step={0.05}
+          type="range"
+          value={blocks.explode}
+          onChange={(event) => onChange({ ...blocks, explode: Number(event.target.value) })}
+        />
+      </label>
+
+      <p className="nv-block-hint">
+        Splits every layer into bricks and spreads them apart in the 3D render. Pick a grid, then raise Explode.
+      </p>
+    </section>
   )
 }
 
@@ -908,669 +1487,488 @@ function DesktopZoomControls({
   )
 }
 
-function VolumeFilterPanel({
-  activeItemId,
-  filteredItems,
+function LayerPanel({
+  atlasId,
+  isOpeningOverlay,
   items,
-  query,
+  layerSettings,
+  layerExtents,
+  resolvedWindows,
+  overlayIds,
   selected,
-  selectedDtypes,
-  selectedFormats,
-  selectedImageTypes,
-  selectedRoles,
-  onActiveItem,
-  onClearFilters,
-  onQueryChange,
-  onSelect,
-  onToggleDtype,
-  onToggleFormat,
-  onToggleImageType,
-  onToggleRole
+  onAtlasChange,
+  onLayerColormapChange,
+  onLayerHiddenChange,
+  onLayerOpacityChange,
+  onLayerWindowChange,
+  onLayerWindowReset,
+  onLoadOverlay,
+  onOverlayToggle
 }: {
-  activeItemId: string | null
-  filteredItems: DesktopItem[]
+  atlasId: string | null
+  isOpeningOverlay: boolean
   items: DesktopItem[]
-  query: string
+  layerSettings: Record<string, LayerSettings>
+  layerExtents: Record<string, LayerExtent>
+  resolvedWindows: Record<string, ResolvedWindow>
+  overlayIds: Set<string>
   selected: DesktopItem | null
-  selectedDtypes: Set<string>
-  selectedFormats: Set<string>
-  selectedImageTypes: Set<string>
-  selectedRoles: Set<string>
-  onActiveItem: (id: string | null) => void
-  onClearFilters: () => void
-  onQueryChange: (query: string) => void
-  onSelect: (item: DesktopItem) => void
-  onToggleDtype: (value: string) => void
-  onToggleFormat: (value: string) => void
-  onToggleImageType: (value: string) => void
-  onToggleRole: (value: string) => void
+  onAtlasChange: (itemId: string) => void
+  onLayerColormapChange: (itemId: string, colormap: string) => void
+  onLayerHiddenChange: (itemId: string, hidden: boolean) => void
+  onLayerOpacityChange: (itemId: string, opacity: number) => void
+  onLayerWindowChange: (itemId: string, min: number, max: number) => void
+  onLayerWindowReset: (itemId: string) => void
+  onLoadOverlay: () => void
+  onOverlayToggle: (itemId: string) => void
 }): JSX.Element {
-  const roleCounts = useMemo(() => volumeFacetCounts(items, volumeRoleLabel), [items])
-  const imageTypeCounts = useMemo(() => volumeFacetCounts(items, volumeImageTypeLabel), [items])
-  const formatCounts = useMemo(
-    () => volumeFacetCounts(items, (item) => volumeFacetValue(item.format)),
+  const [expandedId, setExpandedId] = useState<string | null | undefined>(undefined)
+  const atlasCandidates = useMemo(
+    () => items.slice().sort(compareAtlasCandidates),
     [items]
   )
-  const dtypeCounts = useMemo(
-    () => volumeFacetCounts(items, (item) => volumeFacetValue(item.dtype)),
-    [items]
+  // Active overlay items in render order, excluding the base and atlas.
+  const overlayItems = useMemo(
+    () => items.filter((item) => overlayIds.has(item.id) && item.id !== selected?.id && item.id !== atlasId),
+    [atlasId, items, overlayIds, selected?.id]
   )
-  const activeItem =
-    filteredItems.find((item) => item.id === activeItemId) ??
-    (selected && filteredItems.some((item) => item.id === selected.id) ? selected : null) ??
-    filteredItems[0] ??
-    null
-  const hasFilters =
-    query.trim().length > 0 ||
-    selectedRoles.size > 0 ||
-    selectedImageTypes.size > 0 ||
-    selectedFormats.size > 0 ||
-    selectedDtypes.size > 0
+  // Volumes not yet used by any layer — the "add overlay" pool.
+  const addCandidates = useMemo(
+    () => items.filter((item) => item.id !== selected?.id && item.id !== atlasId && !overlayIds.has(item.id)),
+    [atlasId, items, overlayIds, selected?.id]
+  )
+  // The unified layer list, in NiiVue render order: base -> overlays -> atlas.
+  const rows = useMemo(() => {
+    const out: Array<{ item: DesktopItem; role: 'base' | 'overlay' | 'atlas' }> = []
+    if (selected) out.push({ item: selected, role: 'base' })
+    for (const item of overlayItems) out.push({ item, role: 'overlay' })
+    const atlasItem = atlasId && atlasId !== selected?.id ? items.find((item) => item.id === atlasId) : null
+    if (atlasItem) out.push({ item: atlasItem, role: 'atlas' })
+    return out
+  }, [atlasId, items, overlayItems, selected])
+  // Every row except the base is an "extra" layer; derive it from `rows` so the
+  // atlas-membership rule lives in exactly one place (see rows above).
+  const extras = rows.length - (selected ? 1 : 0)
+  // Exactly one row open at a time. `undefined` means the user hasn't chosen, so
+  // default to the base (its controls show on load); `null` means they collapsed
+  // the open row and nothing should be expanded.
+  const rowIds = rows.map((row) => row.item.id)
+  const expanded =
+    expandedId === undefined
+      ? selected?.id ?? null
+      : expandedId && rowIds.includes(expandedId)
+        ? expandedId
+        : null
+  const mismatches = rows
+    .map((row) => layerWarning(selected, row.item, layerExtents))
+    .filter((warning): warning is string => warning !== null)
 
   return (
-    <div className="nv-volume-filter">
-      <section className="nv-volume-filter-panel nv-volume-filter-facets" aria-label="Volume filters">
-        <div className="nv-filter-search-row">
-          <input
-            className="nv-search"
-            placeholder="Filter volumes"
-            value={query}
-            onChange={(event) => onQueryChange(event.target.value)}
-          />
-          <button
-            className="nv-filter-clear"
-            disabled={!hasFilters}
-            onClick={onClearFilters}
-            type="button"
-          >
-            Clear
-          </button>
+    <section className="nv-control-section nv-layer-panel">
+      <div className="nv-panel-heading">
+        <span>
+          <Layers size={15} />
+          Layers
+        </span>
+        <em>{selected ? `${extras} extra` : 'none'}</em>
+      </div>
+
+      {mismatches.length > 0 ? (
+        <div className="nv-layer-banner" role="alert">
+          <AlertTriangle size={14} />
+          <span>
+            {mismatches.length === 1
+              ? mismatches[0]
+              : `${mismatches.length} layers may not match the base — verify subject and alignment.`}
+          </span>
         </div>
+      ) : null}
 
-        <VolumeFacetGroup
-          counts={roleCounts}
-          selected={selectedRoles}
-          title="Role"
-          onToggle={onToggleRole}
-        />
-        <VolumeFacetGroup
-          counts={imageTypeCounts}
-          selected={selectedImageTypes}
-          title="Image"
-          onToggle={onToggleImageType}
-        />
-        <VolumeFacetGroup
-          counts={formatCounts}
-          selected={selectedFormats}
-          title="Format"
-          onToggle={onToggleFormat}
-        />
-        <VolumeFacetGroup
-          counts={dtypeCounts}
-          selected={selectedDtypes}
-          title="Dtype"
-          onToggle={onToggleDtype}
-        />
-      </section>
-
-      <section className="nv-volume-filter-panel nv-volume-results-panel" aria-label="Filtered volumes">
-        <div className="nv-filter-panel-title">
-          <span>Volumes</span>
-          <em>{filteredItems.length}</em>
+      {selected ? (
+        <div className="nv-layer-rows">
+          {rows.map(({ item, role }) => {
+            const settings = layerSettings[item.id]
+            const isBaseAtlas = role === 'base' && atlasId === selected.id
+            const overlayIndex = role === 'overlay' ? overlayItems.findIndex((o) => o.id === item.id) : 0
+            const rawColormap = layerColormapForItem(
+              item,
+              layerSettings,
+              role === 'overlay'
+                ? overlayColormapForIndex(overlayIndex)
+                : isBaseAtlas
+                  ? DEFAULT_ATLAS_COLORMAP
+                  : DEFAULT_BASE_COLORMAP
+            )
+            // Keep the base's select in sync with what actually renders (grayscale).
+            const colormapValue = role === 'base' && !isBaseAtlas ? baseColormap(rawColormap) : rawColormap
+            return (
+              <LayerRow
+                key={item.id}
+                role={role}
+                label={item.label}
+                meta={layerOptionMeta(item)}
+                warning={layerWarning(selected, item, layerExtents)}
+                hidden={!!settings?.hidden}
+                expanded={expanded === item.id}
+                removable={role !== 'base'}
+                onToggleExpand={() => setExpandedId(expanded === item.id ? null : item.id)}
+                onHiddenChange={(hidden) => onLayerHiddenChange(item.id, hidden)}
+                onRemove={role === 'atlas' ? () => onAtlasChange('') : () => onOverlayToggle(item.id)}
+              >
+                {role === 'atlas' ? (
+                  <Slider
+                    label="Opacity"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={opacityForItem(item.id, layerSettings, DEFAULT_ATLAS_OPACITY)}
+                    onChange={(value) => onLayerOpacityChange(item.id, value)}
+                  />
+                ) : (
+                  <>
+                    <LayerColormapSelect
+                      ariaLabel={`Colormap for ${item.label}`}
+                      itemId={item.id}
+                      value={colormapValue}
+                      options={role === 'base' && !isBaseAtlas ? BASE_COLORMAP_OPTIONS : COLORMAP_OPTIONS}
+                      onChange={onLayerColormapChange}
+                    />
+                    {role === 'overlay' ? (
+                      <Slider
+                        label="Opacity"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={opacityForItem(item.id, layerSettings, DEFAULT_OVERLAY_OPACITY)}
+                        onChange={(value) => onLayerOpacityChange(item.id, value)}
+                      />
+                    ) : null}
+                    {!isBaseAtlas ? (
+                      <WindowControl
+                        itemId={item.id}
+                        label={item.label}
+                        window={settings?.window}
+                        resolved={resolvedWindows[item.id]}
+                        variant={role === 'overlay' ? 'threshold' : 'window'}
+                        onChange={onLayerWindowChange}
+                        onReset={onLayerWindowReset}
+                      />
+                    ) : null}
+                  </>
+                )}
+              </LayerRow>
+            )
+          })}
         </div>
+      ) : null}
 
-        <div className="nv-volume-list">
-          {filteredItems.map((item) => (
+      <label className="nv-select nv-layer-select">
+        <span>Atlas</span>
+        <select
+          aria-label="Atlas layer"
+          disabled={!selected || atlasCandidates.length === 0}
+          value={atlasId ?? ''}
+          onChange={(event) => onAtlasChange(event.target.value)}
+        >
+          <option value="">None</option>
+          {atlasCandidates.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown size={14} />
+      </label>
+
+      <button
+        className="nv-layer-load-button"
+        disabled={isOpeningOverlay}
+        onClick={onLoadOverlay}
+        type="button"
+      >
+        <FolderOpen size={14} />
+        <span>{isOpeningOverlay ? 'Loading overlay' : 'Load overlay'}</span>
+      </button>
+
+      <div className="nv-layer-list-header">
+        <span>Add overlay</span>
+        <em>{addCandidates.length}</em>
+      </div>
+      <div className="nv-layer-list">
+        {addCandidates.map((item) => {
+          // Only the subject check is available before the volume loads (the
+          // world-space check needs post-load extents), so surface a
+          // different-subject candidate right in the pool — the mismatch is
+          // cheapest to catch before it's blended onto the base.
+          const warn = layerSubjectWarning(selected, item)
+          return (
             <button
-              className={`nv-volume-card ${selected?.id === item.id ? 'is-selected' : ''}`}
+              className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
+              disabled={!selected}
               key={item.id}
-              onClick={() => onSelect(item)}
-              onFocus={() => onActiveItem(item.id)}
-              onMouseEnter={() => onActiveItem(item.id)}
+              onClick={() => onOverlayToggle(item.id)}
+              title={warn ? `${item.label} — ${warn}` : item.label}
               type="button"
             >
-              <StablePreviewImage
-                src={previewImageForSize(item, SIDEBAR_PREVIEW_SIZE)}
-                frameClassName="nv-volume-thumb"
-              />
+              <Plus size={13} />
               <span>
                 <strong>{item.label}</strong>
-                <small>{volumeImageTypeLabel(item)} / {item.shape.join(' x ')} / {item.dtype}</small>
+                <small>{layerOptionMeta(item)}</small>
               </span>
+              {warn ? (
+                <AlertTriangle aria-label="Different subject than base" className="nv-layer-add-warn" size={13} />
+              ) : null}
             </button>
-          ))}
-          {filteredItems.length === 0 ? (
-            <div className="nv-filter-empty">No matching volumes.</div>
-          ) : null}
-        </div>
-      </section>
-
-      <VolumeFilterDetails item={activeItem} />
-    </div>
-  )
-}
-
-function VolumeFacetGroup({
-  counts,
-  selected,
-  title,
-  onToggle
-}: {
-  counts: Map<string, number>
-  selected: Set<string>
-  title: string
-  onToggle: (value: string) => void
-}): JSX.Element {
-  const entries = Array.from(counts.entries()).sort((left, right) => left[0].localeCompare(right[0]))
-
-  return (
-    <div className="nv-filter-facet-group">
-      <div className="nv-filter-panel-title">
-        <span>{title}</span>
-        <em>{selected.size > 0 ? selected.size : 'all'}</em>
+          )
+        })}
+        {addCandidates.length === 0 ? (
+          <div className="nv-filter-empty">No overlay candidates.</div>
+        ) : null}
       </div>
-      <div className="nv-filter-facet-options">
-        {entries.map(([value, count]) => (
-          <label className="nv-filter-facet-option" key={value} title={value}>
-            <input
-              checked={selected.has(value)}
-              onChange={() => onToggle(value)}
-              type="checkbox"
-            />
-            <span>{value}</span>
-            <em>{count}</em>
-          </label>
-        ))}
-        {entries.length === 0 ? <div className="nv-filter-empty">None</div> : null}
-      </div>
-    </div>
-  )
-}
-
-function VolumeFilterDetails({ item }: { item: DesktopItem | null }): JSX.Element {
-  return (
-    <section className="nv-volume-filter-panel nv-volume-filter-details" aria-label="Volume metadata">
-      <div className="nv-filter-panel-title">
-        <span>Metadata</span>
-        <em>{item ? volumeRoleLabel(item) : 'none'}</em>
-      </div>
-
-      {item ? (
-        <dl>
-          <dt>Label</dt>
-          <dd title={item.label}>{item.label}</dd>
-          <dt>ID</dt>
-          <dd title={item.id}>{item.id}</dd>
-          <dt>Format</dt>
-          <dd>{volumeFacetValue(item.format)}</dd>
-          <dt>Image</dt>
-          <dd>{volumeImageTypeLabel(item)}</dd>
-          <dt>Dtype</dt>
-          <dd>{volumeFacetValue(item.dtype)}</dd>
-          <dt>Shape</dt>
-          <dd>{item.shape.join(' x ')}</dd>
-          <dt>Spacing</dt>
-          <dd>{item.spacing.join(' x ')}</dd>
-          {item.derivedFrom ? (
-            <>
-              <dt>Source</dt>
-              <dd title={item.derivedFrom}>{item.derivedFrom}</dd>
-            </>
-          ) : null}
-          {item.derivation?.operation ? (
-            <>
-              <dt>Operation</dt>
-              <dd>{item.derivation.operation}</dd>
-            </>
-          ) : null}
-        </dl>
-      ) : (
-        <div className="nv-filter-empty">No volume selected.</div>
-      )}
     </section>
   )
 }
 
-function DatasetDesktop({
-  manifest,
-  items,
-  selected,
-  isActive,
-  zoom,
-  onZoom,
-  onSelect
+// One expandable row in the unified Layers list. The header carries the
+// visibility toggle, label/role, expand caret, and (for non-base layers) a
+// remove button; the role-specific controls live in the expanded body.
+function LayerRow({
+  role,
+  label,
+  meta,
+  warning,
+  hidden,
+  expanded,
+  removable,
+  onToggleExpand,
+  onHiddenChange,
+  onRemove,
+  children
 }: {
-  manifest: DesktopManifest | null
-  items: DesktopItem[]
-  selected: DesktopItem | null
-  isActive: boolean
-  zoom: number
-  onZoom: (zoom: number) => void
-  onSelect: (item: DesktopItem) => void
+  role: 'base' | 'overlay' | 'atlas'
+  label: string
+  meta: string
+  warning?: string | null
+  hidden: boolean
+  expanded: boolean
+  removable: boolean
+  onToggleExpand: () => void
+  onHiddenChange: (hidden: boolean) => void
+  onRemove: () => void
+  children: JSX.Element
 }): JSX.Element {
-  const stageRef = useRef<HTMLDivElement | null>(null)
-  const minimapRef = useRef<HTMLButtonElement | null>(null)
-  const zoomRef = useRef(zoom)
-  const dragRef = useRef<DesktopDragState | null>(null)
-  const suppressClickRef = useRef(false)
-  const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
-  const [isPanning, setIsPanning] = useState(false)
-  const [viewport, setViewport] = useState<MinimapViewport>({
-    left: 0,
-    top: 0,
-    width: 100,
-    height: 100
-  })
-  const world = manifest?.world ?? {
-    width: 1,
-    height: 1,
-    units: 'desktop-px',
-    columns: 0,
-    rows: 0
-  }
-  const tileSize = manifest?.tileSize ?? 1024
-  const gap = manifest?.gap ?? 96
-  const desktopLayout = useMemo(
-    () => normalizeDesktopLayout(items, world, tileSize, gap),
-    [gap, items, tileSize, world]
-  )
-  const layoutItems = desktopLayout.items
-  const layoutWorld = desktopLayout.world
-  const selectedLayoutItem = selected
-    ? layoutItems.find((item) => item.id === selected.id) ?? selected
-    : null
-  const selectedStyle = selectedLayoutItem ? worldRectStyle(selectedLayoutItem.bounds, layoutWorld) : undefined
-  const targetPreviewSize = useMemo(
-    () => desktopPreviewSize(stageSize, layoutWorld, tileSize, zoom),
-    [layoutWorld, stageSize, tileSize, zoom]
-  )
-  const [previewSize, setPreviewSize] = useState<number>(SIDEBAR_PREVIEW_SIZE)
-  const previewLevel = previewLevelForSize(previewSize, layoutItems[0])
-  const worldSize = useMemo(
-    () => fittedWorldSize(stageSize, layoutWorld, zoom),
-    [stageSize, layoutWorld, zoom]
-  )
-  const sections = useMemo(
-    () => desktopSections(layoutItems, layoutWorld),
-    [layoutItems, layoutWorld.height, layoutWorld.width]
-  )
-  const derivedSourceId = selectedLayoutItem && isDerivedItem(selectedLayoutItem)
-    ? selectedLayoutItem.derivedFrom
-    : null
-  const derivedSource = derivedSourceId
-    ? layoutItems.find((item) => item.id === derivedSourceId) ?? null
-    : null
-  const sourceStyle = derivedSource ? worldRectStyle(derivedSource.bounds, layoutWorld) : undefined
-  const isOverview = renderedDesktopTileSize(worldSize, layoutWorld, tileSize) < 112
-
-  useEffect(() => {
-    zoomRef.current = zoom
-  }, [zoom])
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      setPreviewSize(targetPreviewSize)
-    }, PREVIEW_TIER_SETTLE_MS)
-
-    return () => window.clearTimeout(timeout)
-  }, [targetPreviewSize])
-
-  useEffect(() => {
-    const stage = stageRef.current
-    if (!stage) return
-    const stageElement = stage
-    const minimap = minimapRef.current
-
-    function onWheel(event: WheelEvent): void {
-      zoomRef.current = zoomDesktopWithWheel(event, stageElement, zoomRef.current, onZoom)
-    }
-
-    stageElement.addEventListener('wheel', onWheel, { passive: false })
-    minimap?.addEventListener('wheel', onWheel, { passive: false })
-    return () => {
-      stageElement.removeEventListener('wheel', onWheel)
-      minimap?.removeEventListener('wheel', onWheel)
-    }
-  }, [onZoom])
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      updateDesktopViewport(stageRef.current, setViewport)
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [layoutItems.length, stageSize.height, stageSize.width, worldSize, zoom])
-
-  function handleStageKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    const stage = stageRef.current
-    if (!stage) return
-    const panStep = 80
-    switch (event.key) {
-      case 'ArrowLeft':
-        stage.scrollLeft -= panStep
-        break
-      case 'ArrowRight':
-        stage.scrollLeft += panStep
-        break
-      case 'ArrowUp':
-        stage.scrollTop -= panStep
-        break
-      case 'ArrowDown':
-        stage.scrollTop += panStep
-        break
-      case '+':
-      case '=':
-        onZoom(zoomBy(zoomRef.current, 1.25))
-        break
-      case '-':
-      case '_':
-        onZoom(zoomBy(zoomRef.current, 0.8))
-        break
-      case '0':
-        onZoom(1)
-        break
-      default:
-        return
-    }
-    event.preventDefault()
-  }
-
+  const roleLabel = role === 'base' ? 'Base' : role === 'atlas' ? 'Atlas' : 'Overlay'
   return (
-    <div className={`nv-osd-stage ${isOverview ? 'is-overview' : ''}`}>
-      <div
-        aria-label="Dataset grid. Arrow keys pan; plus and minus zoom; 0 fits."
-        className={`nv-osd-scrollport ${isPanning ? 'is-panning' : ''}`}
-        onClickCapture={(event) => suppressDesktopClickAfterDrag(event, suppressClickRef)}
-        onKeyDown={handleStageKeyDown}
-        onPointerDown={(event) =>
-          beginDesktopPan(event, dragRef, suppressClickRef, setIsPanning)
-        }
-        onScroll={() => updateDesktopViewport(stageRef.current, setViewport)}
-        ref={stageRef}
-        role="group"
-        tabIndex={0}
-      >
-        <StageResizeObserver stageRef={stageRef} onResize={setStageSize} />
-        <div className="nv-osd-world" style={worldSize}>
-          {sections.map((section) => (
-            <div
-              aria-hidden="true"
-              className={`nv-osd-section nv-osd-section-${section.id}`}
-              key={section.id}
-              style={worldRectStyle(section.bounds, layoutWorld)}
-            />
-          ))}
-          {layoutItems.map((item) => (
-            <button
-              className={desktopTileClassName(item, selected, derivedSourceId)}
-              key={item.id}
-              onClick={() => onSelect(item)}
-              style={worldRectStyle(item.bounds, layoutWorld)}
-              type="button"
-            >
-              <StablePreviewImage
-                src={previewImageForSize(item, previewSize)}
-                frameClassName="nv-osd-image-frame"
-                draggable={false}
-              />
-              <span className="nv-osd-index">{isDerivedItem(item) ? 'D' : 'L0'}</span>
-              <span className="nv-osd-label">{item.label}</span>
-            </button>
-          ))}
-          {sections.map((section) => (
-            <div
-              aria-hidden="true"
-              className={`nv-osd-section-label nv-osd-section-label-${section.id}`}
-              key={`${section.id}-label`}
-              style={worldRectStyle(section.bounds, layoutWorld)}
-            >
-              <span>{section.label}</span>
-              <em>{section.count}</em>
-            </div>
-          ))}
-          {layoutItems.length === 0 ? <div className="nv-empty-state">No matching volumes.</div> : null}
-        </div>
+    <div
+      className={`nv-layer-row is-${role}${expanded ? ' is-expanded' : ''}${hidden ? ' is-hidden' : ''}${warning ? ' is-warning' : ''}`}
+    >
+      <div className="nv-layer-row-head">
+        <button
+          aria-label={hidden ? `Show ${label}` : `Hide ${label}`}
+          aria-pressed={!hidden}
+          className="nv-layer-row-vis"
+          onClick={() => onHiddenChange(!hidden)}
+          type="button"
+        >
+          {hidden ? <EyeOff size={15} /> : <Eye size={15} />}
+        </button>
+        <button
+          aria-expanded={expanded}
+          className="nv-layer-row-main"
+          onClick={onToggleExpand}
+          type="button"
+        >
+          <span className="nv-layer-row-title">
+            <strong>{label}</strong>
+            <small>
+              <span className="nv-layer-role">{roleLabel}</span>
+              {meta ? ` · ${meta}` : ''}
+            </small>
+          </span>
+          {warning ? (
+            <span aria-label={warning} className="nv-layer-row-warn" role="img" title={warning}>
+              <AlertTriangle size={15} />
+            </span>
+          ) : null}
+          <ChevronDown className="nv-layer-row-caret" size={15} />
+        </button>
+        {removable ? (
+          <button
+            aria-label={`Remove ${label}`}
+            className="nv-layer-row-remove"
+            onClick={onRemove}
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        ) : null}
       </div>
-
-      <div className="nv-stage-title nv-osd-title" aria-hidden="true">
-        <span>OSD Desktop</span>
-        <strong>{manifest?.label ?? 'VolumeDesktop'}</strong>
-        <em>{isActive ? 'mouse' : `${Math.round(zoom * 100)}%`}</em>
-      </div>
-
-      <footer className="nv-osd-footer" aria-hidden="true">
-        <div className="nv-hud">
-          <span>zoom {Math.round(zoom * 100)}%</span>
-          <span>LOD L{previewLevel}</span>
-          <span>{previewSize}px previews</span>
-          <span>{layoutItems.length} visible</span>
-          <span>{layoutWorld.width} x {layoutWorld.height}</span>
-        </div>
-        {derivedSource ? (
-          <div className="nv-osd-source-key">
-            <span className="nv-osd-source-swatch" />
-            <strong>Original</strong>
-            <span>{derivedSource.label}</span>
-          </div>
-        ) : (
-          <div className="nv-osd-source-key is-muted">
-            <span className="nv-osd-source-swatch" />
-            <strong>Original</strong>
-            <span>none selected</span>
-          </div>
-        )}
-      </footer>
-
-      <button
-        aria-label="Click to center the desktop dataset"
-        className="nv-minimap"
-        onClick={(event) => jumpDesktopToMinimapPoint(event, stageRef, setViewport)}
-        onPointerDown={(event) => event.stopPropagation()}
-        ref={minimapRef}
-        title="Click to center desktop"
-        type="button"
-      >
-        <span className="nv-minimap-map" aria-hidden="true">
-          {sourceStyle ? <span className="nv-minimap-source" style={sourceStyle} /> : null}
-          {selectedStyle ? <span className="nv-minimap-selection" style={selectedStyle} /> : null}
-          <span className="nv-minimap-window" style={minimapViewportStyle(viewport)} />
-        </span>
-      </button>
+      {expanded ? <div className="nv-layer-row-body">{children}</div> : null}
     </div>
   )
 }
 
-function desktopTileClassName(
-  item: DesktopItem,
-  selected: DesktopItem | null,
-  derivedSourceId: string | null | undefined
-): string {
-  return [
-    'nv-osd-tile',
-    selected?.id === item.id ? 'is-selected' : '',
-    isDerivedItem(item) ? 'is-derived' : '',
-    derivedSourceId === item.id ? 'is-derived-source' : ''
-  ]
-    .filter(Boolean)
-    .join(' ')
-}
-
-function desktopManifestSignature(manifest: DesktopManifest): string {
-  return [
-    manifest.itemCount,
-    manifest.world.width,
-    manifest.world.height,
-    ...manifest.items.map((item) => `${item.id}:${item.role ?? 'source'}:${item.derivedFrom ?? ''}`)
-  ].join('|')
-}
-
-function StageResizeObserver({
-  stageRef,
-  onResize
+function LayerColormapSelect({
+  ariaLabel,
+  disabled = false,
+  itemId,
+  value,
+  options = COLORMAP_OPTIONS,
+  onChange
 }: {
-  stageRef: RefObject<HTMLDivElement>
-  onResize: (size: { width: number; height: number }) => void
-}): null {
-  const lastSizeRef = useRef({ width: 0, height: 0 })
-
-  useEffect(() => {
-    const stage = stageRef.current
-    if (!stage) return
-    const stageElement = stage
-
-    function update(): void {
-      const nextSize = {
-        width: stageElement.clientWidth,
-        height: stageElement.clientHeight
-      }
-      const lastSize = lastSizeRef.current
-      if (lastSize.width === nextSize.width && lastSize.height === nextSize.height) return
-      lastSizeRef.current = nextSize
-      onResize(nextSize)
-    }
-
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(stageElement)
-    return () => observer.disconnect()
-  }, [onResize, stageRef])
-
-  return null
-}
-
-function StablePreviewImage({
-  src,
-  frameClassName,
-  draggable
-}: {
-  src: string
-  frameClassName: string
-  draggable?: boolean
+  ariaLabel: string
+  disabled?: boolean
+  itemId: string
+  value: string
+  options?: ReadonlyArray<{ value: string; label: string }>
+  onChange: (itemId: string, colormap: string) => void
 }): JSX.Element {
-  // currentSrc is the committed, visible image; pendingSrc is the one we've been
-  // granted a load slot for and are now fetching. Gating the fetch behind a slot
-  // keeps a gridful of tiles from saturating the connection pool ahead of the
-  // volume — see acquirePreviewSlot.
-  const [currentSrc, setCurrentSrc] = useState<string | null>(null)
-  const [pendingSrc, setPendingSrc] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [visible, setVisible] = useState(false)
-  const frameRef = useRef<HTMLSpanElement>(null)
-  const releaseRef = useRef<(() => void) | null>(null)
+  return (
+    <label className={`nv-select nv-layer-colormap-select ${disabled ? 'is-disabled' : ''}`}>
+      <span>Map</span>
+      <select
+        aria-label={ariaLabel}
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(itemId, event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown size={14} />
+    </label>
+  )
+}
 
-  function releaseSlot(): void {
-    releaseRef.current?.()
-    releaseRef.current = null
-  }
+// Per-layer intensity mapping (NIfTI cal_min/cal_max). Empty inputs mean
+// NiiVue's robust auto range. Two variants:
+//   - 'window' (base): Min/Max contrast range.
+//   - 'threshold' (stat overlay): Threshold/Max, where values below the
+//     threshold render transparent (NiiVue's transparent-below-calMin), so the
+//     min field is the statistical threshold, not a contrast floor.
+function WindowControl({
+  itemId,
+  label,
+  window,
+  resolved,
+  variant = 'window',
+  onChange,
+  onReset
+}: {
+  itemId: string
+  label: string
+  window: { min: number; max: number } | undefined
+  // The effective window NiiVue applied when none is set explicitly (its robust
+  // auto range, or an overlay's auto-threshold). Shown so "auto" isn't a black
+  // box — e.g. a stat overlay reveals the threshold it's hiding signal below.
+  // robustMin/robustMax (when present) are the "show all" / threshold-off target.
+  resolved?: ResolvedWindow
+  variant?: 'window' | 'threshold'
+  onChange: (itemId: string, min: number, max: number) => void
+  onReset: (itemId: string) => void
+}): JSX.Element {
+  const isThreshold = variant === 'threshold'
+  const heading = isThreshold ? 'Threshold' : 'Intensity window'
+  const minLabel = isThreshold ? 'Threshold' : 'Min'
+  const fmt = (value: number): string =>
+    Number.isFinite(value) ? String(Number(value.toFixed(2))) : '–'
+  const readout = window
+    ? `${fmt(window.min)} – ${fmt(window.max)}`
+    : resolved
+      ? `auto · ${fmt(resolved.min)} – ${fmt(resolved.max)}`
+      : 'auto'
+  const minPlaceholder = resolved ? fmt(resolved.min) : 'auto'
+  const maxPlaceholder = resolved ? fmt(resolved.max) : 'auto'
+  const [minText, setMinText] = useState(window ? String(window.min) : '')
+  const [maxText, setMaxText] = useState(window ? String(window.max) : '')
 
-  // Only load a preview once its tile is at (or near) the viewport, so a large
-  // list/grid doesn't fetch and decode every thumbnail up front. Once loaded it
-  // stays loaded — this kills the startup storm without reload churn on scroll.
   useEffect(() => {
-    const frame = frameRef.current
-    if (!frame) return
-    if (typeof IntersectionObserver === 'undefined') {
-      setVisible(true)
-      return
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setVisible(true)
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '320px' }
-    )
-    observer.observe(frame)
-    return () => observer.disconnect()
-  }, [])
+    setMinText(window ? String(window.min) : '')
+    setMaxText(window ? String(window.max) : '')
+  }, [window?.min, window?.max])
 
+  // Commit whenever either field changes, reading both current values from
+  // state (no stale closure across the two inputs). For the threshold variant a
+  // blank Max means "up to the auto top", so fall back to the resolved max
+  // rather than discarding the input — setting just a threshold is the common
+  // case and must not look like a broken control.
+  const resolvedMax = resolved?.max
   useEffect(() => {
-    if (!visible || src === currentSrc) {
-      releaseSlot()
-      setPendingSrc(null)
-      setLoading(false)
-      return
+    if (!minText.trim()) return
+    const min = Number(minText)
+    if (!Number.isFinite(min)) return
+    const max = maxText.trim()
+      ? Number(maxText)
+      : isThreshold && Number.isFinite(resolvedMax)
+        ? (resolvedMax as number)
+        : NaN
+    if (Number.isFinite(max) && min < max) {
+      onChange(itemId, min, max)
     }
-
-    // Drop the slot held by any now-stale pending load before queueing the new
-    // one; replacing the <img> src cancels the in-flight request anyway.
-    releaseSlot()
-    setLoading(true)
-
-    let cancelled = false
-    void acquirePreviewSlot().then((release) => {
-      if (cancelled) {
-        release()
-        return
-      }
-      releaseRef.current = release
-      setPendingSrc(src)
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [visible, currentSrc, src])
-
-  // Release the slot if we unmount mid-load so it can never leak.
-  useEffect(() => releaseSlot, [])
-
-  // Safety valve: if a pending <img> never fires load or error, abandon it after
-  // a timeout so its queue slot is freed instead of held indefinitely.
-  useEffect(() => {
-    if (!pendingSrc) return
-    const timer = window.setTimeout(abandonPendingSrc, PREVIEW_LOAD_TIMEOUT_MS)
-    return () => window.clearTimeout(timer)
-  }, [pendingSrc])
-
-  function commitPendingSrc(): void {
-    setCurrentSrc((previous) => (pendingSrc ? pendingSrc : previous))
-    setPendingSrc(null)
-    setLoading(false)
-    releaseSlot()
-  }
-
-  function abandonPendingSrc(): void {
-    setPendingSrc(null)
-    setLoading(false)
-    releaseSlot()
-  }
+    // onChange/itemId are stable for a given layer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minText, maxText, resolvedMax, isThreshold])
 
   return (
-    <span className={frameClassName} ref={frameRef}>
-      {loading && !currentSrc ? (
-        // Decorative only: a live region here would fire for every tile on a
-        // grid load and spam assistive tech. The spinner is a visual hint.
-        <span className="nv-preview-spinner" aria-hidden="true">
-          <LoaderCircle size={18} />
-        </span>
+    <div className="nv-window-control">
+      <div className="nv-window-heading">
+        <span>{heading}</span>
+        <em className={window ? '' : 'is-auto'}>{readout}</em>
+      </div>
+      <div className="nv-window-row">
+        <label className="nv-field">
+          <span>{minLabel}</span>
+          <input
+            aria-label={`${minLabel} for ${label}`}
+            className="nv-text-input"
+            inputMode="decimal"
+            onChange={(event) => setMinText(event.target.value)}
+            placeholder={minPlaceholder}
+            type="number"
+            value={minText}
+          />
+        </label>
+        <label className="nv-field">
+          <span>Max</span>
+          <input
+            aria-label={`Window maximum for ${label}`}
+            className="nv-text-input"
+            inputMode="decimal"
+            onChange={(event) => setMaxText(event.target.value)}
+            placeholder={maxPlaceholder}
+            type="number"
+            value={maxText}
+          />
+        </label>
+        <button
+          className="nv-window-reset"
+          disabled={!window}
+          onClick={() => onReset(itemId)}
+          title="Reset to auto range"
+          type="button"
+        >
+          Auto
+        </button>
+      </div>
+      {isThreshold &&
+      resolved &&
+      Number.isFinite(resolved.robustMin) &&
+      Number.isFinite(resolved.robustMax) ? (
+        <button
+          className="nv-window-showall"
+          onClick={() =>
+            onChange(itemId, resolved.robustMin as number, resolved.robustMax as number)
+          }
+          title="Display the full robust range with no threshold"
+          type="button"
+        >
+          Show all (no threshold)
+        </button>
       ) : null}
-      {currentSrc ? (
-        <img
-          className="nv-preview-image"
-          src={currentSrc}
-          alt=""
-          draggable={draggable}
-          loading="eager"
-          decoding="async"
-          fetchPriority="low"
-        />
-      ) : null}
-      {pendingSrc ? (
-        <img
-          className="nv-preview-image is-pending"
-          src={pendingSrc}
-          alt=""
-          draggable={draggable}
-          loading="eager"
-          decoding="async"
-          fetchPriority="low"
-          onLoad={commitPendingSrc}
-          onError={abandonPendingSrc}
-        />
-      ) : null}
-    </span>
+    </div>
   )
 }
 
@@ -1613,6 +2011,107 @@ function SelectionPanel({
       ) : (
         <p>No volume selected.</p>
       )}
+    </section>
+  )
+}
+
+// Persistent, copyable crosshair coordinate (RAS+ world mm) with go-to. The
+// status-bar readout is transient; this keeps the last crosshair position
+// visible, lets it be copied for notes/scripts, and lets a typed coordinate
+// drive the crosshair (NiiVue reports/consumes mm in RAS+: +X=Right, +Y=Anterior,
+// +Z=Superior).
+function CrosshairPanel({
+  location,
+  onGoTo
+}: {
+  location: NiiVueLocation | null
+  onGoTo: (x: number, y: number, z: number) => void
+}): JSX.Element {
+  const mm = location?.mm
+  const hasLocation = Boolean(mm) && mm!.slice(0, 3).every((value) => Number.isFinite(value))
+  const anatomical = hasLocation ? formatAnatomicalCoordinates(mm!) : null
+  const rasTriplet = hasLocation ? mm!.slice(0, 3).map((value) => Number(value.toFixed(2))).join(', ') : null
+
+  // Go-to fields track the current crosshair (tweak-and-go); they follow the
+  // crosshair when it moves via click/paging.
+  const [x, setX] = useState('')
+  const [y, setY] = useState('')
+  const [z, setZ] = useState('')
+  useEffect(() => {
+    if (!hasLocation) return
+    setX(String(Number(mm![0].toFixed(2))))
+    setY(String(Number(mm![1].toFixed(2))))
+    setZ(String(Number(mm![2].toFixed(2))))
+  }, [mm?.[0], mm?.[1], mm?.[2]])
+
+  const [copied, setCopied] = useState(false)
+  function handleCopy(): void {
+    if (!rasTriplet || !navigator.clipboard) return
+    navigator.clipboard
+      .writeText(rasTriplet)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => undefined)
+  }
+
+  const parsed: [number, number, number] | null = (() => {
+    if (![x, y, z].every((value) => value.trim().length > 0)) return null
+    const values = [x, y, z].map((value) => Number(value))
+    return values.every(Number.isFinite) ? [values[0], values[1], values[2]] : null
+  })()
+
+  function handleGo(): void {
+    if (parsed) onGoTo(parsed[0], parsed[1], parsed[2])
+  }
+
+  return (
+    <section className="nv-readout nv-crosshair-panel">
+      <h2>
+        <Crosshair size={15} />
+        Crosshair
+      </h2>
+      <div className="nv-crosshair-readout">
+        <span className={hasLocation ? '' : 'is-empty'}>{anatomical ?? 'Click or page to place the crosshair'}</span>
+        <button
+          type="button"
+          className="nv-crosshair-copy"
+          disabled={!rasTriplet}
+          onClick={handleCopy}
+          title="Copy as RAS+ mm (x, y, z)"
+          aria-label="Copy coordinate as RAS millimetres"
+        >
+          {copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}
+        </button>
+      </div>
+      <div className="nv-crosshair-goto">
+        {(['R+', 'A+', 'S+'] as const).map((axisLabel, index) => (
+          <label className="nv-field" key={axisLabel}>
+            <span>{axisLabel}</span>
+            <input
+              aria-label={`${axisLabel} millimetres`}
+              className="nv-text-input"
+              inputMode="decimal"
+              onChange={(event) => [setX, setY, setZ][index](event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') handleGo()
+              }}
+              type="number"
+              value={[x, y, z][index]}
+            />
+          </label>
+        ))}
+        <button
+          type="button"
+          className="nv-crosshair-go"
+          disabled={!parsed}
+          onClick={handleGo}
+          title="Move the crosshair to this RAS+ coordinate"
+        >
+          Go
+        </button>
+      </div>
     </section>
   )
 }
@@ -1677,130 +2176,6 @@ function MetadataPanel({
       ) : (
         <p>Select a volume to inspect sidecar metadata.</p>
       )}
-    </section>
-  )
-}
-
-function NiimathOperationsPanel({
-  item,
-  metadata,
-  onDerivedVolume,
-  onStatus
-}: {
-  item: DesktopItem | null
-  metadata: VolumeMetadata | null
-  onDerivedVolume: (volumeId: string) => Promise<void>
-  onStatus: (status: string) => void
-}): JSX.Element {
-  const [operation, setOperation] = useState<NiimathOperation>('smooth')
-  const [operand, setOperand] = useState('2')
-  const [maskPath, setMaskPath] = useState('')
-  const [isRunning, setIsRunning] = useState(false)
-  const [taskStatus, setTaskStatus] = useState('Ready.')
-  const [result, setResult] = useState<NiimathTaskResult | null>(null)
-  const selectedOperation = NIIMATH_OPERATIONS.find((candidate) => candidate.id === operation) ?? NIIMATH_OPERATIONS[0]
-  const sourcePath = typeof metadata?.sourcePath === 'string' ? metadata.sourcePath : ''
-  const parsedOperand = Number(operand)
-  const hasOperand = !selectedOperation.needsOperand || Number.isFinite(parsedOperand)
-  const hasMask = !selectedOperation.needsMask || maskPath.trim().length > 0
-  const canRun = Boolean(item && sourcePath && hasOperand && hasMask && !isRunning)
-
-  async function runTask(): Promise<void> {
-    if (!item || !sourcePath || !canRun) return
-
-    setIsRunning(true)
-    setResult(null)
-    setTaskStatus(`Running ${selectedOperation.label.toLowerCase()}.`)
-    onStatus(`Running niimath ${selectedOperation.label.toLowerCase()} on ${item.label}.`)
-
-    try {
-      const nextResult = await runNiimathTask({
-        sourcePath,
-        operation,
-        operand: selectedOperation.needsOperand ? parsedOperand : undefined,
-        maskPath: selectedOperation.needsMask ? maskPath.trim() : undefined
-      })
-      setResult(nextResult)
-      setTaskStatus('Done.')
-      onStatus(`niimath wrote ${nextResult.outputPath}.`)
-      await onDerivedVolume(nextResult.volumeId)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      setTaskStatus(message)
-      onStatus(message)
-    } finally {
-      setIsRunning(false)
-    }
-  }
-
-  return (
-    <section className="nv-control-section nv-operation-panel">
-      <div className="nv-panel-heading">
-        <span>
-          <Calculator size={15} />
-          Operations
-        </span>
-        <em>niimath</em>
-      </div>
-
-      <div className="nv-operation-grid">
-        <label className="nv-field">
-          <span>Task</span>
-          <select value={operation} onChange={(event) => setOperation(event.target.value as NiimathOperation)}>
-            {NIIMATH_OPERATIONS.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {selectedOperation.needsOperand ? (
-          <label className="nv-field">
-            <span>Value</span>
-            <input
-              className="nv-text-input"
-              inputMode="decimal"
-              onChange={(event) => setOperand(event.target.value)}
-              type="number"
-              value={operand}
-            />
-          </label>
-        ) : null}
-
-        {selectedOperation.needsMask ? (
-          <label className="nv-field nv-field-wide">
-            <span>Mask Path</span>
-            <input
-              className="nv-text-input"
-              onChange={(event) => setMaskPath(event.target.value)}
-              placeholder="/path/to/mask.nii.gz"
-              type="text"
-              value={maskPath}
-            />
-          </label>
-        ) : null}
-      </div>
-
-      <p className="nv-operation-help">{selectedOperation.help}</p>
-
-      <button
-        className="nv-primary-action"
-        disabled={!canRun}
-        onClick={() => void runTask()}
-        type="button"
-      >
-        <Play size={14} />
-        <span>{isRunning ? 'Running' : 'Run'}</span>
-      </button>
-
-      <div className="nv-task-status">
-        <strong>{sourcePath ? item?.label : 'No source volume'}</strong>
-        <span>{sourcePath ? taskStatus : 'Select a local NIfTI volume.'}</span>
-        {result ? (
-          <code title={result.outputPath}>{result.outputPath}</code>
-        ) : null}
-      </div>
     </section>
   )
 }
@@ -2000,373 +2375,43 @@ function beginVerticalDrag(
   handle.addEventListener('pointercancel', onUp)
 }
 
-function beginDesktopPan(
-  event: ReactPointerEvent<HTMLDivElement>,
-  dragRef: MutableRefObject<DesktopDragState | null>,
-  suppressClickRef: MutableRefObject<boolean>,
-  setIsPanning: (isPanning: boolean) => void
-): void {
-  if (event.button !== 0) return
-  const stage = event.currentTarget
-  const pointerId = event.pointerId
-
-  dragRef.current = {
-    pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    scrollLeft: stage.scrollLeft,
-    scrollTop: stage.scrollTop,
-    moved: false
-  }
-
-  function onMove(moveEvent: PointerEvent): void {
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== pointerId) return
-
-    const deltaX = moveEvent.clientX - drag.startX
-    const deltaY = moveEvent.clientY - drag.startY
-    const hasMoved = Math.hypot(deltaX, deltaY) > 3
-    if (!hasMoved && !drag.moved) return
-
-    moveEvent.preventDefault()
-    stage.scrollLeft = drag.scrollLeft - deltaX
-    stage.scrollTop = drag.scrollTop - deltaY
-    if (!drag.moved) {
-      drag.moved = true
-      setIsPanning(true)
-    }
-  }
-
-  function onEnd(): void {
-    const drag = dragRef.current
-    if (drag?.pointerId === pointerId) {
-      suppressClickRef.current = drag.moved
-      dragRef.current = null
-      setIsPanning(false)
-    }
-
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onEnd)
-    window.removeEventListener('pointercancel', onEnd)
-  }
-
-  window.addEventListener('pointermove', onMove, { passive: false })
-  window.addEventListener('pointerup', onEnd)
-  window.addEventListener('pointercancel', onEnd)
-}
-
-function suppressDesktopClickAfterDrag(
-  event: ReactMouseEvent<HTMLDivElement>,
-  suppressClickRef: MutableRefObject<boolean>
-): void {
-  if (!suppressClickRef.current) return
-  suppressClickRef.current = false
-  event.preventDefault()
-  event.stopPropagation()
-}
-
-function zoomDesktopWithWheel(
-  event: WheelEvent,
-  stage: HTMLDivElement,
-  zoom: number,
-  onZoom: (zoom: number) => void
-): number {
-  event.preventDefault()
-  const nextZoom = zoomBy(zoom, event.deltaY < 0 ? 1.12 : 0.89)
-  if (nextZoom === zoom) return zoom
-
-  const rect = stage.getBoundingClientRect()
-  const viewportX = event.clientX - rect.left
-  const viewportY = event.clientY - rect.top
-  const anchorX = stage.scrollLeft + viewportX
-  const anchorY = stage.scrollTop + viewportY
-  const ratio = nextZoom / zoom
-
-  flushSync(() => {
-    onZoom(nextZoom)
-  })
-  stage.scrollLeft = anchorX * ratio - viewportX
-  stage.scrollTop = anchorY * ratio - viewportY
-
-  return nextZoom
-}
-
-function jumpDesktopToMinimapPoint(
-  event: ReactMouseEvent<HTMLElement>,
-  stageRef: RefObject<HTMLDivElement>,
-  setViewport: Dispatch<SetStateAction<MinimapViewport>>
-): void {
-  const stage = stageRef.current
-  if (!stage) return
-
-  event.preventDefault()
-  event.stopPropagation()
-
-  const minimap = event.currentTarget
-  const map = minimap.querySelector<HTMLElement>('.nv-minimap-map')
-  const rect = (map ?? minimap).getBoundingClientRect()
-  const x = clamp((event.clientX - rect.left) / Math.max(rect.width, 1), 0, 1)
-  const y = clamp((event.clientY - rect.top) / Math.max(rect.height, 1), 0, 1)
-
-  centerDesktopAtFraction(stage, x, y)
-  updateDesktopViewport(stage, setViewport)
-}
-
-function centerDesktopAtFraction(stage: HTMLDivElement, x: number, y: number): void {
-  const maxScrollLeft = Math.max(stage.scrollWidth - stage.clientWidth, 0)
-  const maxScrollTop = Math.max(stage.scrollHeight - stage.clientHeight, 0)
-
-  stage.scrollLeft = clamp(x * stage.scrollWidth - stage.clientWidth / 2, 0, maxScrollLeft)
-  stage.scrollTop = clamp(y * stage.scrollHeight - stage.clientHeight / 2, 0, maxScrollTop)
-}
-
-function updateDesktopViewport(
-  stage: HTMLDivElement | null,
-  setViewport: Dispatch<SetStateAction<MinimapViewport>>
-): void {
-  if (!stage) return
-  const next = desktopViewportFromStage(stage)
-  setViewport((current) => (sameMinimapViewport(current, next) ? current : next))
-}
-
-function desktopViewportFromStage(stage: HTMLDivElement): MinimapViewport {
-  const scrollWidth = Math.max(stage.scrollWidth, stage.clientWidth, 1)
-  const scrollHeight = Math.max(stage.scrollHeight, stage.clientHeight, 1)
-  const width = clamp((stage.clientWidth / scrollWidth) * 100, 0, 100)
-  const height = clamp((stage.clientHeight / scrollHeight) * 100, 0, 100)
-
-  return {
-    left: clamp((stage.scrollLeft / scrollWidth) * 100, 0, 100 - width),
-    top: clamp((stage.scrollTop / scrollHeight) * 100, 0, 100 - height),
-    width,
-    height
+async function volumeHasAtlasLabelSidecar(item: DesktopItem): Promise<boolean> {
+  try {
+    const metadata = await fetchVolumeMetadata(item)
+    return metadataHasAtlasLabelMap(metadata)
+  } catch {
+    return false
   }
 }
 
-function sameMinimapViewport(left: MinimapViewport, right: MinimapViewport): boolean {
+function metadataHasAtlasLabelMap(metadata: VolumeMetadata): boolean {
+  if (isAtlasLabelMap(metadata as unknown as JsonValue)) return true
+  return (metadata.sidecars ?? []).some((sidecar) => isAtlasLabelMap(sidecar.metadata))
+}
+
+function isAtlasLabelMap(value: JsonValue): boolean {
+  if (!isJsonObject(value)) return false
   return (
-    Math.abs(left.left - right.left) < 0.1 &&
-    Math.abs(left.top - right.top) < 0.1 &&
-    Math.abs(left.width - right.width) < 0.1 &&
-    Math.abs(left.height - right.height) < 0.1
+    numericList(value.R) !== null &&
+    numericList(value.G) !== null &&
+    numericList(value.B) !== null &&
+    stringList(value.labels)?.some((label) => label.trim().length > 0) === true
   )
 }
 
-function minimapViewportStyle(viewport: MinimapViewport): CSSProperties {
-  return {
-    left: `${viewport.left}%`,
-    top: `${viewport.top}%`,
-    width: `${viewport.width}%`,
-    height: `${viewport.height}%`
-  }
+function numericList(value: JsonValue | undefined): number[] | null {
+  if (!Array.isArray(value)) return null
+  const numbers = value.map((entry) => typeof entry === 'number' ? entry : Number(entry))
+  return numbers.length > 0 && numbers.every(Number.isFinite) ? numbers : null
 }
 
-function normalizeDesktopLayout(
-  items: DesktopItem[],
-  world: DesktopManifest['world'],
-  tileSize: number,
-  gap: number
-): { items: DesktopItem[]; world: DesktopManifest['world'] } {
-  if (items.length === 0) return { items, world }
-  const sources = items.filter((item) => !isDerivedItem(item))
-  const derivatives = items.filter((item) => isDerivedItem(item))
-  const layoutCount = Math.max(sources.length, derivatives.length, 1)
-  const columns = Math.max(1, Math.ceil(Math.sqrt(layoutCount)))
-  const sourceRows = layoutRows(sources.length, columns)
-  const derivedRows = layoutRows(derivatives.length, columns)
-  const pitch = tileSize + gap
-  const sourceHeight = layoutGridHeight(sourceRows, tileSize, gap)
-  const derivedHeight = layoutGridHeight(derivedRows, tileSize, gap)
-  // Headroom for the fixed-size section-label chip. Make it proportional to the
-  // tile stack: once the grid is scaled to fit, the chip's rendered height stays
-  // roughly constant across row counts, so small datasets keep their tiles near
-  // the top while large (scaled-down) grids still leave room for the label
-  // instead of letting it cover the first row.
-  const sectionLabelSpace = Math.max(
-    Math.round(tileSize * 0.25),
-    Math.round(Math.max(sourceHeight, derivedHeight) * 0.1)
-  )
-  const sectionGap = Math.max(Math.round(tileSize / 2), gap)
-  const sourceTop = sectionLabelSpace
-  const derivedTop = derivatives.length > 0
-    ? sourceTop + sourceHeight + sectionGap + sectionLabelSpace
-    : 0
-  const nextBounds = new Map<string, WorldRect>()
-
-  function placeGroup(group: DesktopItem[], top: number): void {
-    group.forEach((item, index) => {
-      const col = index % columns
-      const row = Math.floor(index / columns)
-      nextBounds.set(item.id, {
-        x: col * pitch,
-        y: top + row * pitch,
-        width: tileSize,
-        height: tileSize
-      })
-    })
-  }
-
-  placeGroup(sources, sourceTop)
-  placeGroup(derivatives, derivedTop)
-
-  const width = columns * tileSize + Math.max(columns - 1, 0) * gap
-  const height = Math.max(
-    derivatives.length > 0
-      ? derivedTop + derivedHeight
-      : sourceTop + sourceHeight,
-    tileSize
-  )
-
-  return {
-    items: items.map((item) => ({
-      ...item,
-      bounds: nextBounds.get(item.id) ?? item.bounds
-    })),
-    world: {
-      ...world,
-      width,
-      height,
-      columns,
-      rows: sourceRows + derivedRows
-    }
-  }
+function stringList(value: JsonValue | undefined): string[] | null {
+  if (!Array.isArray(value)) return null
+  return value.map((entry) => typeof entry === 'string' ? entry : String(entry))
 }
 
-function layoutRows(count: number, columns: number): number {
-  return count === 0 ? 0 : Math.ceil(count / Math.max(columns, 1))
-}
-
-function layoutGridHeight(rows: number, tileSize: number, gap: number): number {
-  return rows === 0 ? 0 : rows * tileSize + Math.max(rows - 1, 0) * gap
-}
-
-function desktopSections(
-  items: DesktopItem[],
-  world: DesktopManifest['world']
-): Array<{ id: 'sources' | 'derived'; label: string; count: number; bounds: WorldRect }> {
-  return [
-    desktopSectionForRole(items.filter((item) => !isDerivedItem(item)), world, 'sources', 'Source Volumes'),
-    desktopSectionForRole(items.filter((item) => isDerivedItem(item)), world, 'derived', 'Working Derivatives')
-  ].filter((section): section is { id: 'sources' | 'derived'; label: string; count: number; bounds: WorldRect } => Boolean(section))
-}
-
-function desktopSectionForRole(
-  items: DesktopItem[],
-  world: DesktopManifest['world'],
-  id: 'sources' | 'derived',
-  label: string
-): { id: 'sources' | 'derived'; label: string; count: number; bounds: WorldRect } | null {
-  if (items.length === 0) return null
-  const minY = Math.min(...items.map((item) => item.bounds.y))
-  const maxY = Math.max(...items.map((item) => item.bounds.y + item.bounds.height))
-  const headerSpace = (items[0]?.bounds.height ?? 1024) * 2
-  const topPadding = Math.min(headerSpace, minY)
-  const bottomPadding = 56
-
-  return {
-    id,
-    label,
-    count: items.length,
-    bounds: {
-      x: 0,
-      y: Math.max(0, minY - topPadding),
-      width: Math.max(world.width, 1),
-      height: Math.max(maxY - minY + topPadding + bottomPadding, 1)
-    }
-  }
-}
-
-function worldRectStyle(
-  rect: WorldRect,
-  world: DesktopManifest['world']
-): CSSProperties {
-  const width = Math.max(world.width, 1)
-  const height = Math.max(world.height, 1)
-
-  return {
-    left: `${(rect.x / width) * 100}%`,
-    top: `${(rect.y / height) * 100}%`,
-    width: `${(rect.width / width) * 100}%`,
-    height: `${(rect.height / height) * 100}%`
-  }
-}
-
-function fittedWorldSize(
-  stageSize: { width: number; height: number },
-  world: DesktopManifest['world'],
-  zoom: number
-): CSSProperties {
-  const dimensions = fittedWorldDimensions(stageSize, world, zoom)
-  return {
-    width: `${dimensions.width}px`,
-    height: `${dimensions.height}px`
-  }
-}
-
-function renderedDesktopTileSize(
-  worldSize: CSSProperties,
-  world: DesktopManifest['world'],
-  tileSize: number
-): number {
-  const renderedWorldWidth = Number.parseFloat(String(worldSize.width ?? '0'))
-  const renderedWorldHeight = Number.parseFloat(String(worldSize.height ?? '0'))
-  const tileWidth = renderedWorldWidth * tileSize / Math.max(world.width, 1)
-  const tileHeight = renderedWorldHeight * tileSize / Math.max(world.height, 1)
-
-  return Math.min(tileWidth, tileHeight)
-}
-
-function fittedWorldDimensions(
-  stageSize: { width: number; height: number },
-  world: DesktopManifest['world'],
-  zoom: number
-): { width: number; height: number } {
-  const availableWidth = Math.max(stageSize.width - 44, 180)
-  const availableHeight = Math.max(stageSize.height - 44, 180)
-  const aspect = Math.max(world.width, 1) / Math.max(world.height, 1)
-  let fitWidth = availableWidth
-  let fitHeight = fitWidth / aspect
-
-  if (fitHeight > availableHeight) {
-    fitHeight = availableHeight
-    fitWidth = fitHeight * aspect
-  }
-
-  return {
-    width: Math.max(160, fitWidth * zoom),
-    height: Math.max(160, fitHeight * zoom)
-  }
-}
-
-function desktopPreviewSize(
-  stageSize: { width: number; height: number },
-  world: DesktopManifest['world'],
-  tileSize: number,
-  zoom: number
-): number {
-  const dimensions = fittedWorldDimensions(stageSize, world, zoom)
-  const renderedTileWidth = dimensions.width * tileSize / Math.max(world.width, 1)
-  const renderedTileHeight = dimensions.height * tileSize / Math.max(world.height, 1)
-  const density = typeof window === 'undefined' ? 1 : Math.max(window.devicePixelRatio || 1, 1)
-  const targetPixels = Math.max(renderedTileWidth, renderedTileHeight) * density
-
-  return (
-    DESKTOP_PREVIEW_TIERS.find((tier) => tier >= targetPixels) ??
-    DESKTOP_PREVIEW_TIERS[DESKTOP_PREVIEW_TIERS.length - 1]
-  )
-}
-
-function previewImageForSize(item: DesktopItem, size: number): string {
-  if (!item.preview.service) return item.preview.image
-  const level = previewLevelForSize(size, item)
-  return `${item.preview.service}/full/${size},${size}/0/default.png?level=${level}&v=${PREVIEW_IMAGE_VERSION}`
-}
-
-function previewLevelForSize(size: number, item?: DesktopItem): number {
-  const requestedLevel = size <= 192 ? 2 : size <= 384 ? 1 : 0
-  const availableLevels = item?.levels?.map((level) => level.level) ?? [0]
-  const maxLevel = Math.max(0, ...availableLevels)
-  return Math.min(requestedLevel, maxLevel)
+function isJsonObject(value: JsonValue): value is { [key: string]: JsonValue } {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function volumeMetadataJson(metadata: VolumeMetadata): unknown | null {
@@ -2396,14 +2441,290 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
-function zoomBy(zoom: number, factor: number): number {
-  return clamp(Number((zoom * factor).toFixed(2)), MIN_DESKTOP_ZOOM, MAX_DESKTOP_ZOOM)
+function viewModeLabel(mode: ViewModeId): string {
+  switch (mode) {
+    case 'axial':
+      return 'Axial'
+    case 'coronal':
+      return 'Coronal'
+    case 'sagittal':
+      return 'Sagittal'
+    case 'multiplanar':
+      return 'Multiplanar'
+    default:
+      return '3D render'
+  }
 }
 
 function mouseContextLabel(context: MouseContext): string {
   if (context === 'desktop') return 'Mouse: desktop grid controls'
   if (context === 'niivue') return 'Mouse: NiiVue controls'
   return 'Mouse: no pane'
+}
+
+// Through-plane position of the current slice, as an anatomical mm coordinate
+// (RAS+, so it's correct regardless of the volume's raw voxel orientation).
+// Only meaningful for the single-plane 2D modes; multiplanar/render return null.
+const SLICE_THROUGH_PLANE: Record<string, { index: number; positive: string; negative: string }> = {
+  axial: { index: 2, positive: 'S', negative: 'I' },
+  coronal: { index: 1, positive: 'A', negative: 'P' },
+  sagittal: { index: 0, positive: 'R', negative: 'L' }
+}
+
+function slicePositionLabel(location: NiiVueLocation | null, viewMode: ViewModeId): string | null {
+  if (!location) return null
+  const axis = SLICE_THROUGH_PLANE[viewMode]
+  if (!axis) return null
+  const value = location.mm[axis.index]
+  if (!Number.isFinite(value)) return null
+  const letter = value >= 0 ? axis.positive : axis.negative
+  return `${letter} ${formatCoordinate(Math.abs(value))} mm`
+}
+
+function locationStatusLabel(location: NiiVueLocation | null, atlasName: string | null): string | null {
+  if (!location) return null
+  const mm = formatAnatomicalCoordinates(location.mm)
+  const vox = location.vox.map(formatVoxelIndex).join(', ')
+  const region = locationRegion(location, atlasName)
+  const intensity = locationIntensity(location)
+  const parts = [`${mm} mm`, `IJK ${vox}`]
+  if (intensity) parts.push(`Val ${intensity}`)
+  if (region) parts.push(`${region.atlas}: ${region.region}`)
+  return parts.join(' / ')
+}
+
+// NiiVue reports crosshair mm in RAS+ world space: +X=Right, +Y=Anterior,
+// +Z=Superior. Render the sign as anatomical letters so laterality is never
+// ambiguous (the unsigned XYZ readout could not distinguish left from right).
+function formatAnatomicalCoordinates(mm: number[]): string {
+  const axes: Array<[string, string]> = [['R', 'L'], ['A', 'P'], ['S', 'I']]
+  return mm
+    .slice(0, 3)
+    .map((value, index) => {
+      const [positive, negative] = axes[index]
+      const letter = (Number.isFinite(value) ? value : 0) >= 0 ? positive : negative
+      return `${letter} ${formatCoordinate(Math.abs(value))}`
+    })
+    .join(' / ')
+}
+
+function locationIntensity(location: NiiVueLocation): string | null {
+  if (location.values.length === 0) return null
+  const single = location.values.length === 1
+  const parts = location.values.map((value) => {
+    const intensity = formatIntensity(value.value)
+    return single ? intensity : `${value.name || value.id} ${intensity}`
+  })
+  return parts.join(', ')
+}
+
+function formatIntensity(value: number): string {
+  if (!Number.isFinite(value)) return 'n/a'
+  if (value === 0) return '0'
+  const magnitude = Math.abs(value)
+  if (magnitude >= 1000 || magnitude < 0.001) return value.toExponential(2)
+  return value.toFixed(magnitude >= 100 ? 1 : 3)
+}
+
+// Region readout bound to the *named* atlas layer. NiiVue sets `label` only on
+// volumes with a colormapLabel (i.e. atlases), and each value's `name` is the
+// layer's "<item.label> L<level>", so match the atlas by its display name rather
+// than grabbing the first labelled value across all layers (which couldn't say
+// which atlas a region came from, and could report the wrong volume).
+function locationRegion(
+  location: NiiVueLocation,
+  atlasName: string | null
+): { region: string; atlas: string } | null {
+  if (!atlasName) return null
+  const value = location.values.find(
+    (candidate) => volumeBaseName(candidate.name) === atlasName && isRegionLabel(candidate.label)
+  )
+  const region = value?.label?.trim()
+  return region ? { region, atlas: atlasName } : null
+}
+
+// Strip the " L<level>" LOD suffix the stage appends to each NiiVue volume name
+// (`${item.label} L${level}`) to recover the layer's display label.
+function volumeBaseName(name: string): string {
+  return name.replace(/ L\d+$/, '')
+}
+
+function isRegionLabel(label: string | undefined): boolean {
+  if (!label) return false
+  const normalized = label.trim().toLowerCase()
+  return normalized.length > 0 && normalized !== 'air' && normalized !== 'background'
+}
+
+function formatCoordinate(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(1)
+}
+
+function formatVoxelIndex(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return String(Math.round(value))
+}
+
+function warmProgressLabel(progress: WarmProgress | null, datasetRoot: string): string | null {
+  if (!progress || progress.total <= 0) return null
+  const datasetLabel = datasetRoot ? `${recentDatasetLabel(datasetRoot)}: ` : ''
+  if (!progress.active) return `${datasetLabel}Pyramid cache ready ${progress.completed}/${progress.total}`
+  const percent = Math.round((progress.completed / progress.total) * 100)
+  return `${datasetLabel}Warming pyramid ${progress.completed}/${progress.total} (${percent}%)`
+}
+
+function compareAtlasCandidates(left: DesktopItem, right: DesktopItem): number {
+  return atlasCandidateScore(right) - atlasCandidateScore(left) || left.label.localeCompare(right.label)
+}
+
+function layerColormapForItem(
+  item: DesktopItem,
+  layerSettings: Record<string, LayerSettings>,
+  fallback: string
+): string {
+  return layerSettings[item.id]?.colormap ?? fallback
+}
+
+// Clamp the anatomical base to a grayscale-family map. A volume promoted from
+// overlay to base can carry a leaked pseudocolor setting; the base has no way to
+// display or change one (its dropdown is restricted), so force it grayscale.
+const BASE_COLORMAP_VALUES = new Set<string>(BASE_COLORMAP_OPTIONS.map((option) => option.value))
+function baseColormap(value: string): string {
+  return BASE_COLORMAP_VALUES.has(value) ? value : DEFAULT_BASE_COLORMAP
+}
+
+function overlayColormapForIndex(index: number): string {
+  return DEFAULT_OVERLAY_COLORMAPS[index % DEFAULT_OVERLAY_COLORMAPS.length]
+}
+
+// The layer's stored opacity (or role default) — what the slider edits, and
+// what a hidden layer reverts to when shown again.
+function opacityForItem(
+  itemId: string,
+  layerSettings: Record<string, LayerSettings>,
+  fallback: number
+): number {
+  const opacity = layerSettings[itemId]?.opacity
+  return typeof opacity === 'number' && Number.isFinite(opacity) ? opacity : fallback
+}
+
+// The opacity actually sent to NiiVue: 0 when hidden, otherwise the stored value.
+function renderOpacityForItem(
+  itemId: string,
+  layerSettings: Record<string, LayerSettings>,
+  fallback: number
+): number {
+  if (layerSettings[itemId]?.hidden) return 0
+  return opacityForItem(itemId, layerSettings, fallback)
+}
+
+function windowForItem(
+  itemId: string,
+  layerSettings: Record<string, LayerSettings>
+): { calMin: number; calMax: number } | Record<string, never> {
+  const window = layerSettings[itemId]?.window
+  if (!window || !Number.isFinite(window.min) || !Number.isFinite(window.max) || window.min >= window.max) {
+    return {}
+  }
+  return { calMin: window.min, calMax: window.max }
+}
+
+function atlasCandidateScore(item: DesktopItem): number {
+  const text = `${item.id} ${item.label}`
+  if (/(^|[_\-\s.])(atlas|aal|bigbrain|parc|parcel|parcellation|labels?|dseg|aseg|seg|annotation)([_\-\s.]|$)/i.test(text)) {
+    return 2
+  }
+  return 0
+}
+
+function layerOptionMeta(item: DesktopItem): string {
+  const base = `${volumeImageTypeLabel(item)} / ${item.shape.join(' x ')} / ${item.dtype}`
+  const subject = volumeSubject(item)
+  return subject ? `${subject} · ${base}` : base
+}
+
+// A layer is "suspect" against the base when both carry a BIDS subject and the
+// subjects differ — the silent study-mix-up case. Returns a reason for the
+// warning, or null. Geometry (shape/spacing) is shown but not warned on: legit
+// co-registered overlays routinely have a different grid than the base.
+function layerSubjectWarning(base: DesktopItem | null, item: DesktopItem): string | null {
+  if (!base || item.id === base.id) return null
+  const baseSubject = volumeSubject(base)
+  const itemSubject = volumeSubject(item)
+  if (baseSubject && itemSubject && baseSubject !== itemSubject) {
+    const baseSession = volumeSession(base)
+    const itemSession = volumeSession(item)
+    const here = [itemSubject, itemSession].filter(Boolean).join(' ')
+    const there = [baseSubject, baseSession].filter(Boolean).join(' ')
+    return `Different subject (${here}) than the base (${there}) — verify this is the same study.`
+  }
+  return null
+}
+
+function extentsEqual(
+  a: Record<string, LayerExtent>,
+  b: Record<string, LayerExtent>
+): boolean {
+  const aKeys = Object.keys(a)
+  if (aKeys.length !== Object.keys(b).length) return false
+  return aKeys.every((id) => {
+    const ea = a[id]
+    const eb = b[id]
+    return (
+      !!eb &&
+      ea.min.length === eb.min.length &&
+      ea.min.every((value, i) => value === eb.min[i]) &&
+      ea.max.length === eb.max.length &&
+      ea.max.every((value, i) => value === eb.max[i])
+    )
+  })
+}
+
+function boxVolume(box: LayerExtent): number {
+  let volume = 1
+  for (let i = 0; i < 3; i += 1) volume *= Math.max(0, box.max[i] - box.min[i])
+  return volume
+}
+
+// Fraction of the smaller box that lies inside the larger one. ~1 for
+// co-registered volumes even at different resolution/FOV; → 0 for volumes in a
+// different space (e.g. subject-native overlay on an MNI base). Below this we
+// flag a possible space mismatch — caught even when subjects aren't BIDS-known.
+const SPACE_OVERLAP_MIN = 0.5
+
+function layerSpaceWarning(
+  base: LayerExtent | undefined,
+  item: LayerExtent | undefined
+): string | null {
+  if (!base || !item || base.min.length < 3 || item.min.length < 3) return null
+  let intersection = 1
+  for (let i = 0; i < 3; i += 1) {
+    const low = Math.max(base.min[i], item.min[i])
+    const high = Math.min(base.max[i], item.max[i])
+    intersection *= Math.max(0, high - low)
+  }
+  const smaller = Math.min(boxVolume(base), boxVolume(item))
+  if (smaller <= 0) return null
+  const overlap = intersection / smaller
+  if (overlap < SPACE_OVERLAP_MIN) {
+    return `Different space than the base (${Math.round(overlap * 100)}% world overlap) — the overlay may be mislocated.`
+  }
+  return null
+}
+
+// The mismatch warning for a non-base layer vs the base, if any: a known
+// different BIDS subject, else a different world space. Subject takes
+// precedence (more specific); space catches the non-BIDS / same-subject cases.
+function layerWarning(
+  base: DesktopItem | null,
+  item: DesktopItem,
+  layerExtents: Record<string, LayerExtent>
+): string | null {
+  if (!base || item.id === base.id) return null
+  return (
+    layerSubjectWarning(base, item) ??
+    layerSpaceWarning(layerExtents[base.id], layerExtents[item.id])
+  )
 }
 
 async function savePatch(

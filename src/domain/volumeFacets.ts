@@ -34,6 +34,7 @@ export function isDerivedItem(item: DesktopItem): boolean {
 }
 
 export function volumeRoleLabel(item: DesktopItem): string {
+  if (item.role === 'overlay') return 'Overlay'
   return isDerivedItem(item) ? 'Derived' : 'Source'
 }
 
@@ -44,6 +45,25 @@ export function volumeImageTypeLabel(item: DesktopItem): string {
     if (label) return label
   }
   return 'Unknown'
+}
+
+// BIDS entity (e.g. `sub-01`, `ses-pre`) pulled from the item's identity
+// strings (label / id / paths). Returns null when the entity isn't present.
+function bidsEntity(item: DesktopItem, entity: 'sub' | 'ses'): string | null {
+  const pattern = new RegExp(`(?:^|[^a-z0-9])${entity}-([a-z0-9]+)`, 'i')
+  for (const candidate of volumeIdentityCandidates(item)) {
+    const match = pattern.exec(safeDecodeURIComponent(candidate))
+    if (match) return `${entity}-${match[1].toLowerCase()}`
+  }
+  return null
+}
+
+export function volumeSubject(item: DesktopItem): string | null {
+  return bidsEntity(item, 'sub')
+}
+
+export function volumeSession(item: DesktopItem): string | null {
+  return bidsEntity(item, 'ses')
 }
 
 export function volumeFacetValue(value: string | null | undefined): string {
