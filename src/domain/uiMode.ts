@@ -6,14 +6,16 @@ export type UiMode = 'full' | 'simple'
 
 const UI_MODE_KEY = 'neurovue.uiMode.v1'
 
-/** The layout the user last picked, else the full workbench. */
-export function loadRememberedUiMode(): UiMode {
+/**
+ * The layout the user last picked, else `fallback`. The desktop opens on the
+ * simple viewer; iOS keeps the workbench, which has no layout toggle there.
+ */
+export function loadRememberedUiMode(fallback: UiMode): UiMode {
   try {
-    return window.localStorage.getItem(UI_MODE_KEY) === 'simple'
-      ? 'simple'
-      : 'full'
+    const stored = window.localStorage.getItem(UI_MODE_KEY)
+    return stored === 'full' || stored === 'simple' ? stored : fallback
   } catch {
-    return 'full'
+    return fallback
   }
 }
 

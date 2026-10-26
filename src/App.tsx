@@ -331,7 +331,9 @@ export function App(): JSX.Element {
       ? 'axial'
       : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
   )
-  const [uiMode, setUiMode] = useState<UiMode>(loadRememberedUiMode)
+  const [uiMode, setUiMode] = useState<UiMode>(() =>
+    loadRememberedUiMode(isAppleMobile() ? 'full' : 'simple'),
+  )
   const isSimple = uiMode === 'simple'
   const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
   const [atlasId, setAtlasId] = useState<string | null>(null)
