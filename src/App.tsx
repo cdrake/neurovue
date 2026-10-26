@@ -340,9 +340,9 @@ export function App(): JSX.Element {
       : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
   )
   const [uiMode, setUiMode] = useState<UiMode>(() =>
-    loadRememberedUiMode(isAppleMobile() ? 'full' : 'simple'),
+    loadRememberedUiMode(isAppleMobile() ? 'full' : 'express'),
   )
-  const isSimple = uiMode === 'simple'
+  const isExpress = uiMode === 'express'
   const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
   const [atlasId, setAtlasId] = useState<string | null>(null)
   // The viewer's load progress (which preview level is showing), kept for the
@@ -415,9 +415,9 @@ export function App(): JSX.Element {
   const shareMenuRef = useRef<HTMLDivElement | null>(null)
   const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } =
     useTerminalDock()
-  // The simple view has no dock; the terminal keeps its state for the
+  // The express view has no dock; the terminal keeps its state for the
   // workbench.
-  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen && !isSimple
+  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen && !isExpress
 
   useEffect(() => {
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
@@ -885,13 +885,13 @@ export function App(): JSX.Element {
   }
 
   const toggleUiMode = () => {
-    const next: UiMode = isSimple ? 'full' : 'simple'
+    const next: UiMode = isExpress ? 'full' : 'express'
     setUiMode(next)
     rememberUiMode(next)
   }
 
   useNativeMenu({
-    'simple-view': toggleUiMode,
+    'express-view': toggleUiMode,
     'open-file': openLocalVolumeFile,
     'open-folder': openLocalDataset,
     'open-mesh': loadMeshes,
@@ -1100,7 +1100,7 @@ export function App(): JSX.Element {
 
   return (
     <main
-      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''} ${isSimple ? 'is-simple' : ''}`}
+      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''} ${isExpress ? 'is-express' : ''}`}
       style={{ '--terminal-height': `${terminalHeight}px` } as CSSProperties}
     >
       <header className="nv-topbar">
@@ -1381,20 +1381,20 @@ export function App(): JSX.Element {
             </button>
           )}
           <button
-            aria-label="Simple view"
-            aria-pressed={isSimple}
-            className={`nv-icon-button nv-desktop-only ${isSimple ? 'is-active' : ''}`}
+            aria-label="Express view"
+            aria-pressed={isExpress}
+            className={`nv-icon-button nv-desktop-only ${isExpress ? 'is-active' : ''}`}
             onClick={toggleUiMode}
             title={
-              isSimple
+              isExpress
                 ? 'Back to the dataset workbench (⌥⌘V)'
-                : 'Simple view: one viewer and one tool panel (⌥⌘V)'
+                : 'Express view: one viewer and one tool panel (⌥⌘V)'
             }
             type="button"
           >
             <LayoutPanelLeft size={16} />
           </button>
-          {isTerminalAvailable && !isSimple ? (
+          {isTerminalAvailable && !isExpress ? (
             <button
               aria-label="Python terminal"
               aria-pressed={isTerminalOpen}
@@ -1662,7 +1662,7 @@ export function App(): JSX.Element {
                   }
                   type="button"
                 >
-                  {isSimple ? (
+                  {isExpress ? (
                     isControlsCollapsed ? (
                       <PanelLeftOpen size={15} />
                     ) : (
@@ -1676,7 +1676,7 @@ export function App(): JSX.Element {
                 </button>
               </div>
 
-              {isSimple ? null : (
+              {isExpress ? null : (
                 <fieldset
                   className="nv-inspector-tools"
                   aria-label="Desktop controls"
@@ -1697,7 +1697,7 @@ export function App(): JSX.Element {
                 </fieldset>
               )}
 
-              {isSimple ? null : (
+              {isExpress ? null : (
                 <SidePanelTabs
                   activeTab={sidePanelTab}
                   onChange={setSidePanelTab}
@@ -1705,7 +1705,7 @@ export function App(): JSX.Element {
               )}
 
               <div className="nv-sidepanel-content">
-                {isSimple || sidePanelTab === 'inspect' ? (
+                {isExpress || sidePanelTab === 'inspect' ? (
                   <>
                     <LayerPanel
                       atlasId={atlasId}
@@ -1790,9 +1790,7 @@ export function App(): JSX.Element {
                           onChange={setShading}
                         />
 
-                        {isSimple ? null : (
-                          <BlockControls blocks={blocks} onChange={setBlocks} />
-                        )}
+                        <BlockControls blocks={blocks} onChange={setBlocks} />
                       </>
                     ) : (
                       <section className="nv-control-section">
@@ -1805,7 +1803,7 @@ export function App(): JSX.Element {
                       </section>
                     )}
 
-                    {isSimple ? null : (
+                    {isExpress ? null : (
                       <SelectionPanel
                         item={selected}
                         metadataStatus={metadataStatus}
@@ -1815,7 +1813,7 @@ export function App(): JSX.Element {
                       location={locationReadout}
                       onGoTo={goToCoordinate}
                     />
-                    {isSimple ? null : (
+                    {isExpress ? null : (
                       <MetadataPanel
                         item={selected}
                         metadata={metadata}

@@ -36,7 +36,7 @@ const MENU_EXPORT_BUNDLE: &str = "file-export-bundle";
 #[cfg(target_os = "macos")]
 const MENU_SHARE: &str = "file-share";
 #[cfg(desktop)]
-const MENU_SIMPLE_VIEW: &str = "view-simple-view";
+const MENU_EXPRESS_VIEW: &str = "view-express-view";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -440,10 +440,10 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     }
 
     // Same for View: macOS's default has one (Enter Full Screen), others may not.
-    let simple_view = MenuItem::with_id(
+    let express_view = MenuItem::with_id(
         handle,
-        MENU_SIMPLE_VIEW,
-        "Toggle Simple View",
+        MENU_EXPRESS_VIEW,
+        "Toggle Express View",
         true,
         Some("CmdOrCtrl+Alt+V"),
     )?;
@@ -454,10 +454,10 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     });
     match existing_view {
         Some(view_menu) => {
-            view_menu.prepend_items(&[&simple_view, &PredefinedMenuItem::separator(handle)?])?
+            view_menu.prepend_items(&[&express_view, &PredefinedMenuItem::separator(handle)?])?
         }
         None => {
-            let view_menu = Submenu::with_items(handle, "View", true, &[&simple_view])?;
+            let view_menu = Submenu::with_items(handle, "View", true, &[&express_view])?;
             menu.append(&view_menu)?;
         }
     }

@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 
 /** Actions the desktop menus can send (see `neurovue_menu` in lib.rs). */
 export type NativeMenuAction =
-  | 'simple-view'
+  | 'express-view'
   | 'open-file'
   | 'open-folder'
   | 'open-mesh'
