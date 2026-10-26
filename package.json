@@ -7,6 +7,9 @@
     "dev": "vite --host 127.0.0.1 --port 5175 --strictPort",
     "ensure-niimath": "node scripts/ensure-niimath.cjs",
     "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
     "preview": "vite preview --host 127.0.0.1 --port 4174",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -14,8 +17,8 @@
     "tauri:build:mac": "tauri build --target universal-apple-darwin"
   },
   "dependencies": {
-    "@niivue/niivue": "workspace:*",
-    "@niivue/uikit": "workspace:*",
+    "@niivue/niivue": "^1.0.0-rc.37",
+    "@niivue/uikit": "^1.0.0-rc.25",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@xterm/addon-fit": "^0.11.0",
@@ -26,6 +29,7 @@
     "react-dom": "^19"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.10",
     "@tauri-apps/cli": "^2.2.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -13,16 +13,20 @@ The intended split is:
 
 ## Development
 
-Lives in the mono workspace at `apps/desktop` (nx project `neurovue`).
+Needs [Bun](https://bun.sh) (version in `.bun-version`), a Rust toolchain and
+the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```sh
-bun install                    # from the monorepo root
-bunx nx tauri-dev neurovue     # desktop app with live reload
-bunx nx tauri-build neurovue   # release .app / .dmg
+bun install
+bun run tauri:dev     # desktop app with live reload
+bun run tauri:build   # release installers for this OS
+bun run lint          # biome
+bun run typecheck
 ```
 
-The nx targets build `@niivue/niivue` first (`dependsOn: ["^build"]`), so the app
-always picks up a fresh niivue `dist/`.
+`@niivue/niivue` and `@niivue/uikit` come from npm. To try unreleased NiiVue
+changes, `bun link` a local checkout of [niivue/mono](https://github.com/niivue/mono)
+packages.
 
 `tauri dev` and `tauri build` prepare a Tauri sidecar for
 `niimath` by downloading the latest platform release from
@@ -88,10 +92,10 @@ Xcode 27's SwiftPM hides the Swift functions Tauri's Rust code calls. swift-rs
 ### Linux and Windows
 
 Tauri doesn't cross-compile installers, so each OS builds on its own runner.
-The `Desktop Build` workflow (`.github/workflows/desktop-build.yml`) builds
-unsigned installers on macOS (universal .dmg), Linux (.deb, .rpm, .AppImage)
-and Windows (.msi, NSIS .exe) and runs the Rust tests. It runs on PRs that touch
-the app and can also be run manually. Download the installers from the run's
+The `Build` workflow (`.github/workflows/build.yml`) builds unsigned installers
+on macOS (universal .dmg), Linux (.deb, .rpm, .AppImage) and Windows (.msi,
+NSIS .exe), and runs lint, typecheck and the Rust tests. It runs on pushes and
+PRs to `main` and can also be run manually. Download the installers from the run's
 artifacts.
 
 The Tauri host starts a local server and the viewer asks the host for its URL.
@@ -110,5 +114,5 @@ NeuroVue starts with the same core endpoints used by the OSD desktop:
 - `GET /volumes/{volume}/metadata`
 - `GET /volumes/{volume}/raw.nii.gz`
 
-The initial Rust server includes a compatibility shim and serves a local MNI152
-sample when one is discoverable from the NiiVue checkouts.
+The initial Rust server includes a compatibility shim and serves the bundled MNI152
+sample (`src-tauri/resources/mni152.nii.gz`) when no dataset is open.
