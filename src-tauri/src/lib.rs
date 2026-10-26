@@ -2,22 +2,41 @@
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
 #[cfg(desktop)]
 mod niimath;
+mod share;
 #[cfg(desktop)]
 mod terminal;
-mod share;
 mod volumetric_server;
 
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 // The app menu bar is a desktop-only concept; iOS/Android have no `tauri::menu`.
 #[cfg(desktop)]
-use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(desktop)]
 use tauri::Emitter;
 
+// File and View menu item ids. Each click is forwarded to the frontend as a
+// `neurovue-menu` event whose payload is the id minus its `file-` or `view-`
+// prefix (see `src/hooks/useNativeMenu.ts`).
 #[cfg(desktop)]
-const OPEN_DIRECTORY_MENU_ID: &str = "neurovue-open-directory";
+const MENU_EVENT: &str = "neurovue-menu";
+#[cfg(desktop)]
+const MENU_OPEN_FILE: &str = "file-open-file";
+#[cfg(desktop)]
+const MENU_OPEN_FOLDER: &str = "file-open-folder";
+#[cfg(desktop)]
+const MENU_OPEN_MESH: &str = "file-open-mesh";
+#[cfg(desktop)]
+const MENU_OPEN_BUNDLE: &str = "file-open-bundle";
+#[cfg(desktop)]
+const MENU_OPEN_SAMPLE: &str = "file-open-sample";
+#[cfg(desktop)]
+const MENU_EXPORT_BUNDLE: &str = "file-export-bundle";
+#[cfg(target_os = "macos")]
+const MENU_SHARE: &str = "file-share";
+#[cfg(desktop)]
+const MENU_EXPRESS_VIEW: &str = "view-express-view";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,10 +50,13 @@ struct NeuroVueServerInfo {
     bids_version: Option<String>,
     bids_dataset_doi: Option<String>,
     warm_progress: volumetric_server::WarmProgressSnapshot,
+    /// The bundled MNI152 sample, opened on request from the Welcome screen.
+    sample_path: Option<String>,
 }
 
 pub(crate) struct NeuroVueState {
     pub(crate) server: volumetric_server::ServerHandle,
+    pub(crate) sample_path: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -99,6 +121,10 @@ fn neurovue_server_info(state: tauri::State<'_, NeuroVueState>) -> NeuroVueServe
         bids_version: bids.as_ref().and_then(|info| info.bids_version.clone()),
         bids_dataset_doi: bids.as_ref().and_then(|info| info.dataset_doi.clone()),
         warm_progress: volumetric_server::warm_progress(&state.server),
+        sample_path: state
+            .sample_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
     }
 }
 
@@ -244,7 +270,13 @@ fn sanitize_share_name(name: &str) -> String {
     let cleaned: String = name
         .trim()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_matches('-');
     if trimmed.is_empty() {
@@ -257,11 +289,42 @@ fn sanitize_share_name(name: &str) -> String {
 #[tauri::command]
 async fn read_bundle_manifest(path: String) -> Result<serde_json::Value, String> {
     let path = normalize_local_path(&path);
+    tauri::async_runtime::spawn_blocking(move || volumetric_server::read_bundle(Path::new(&path)))
+        .await
+        .map_err(|error| format!("read_bundle_manifest: join error: {error}"))?
+}
+
+/// Surface mesh formats NiiVue reads (its `mesh/readers`), lower-case. FreeSurfer
+/// surfaces are named by their type (`lh.pial`), so those count as extensions.
+const MESH_EXTENSIONS: &[&str] = &[
+    "asc", "byu", "dfs", "geo", "gii", "ico", "mz3", "nv", "obj", "off", "ply", "srf", "stl",
+    "vtk", "wrl", "x3d", "cbor", "white", "pial", "inflated", "sphere", "orig", "smoothwm",
+    "qsphere",
+];
+
+/// The raw bytes of a surface mesh. Meshes skip the volume server: the viewer
+/// hands the bytes straight to NiiVue, which parses the format itself.
+#[tauri::command]
+async fn read_mesh_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let path = PathBuf::from(normalize_local_path(&path));
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !MESH_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(format!(
+            "{} is not a mesh NeuroVue can open.",
+            path.display()
+        ));
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        volumetric_server::read_bundle(Path::new(&path))
+        std::fs::read(&path)
+            .map(tauri::ipc::Response::new)
+            .map_err(|error| format!("Couldn't read {}: {error}", path.display()))
     })
     .await
-    .map_err(|error| format!("read_bundle_manifest: join error: {error}"))?
+    .map_err(|error| format!("read_mesh_file: join error: {error}"))?
 }
 
 fn open_dataset_at_path(
@@ -290,16 +353,114 @@ fn open_dataset_at_path(
 
 #[cfg(desktop)]
 fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
+    // Start from Tauri's default bar so the app, Edit (copy/paste in text
+    // fields), View and Window menus keep working, then fill in File.
     let menu = Menu::default(handle)?;
-    let open_directory = MenuItem::with_id(
+    let open_file = MenuItem::with_id(
         handle,
-        OPEN_DIRECTORY_MENU_ID,
-        "Open Directory...",
+        MENU_OPEN_FILE,
+        "Open File\u{2026}",
         true,
         Some("CmdOrCtrl+O"),
     )?;
-    let dataset_menu = Submenu::with_items(handle, "Dataset", true, &[&open_directory])?;
-    menu.insert(&dataset_menu, 1)?;
+    let open_folder = MenuItem::with_id(
+        handle,
+        MENU_OPEN_FOLDER,
+        "Open Folder\u{2026}",
+        true,
+        Some("CmdOrCtrl+Shift+O"),
+    )?;
+    let open_mesh = MenuItem::with_id(
+        handle,
+        MENU_OPEN_MESH,
+        "Open Mesh\u{2026}",
+        true,
+        Some("CmdOrCtrl+Shift+M"),
+    )?;
+    let open_bundle = MenuItem::with_id(
+        handle,
+        MENU_OPEN_BUNDLE,
+        "Open Bundle\u{2026}",
+        true,
+        Some("CmdOrCtrl+Alt+O"),
+    )?;
+    let open_sample = MenuItem::with_id(
+        handle,
+        MENU_OPEN_SAMPLE,
+        "Open Sample Dataset",
+        true,
+        None::<&str>,
+    )?;
+    let export_bundle = MenuItem::with_id(
+        handle,
+        MENU_EXPORT_BUNDLE,
+        "Export Bundle\u{2026}",
+        true,
+        Some("CmdOrCtrl+E"),
+    )?;
+    // AirDrop exists only on Apple platforms, and of those only macOS has a
+    // menu bar.
+    #[cfg(target_os = "macos")]
+    let share = MenuItem::with_id(
+        handle,
+        MENU_SHARE,
+        "Share via AirDrop\u{2026}",
+        true,
+        None::<&str>,
+    )?;
+    let open_separator = PredefinedMenuItem::separator(handle)?;
+    let close_separator = PredefinedMenuItem::separator(handle)?;
+    let items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![
+        &open_file,
+        &open_folder,
+        &open_mesh,
+        &open_bundle,
+        &open_sample,
+        &open_separator,
+        &export_bundle,
+        #[cfg(target_os = "macos")]
+        &share,
+        // Keeps the default File items (Close Window, Quit off macOS) apart.
+        &close_separator,
+    ];
+
+    // The default bar already has a File menu on macOS and Windows; extend it
+    // so Close Window stays at the bottom. Linux's default has none, so add one.
+    let existing_file = menu.items()?.into_iter().find_map(|item| {
+        item.as_submenu()
+            .filter(|submenu| submenu.text().is_ok_and(|text| text == "File"))
+            .cloned()
+    });
+    match existing_file {
+        Some(file_menu) => file_menu.prepend_items(&items)?,
+        None => {
+            let file_menu = Submenu::with_items(handle, "File", true, &items[..items.len() - 1])?;
+            menu.insert(&file_menu, 0)?;
+        }
+    }
+
+    // Same for View: macOS's default has one (Enter Full Screen), others may not.
+    let express_view = MenuItem::with_id(
+        handle,
+        MENU_EXPRESS_VIEW,
+        "Toggle Express View",
+        true,
+        Some("CmdOrCtrl+Alt+V"),
+    )?;
+    let existing_view = menu.items()?.into_iter().find_map(|item| {
+        item.as_submenu()
+            .filter(|submenu| submenu.text().is_ok_and(|text| text == "View"))
+            .cloned()
+    });
+    match existing_view {
+        Some(view_menu) => {
+            view_menu.prepend_items(&[&express_view, &PredefinedMenuItem::separator(handle)?])?
+        }
+        None => {
+            let view_menu = Submenu::with_items(handle, "View", true, &[&express_view])?;
+            menu.append(&view_menu)?;
+        }
+    }
     Ok(menu)
 }
 
@@ -308,32 +469,44 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Point dataset discovery at the bundled MNI152 so machines without
-            // the dev checkouts — notably iOS, whose sandbox has no `~/Dev` — still
-            // open with a working default volume. Set before the server spawns so
-            // `discovery_roots()` picks it up. Resolving here (not at module load)
-            // is why the server spawns in `setup`: it needs the AppHandle's
-            // resource dir.
-            if let Ok(path) = app
+            // The bundled MNI152 is not opened at launch: the app starts on the
+            // Welcome screen (or reopens the last dataset), which offers it as a
+            // sample through `open_dataset_path`.
+            let sample_path = app
                 .path()
-                .resolve("resources/mni152.nii.gz", tauri::path::BaseDirectory::Resource)
-            {
-                if path.is_file() {
-                    std::env::set_var("NEUROVUE_DEFAULT_VOLUME", path);
-                }
+                .resolve(
+                    "resources/mni152.nii.gz",
+                    tauri::path::BaseDirectory::Resource,
+                )
+                .ok()
+                .filter(|path| path.is_file());
+            // niimath derivatives and extracted bundles are user work, so they
+            // live in the app's local data dir rather than the OS temp dir,
+            // which macOS purges. Set before the server spawns: discovery
+            // restores working derivatives from there.
+            match app.path().app_local_data_dir() {
+                Ok(dir) => volumetric_server::init_data_root(dir),
+                Err(error) => eprintln!(
+                    "NeuroVue: no app data dir ({error}); keeping user work in the temp cache"
+                ),
             }
             app.manage(NeuroVueState {
                 server: volumetric_server::spawn_default(),
+                sample_path,
             });
             Ok(())
         });
 
-    // The menu bar (and its "Open Directory" item) is desktop-only; on mobile
-    // the frontend opens datasets through an on-screen control instead.
+    // The menu bar (and its File menu) is desktop-only; on mobile the frontend
+    // opens datasets through on-screen controls instead.
     #[cfg(desktop)]
     let builder = builder.menu(neurovue_menu).on_menu_event(|app, event| {
-        if event.id().as_ref() == OPEN_DIRECTORY_MENU_ID {
-            let _ = app.emit("neurovue-open-directory", ());
+        let id = event.id().as_ref();
+        if let Some(action) = id
+            .strip_prefix("file-")
+            .or_else(|| id.strip_prefix("view-"))
+        {
+            let _ = app.emit(MENU_EVENT, action);
         }
     });
 
@@ -347,6 +520,7 @@ pub fn run() {
             neurovue_server_info,
             open_dataset_path,
             add_overlay_volume_path,
+            read_mesh_file,
             export_dataset_bundle,
             read_bundle_manifest,
             share_view_via_airdrop,
@@ -365,6 +539,7 @@ pub fn run() {
         neurovue_server_info,
         open_dataset_path,
         add_overlay_volume_path,
+        read_mesh_file,
         export_dataset_bundle,
         read_bundle_manifest,
         share_view_via_airdrop

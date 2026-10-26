@@ -1,19 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { RotateCcw, Trash2, ChevronDown, FolderSearch } from 'lucide-react'
-import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { Terminal } from '@xterm/xterm'
+import { ChevronDown, FolderSearch, RotateCcw, Trash2 } from 'lucide-react'
+import { type JSX, useEffect, useRef, useState } from 'react'
 import '@xterm/xterm/css/xterm.css'
+import type { StatusTone } from '../domain/desktop'
 import {
   discoverPythonInterpreters,
   killTerminal,
+  type PythonInterpreter,
   pickPythonInterpreter,
   resizeTerminal,
   startTerminal,
-  writeTerminal,
-  type PythonInterpreter,
   type TerminalChunk,
-  type TerminalExit
+  type TerminalExit,
+  writeTerminal,
 } from '../domain/terminal'
 
 const INTERPRETER_KEY = 'neurovue.pythonInterpreter.v1'
@@ -23,7 +24,7 @@ const TERMINAL_THEME = {
   background: '#12130f',
   foreground: '#e7e3d4',
   cursor: '#d7a642',
-  selectionBackground: 'rgba(215, 166, 66, 0.35)'
+  selectionBackground: 'rgba(215, 166, 66, 0.35)',
 }
 
 function loadPersistedInterpreter(): string {
@@ -48,10 +49,10 @@ function persistInterpreter(path: string): void {
 
 export function TerminalPanel({
   datasetRoot,
-  onStatus
+  onStatus,
 }: {
   datasetRoot: string
-  onStatus?: (message: string) => void
+  onStatus?: (message: string, tone?: StatusTone) => void
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -60,7 +61,9 @@ export function TerminalPanel({
   const interpreterRef = useRef<string>(loadPersistedInterpreter())
 
   const [interpreters, setInterpreters] = useState<PythonInterpreter[]>([])
-  const [selectedPath, setSelectedPath] = useState<string>(interpreterRef.current)
+  const [selectedPath, setSelectedPath] = useState<string>(
+    interpreterRef.current,
+  )
   const [isTermReady, setIsTermReady] = useState(false)
 
   useEffect(() => {
@@ -77,7 +80,7 @@ export function TerminalPanel({
       fontSize: 13,
       cursorBlink: true,
       theme: TERMINAL_THEME,
-      allowProposedApi: true
+      allowProposedApi: true,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -145,7 +148,10 @@ export function TerminalPanel({
         if (!cancelled) setInterpreters(found)
       })
       .catch((error) => {
-        onStatus?.(error instanceof Error ? error.message : String(error))
+        onStatus?.(
+          error instanceof Error ? error.message : String(error),
+          'error',
+        )
       })
     return () => {
       cancelled = true
@@ -154,6 +160,7 @@ export function TerminalPanel({
 
   // Start (or restart) the shell session whenever the terminal is ready or the
   // selected interpreter changes. Restarting on a fresh dataset keeps cwd correct.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: selectedPath and datasetRoot are restart triggers.
   useEffect(() => {
     if (!isTermReady) return
     const term = termRef.current
@@ -179,7 +186,7 @@ export function TerminalPanel({
         const id = await startTerminal({
           interpreterPath: interpreterRef.current || undefined,
           rows: term.rows,
-          cols: term.cols
+          cols: term.cols,
         })
         if (cancelled) {
           void killTerminal(id)
@@ -189,7 +196,7 @@ export function TerminalPanel({
         term.focus()
       } catch (error) {
         term.writeln(
-          `\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m`
+          `\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m`,
         )
       }
     }
@@ -206,12 +213,17 @@ export function TerminalPanel({
         const picked = await pickPythonInterpreter()
         if (!picked) return
         setInterpreters((current) =>
-          current.some((entry) => entry.path === picked.path) ? current : [picked, ...current]
+          current.some((entry) => entry.path === picked.path)
+            ? current
+            : [picked, ...current],
         )
         persistInterpreter(picked.path)
         setSelectedPath(picked.path)
       } catch (error) {
-        onStatus?.(error instanceof Error ? error.message : String(error))
+        onStatus?.(
+          error instanceof Error ? error.message : String(error),
+          'error',
+        )
       }
       return
     }
@@ -234,7 +246,7 @@ export function TerminalPanel({
     void startTerminal({
       interpreterPath: interpreterRef.current || undefined,
       rows: term.rows,
-      cols: term.cols
+      cols: term.cols,
     })
       .then((id) => {
         sessionIdRef.current = id
@@ -242,7 +254,7 @@ export function TerminalPanel({
       })
       .catch((error) => {
         term.writeln(
-          `\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m`
+          `\r\n\x1b[31m${error instanceof Error ? error.message : String(error)}\x1b[0m`,
         )
       })
   }
@@ -256,16 +268,22 @@ export function TerminalPanel({
     termRef.current?.writeln('\r\n\x1b[90m[terminated]\x1b[0m')
   }
 
-  const hasSelectedOption = !selectedPath || interpreters.some((entry) => entry.path === selectedPath)
+  const hasSelectedOption =
+    !selectedPath || interpreters.some((entry) => entry.path === selectedPath)
 
   return (
     <div className="nv-terminal-panel">
       <div className="nv-terminal-toolbar">
         <label className="nv-select nv-terminal-interpreter">
           <span>Python</span>
-          <select value={selectedPath} onChange={(event) => void handleSelectChange(event.target.value)}>
+          <select
+            value={selectedPath}
+            onChange={(event) => void handleSelectChange(event.target.value)}
+          >
             <option value="">System default (PATH)</option>
-            {!hasSelectedOption ? <option value={selectedPath}>{selectedPath}</option> : null}
+            {!hasSelectedOption ? (
+              <option value={selectedPath}>{selectedPath}</option>
+            ) : null}
             {interpreters.map((interpreter) => (
               <option key={interpreter.path} value={interpreter.path}>
                 {interpreter.label}

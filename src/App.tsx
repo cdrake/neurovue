@@ -1,23 +1,18 @@
-import {
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
 import type { NiiVueLocation } from '@niivue/niivue'
 import {
   AlertTriangle,
-  ChevronDown,
-  CircleDot,
+  Boxes,
+  Brain,
   Calculator,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  CircleDot,
   Copy,
   Crosshair,
   Database,
+  Download,
   Eye,
   EyeOff,
   FileJson,
@@ -25,75 +20,127 @@ import {
   GripHorizontal,
   GripVertical,
   Layers,
+  LayoutPanelLeft,
   LoaderCircle,
-  X,
   Maximize2,
   Minimize2,
+  Mouse,
+  PackageOpen,
   PanelLeftClose,
   PanelLeftOpen,
-  Package,
-  PackageOpen,
   PanelRightClose,
-  Share2,
   PanelRightOpen,
   Plus,
   RotateCcw,
   Save,
+  Send,
+  Shapes,
+  Share2,
   SlidersHorizontal,
   SquareTerminal,
+  X,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
 } from 'lucide-react'
-import { DatasetDesktop, MAX_DESKTOP_ZOOM, MIN_DESKTOP_ZOOM, zoomBy } from './components/DatasetDesktop'
 import {
-  NiivueStage,
-  DEFAULT_VIEW_MODE,
-  type NiivueRenderLayer,
-  type ResolvedWindow,
-  type ViewModeId
-} from './components/NiivueStage'
+  type CSSProperties,
+  type JSX,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import neurovueIconUrl from '../src-tauri/icons/neurovue-icon.svg?url'
+import {
+  DatasetDesktop,
+  MAX_DESKTOP_ZOOM,
+  MIN_DESKTOP_ZOOM,
+  zoomBy,
+} from './components/DatasetDesktop'
 import { NiimathOperationsPanel } from './components/NiimathOperationsPanel'
+import {
+  DEFAULT_VIEW_MODE,
+  loadRememberedViewMode,
+  type NiivueRenderLayer,
+  NiivueStage,
+  type ResolvedWindow,
+  type ViewModeId,
+} from './components/NiivueStage'
+import { RenderShadingSection } from './components/RenderShadingSection'
 import { TerminalPanel } from './components/TerminalPanel'
 import { VolumeFilterPanel } from './components/VolumeFilterPanel'
+import { WelcomeScreen } from './components/WelcomeScreen'
+import {
+  BLOCK_GRID_OPTIONS,
+  type BlockSettings,
+  blockGridLabel,
+  blocksAreTiled,
+  DEFAULT_BLOCK_SETTINGS,
+  MAX_EXPLODE,
+  MIN_EXPLODE,
+} from './domain/blocks'
+import {
+  type BundleViewState,
+  buildBundleViewState,
+  bundleVerifyFailures,
+  bundleVolumeIds,
+  exportDatasetBundle,
+  formatBundleBytes,
+  isBundlePath,
+  pickBundle,
+  readBundle,
+  shareViewViaAirDrop,
+} from './domain/bundle'
 import type {
   Backend,
   ClipPlane,
   DesktopItem,
-  DesktopManifest,
   JsonValue,
   VolumeMetadata,
-  WarmProgress
+  WarmProgress,
 } from './domain/desktop'
 import {
   defaultClipPlanes,
   fetchVolumeMetadata,
+  isBundledSampleDataset,
   openOverlayVolume,
-  resolveRuntimeCapabilities
+  resolveRuntimeCapabilities,
+  truncationNotice,
+  volumeCountLabel,
 } from './domain/desktop'
 import {
-  buildBundleViewState,
-  bundleVerifyFailures,
-  bundleVolumeId,
-  exportDatasetBundle,
-  formatBundleBytes,
-  pickBundle,
-  readBundle,
-  shareViewViaAirDrop,
-  type BundleViewState
-} from './domain/bundle'
+  type MeshLayer,
+  meshColorFromHex,
+  meshColorHex,
+  openMeshFiles,
+} from './domain/meshes'
+import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
-  volumeImageTypeLabel,
-  volumeRoleLabel,
+  loadRememberedUiMode,
+  rememberUiMode,
+  type UiMode,
+} from './domain/uiMode'
+import {
+  formatVoxelSpacing,
+  volumeImageTypeDisplay,
   volumeSession,
-  volumeSubject
+  volumeSubject,
+  volumeSummary,
 } from './domain/volumeFacets'
 import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
-import { recentDatasetLabel, useRecentDatasets } from './hooks/useRecentDatasets'
+import { useNativeMenu } from './hooks/useNativeMenu'
+import {
+  recentDatasetLabel,
+  useRecentDatasets,
+} from './hooks/useRecentDatasets'
 import { useTerminalDock } from './hooks/useTerminalDock'
 import { useVolumeFilters } from './hooks/useVolumeFilters'
 import { useVolumeMetadata } from './hooks/useVolumeMetadata'
-import neurovueIconUrl from '../src-tauri/icons/neurovue-icon.svg?url'
 
 const MIN_SPLIT = 34
 const MAX_SPLIT = 68
@@ -108,21 +155,25 @@ const COLORMAP_OPTIONS = [
   { value: 'viridis', label: 'Viridis' },
   { value: 'magma', label: 'Magma' },
   { value: 'actc', label: 'ACTC' },
-  { value: 'warm_cool', label: 'Warm/Cool (diverging)' }
+  { value: 'warm_cool', label: 'Warm/Cool (diverging)' },
 ] as const
 // The anatomical base is restricted to grayscale-family maps: pseudocolor
 // (viridis/magma/actc) on a structural volume invites intensity misreading.
 // Stat/label overlays keep the full COLORMAP_OPTIONS set.
 const BASE_COLORMAP_OPTIONS = [
   { value: 'gray', label: 'Gray' },
-  { value: 'bone', label: 'Bone' }
+  { value: 'bone', label: 'Bone' },
 ] as const
 
 // A colormap selection of 'warm_cool' is the NiiVue idiom for signed/stat data:
 // a warm map for positive intensities paired with a cool map for negatives, so
 // the rendering diverges around zero. Everything else is a single sequential map.
-function resolveColormap(name: string): { colormap: string; colormapNegative?: string } {
-  if (name === 'warm_cool') return { colormap: 'warm', colormapNegative: 'cool' }
+function resolveColormap(name: string): {
+  colormap: string
+  colormapNegative?: string
+} {
+  if (name === 'warm_cool')
+    return { colormap: 'warm', colormapNegative: 'cool' }
   return { colormap: name }
 }
 // Prefer WebGPU when the platform exposes it, falling back to WebGL2 otherwise.
@@ -143,10 +194,13 @@ function isAppleMobile(): boolean {
   return ua.includes('Macintosh') && navigator.maxTouchPoints > 1
 }
 
-const FLIPPED_CLIP_ORIENTATIONS: Record<string, Pick<ClipPlane, 'azimuth' | 'elevation'>> = {
+const FLIPPED_CLIP_ORIENTATIONS: Record<
+  string,
+  Pick<ClipPlane, 'azimuth' | 'elevation'>
+> = {
   anterior: { azimuth: 0, elevation: 0 },
   inferior: { azimuth: 0, elevation: 90 },
-  right: { azimuth: 270, elevation: 0 }
+  right: { azimuth: 270, elevation: 0 },
 }
 type MouseContext = 'desktop' | 'niivue' | null
 type SidePanelTab = 'inspect' | 'operations'
@@ -174,13 +228,26 @@ interface LayerSettings {
 // with the dataset/inspector panels as slide-in drawers (see the `max-width:
 // 700px` block in styles.css). iPad (~desktop width) keeps the 3-column layout.
 function isPhoneViewport(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches
+  return (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(max-width: 700px)').matches
+  )
 }
+
+// Below this window width the dataset panel folds to its rail (see App).
+const AUTO_COLLAPSE_WIDTH = 1100
 
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
   const backend = useMemo<Backend>(preferredBackend, [])
-  const { recentDatasets, promoteRecent, removeRecent } = useRecentDatasets()
+  const {
+    recentDatasets,
+    promoteRecent,
+    removeRecent,
+    pruneExtractedBundleDirs,
+    reopenLast,
+    setReopenLast,
+  } = useRecentDatasets()
   const {
     bidsDatasetDoi,
     bidsName,
@@ -188,11 +255,14 @@ export function App(): JSX.Element {
     datasetRevision,
     datasetRoot,
     isOpeningDataset,
+    isStartupResolved,
     items,
     manifest,
     openLocalDataset,
     openLocalVolumeFile,
     openRecentDataset,
+    openSampleDataset,
+    samplePath,
     refreshDesktopManifest,
     refreshDesktopManifestData,
     selected,
@@ -200,13 +270,36 @@ export function App(): JSX.Element {
     setSelectedId,
     setStatus,
     status,
-    warmProgress
+    statusTone,
+    warmProgress,
   } = useDatasetManifest({ promoteRecent })
-  const [layerSettings, setLayerSettings] = useState<Record<string, LayerSettings>>({})
+  // What researchers call this dataset: its BIDS name, else its folder name.
+  // The bundled sample gets a plain label instead of its path inside the app.
+  const isSampleDataset = useMemo(
+    () => manifest !== null && isBundledSampleDataset(items, datasetRoot),
+    [manifest, items, datasetRoot],
+  )
+  const datasetName = isSampleDataset
+    ? 'Sample: MNI152 template'
+    : bidsName || (datasetRoot ? recentDatasetLabel(datasetRoot) : '')
+  const datasetNotice = useMemo(
+    () => (manifest ? truncationNotice(manifest) : null),
+    [manifest],
+  )
+  // Drop recents left over from when a bundle import recorded its extracted
+  // `data/` dir. Needs the server's real cacheRoot, so it runs once that arrives.
+  useEffect(() => {
+    if (cacheRoot) pruneExtractedBundleDirs(cacheRoot)
+  }, [cacheRoot, pruneExtractedBundleDirs])
+  const [layerSettings, setLayerSettings] = useState<
+    Record<string, LayerSettings>
+  >({})
   // Effective intensity window NiiVue applied per layer (incl. auto-seeded
   // thresholds), reported back from NiivueStage so the UI can show the real
   // cutoff instead of a bare "auto".
-  const [resolvedWindows, setResolvedWindows] = useState<Record<string, ResolvedWindow>>({})
+  const [resolvedWindows, setResolvedWindows] = useState<
+    Record<string, ResolvedWindow>
+  >({})
   const handleResolvedWindows = useCallback(
     (next: Record<string, ResolvedWindow>) => {
       setResolvedWindows((prev) => {
@@ -220,30 +313,52 @@ export function App(): JSX.Element {
               prev[id].min === next[id].min &&
               prev[id].max === next[id].max &&
               prev[id].robustMin === next[id].robustMin &&
-              prev[id].robustMax === next[id].robustMax
+              prev[id].robustMax === next[id].robustMax,
           )
         return unchanged ? prev : next
       })
     },
-    []
+    [],
   )
   // Per-layer world-space bounding boxes, reported from NiivueStage after load,
   // used to flag overlays that land in a different space than the base.
-  const [layerExtents, setLayerExtents] = useState<Record<string, LayerExtent>>({})
-  const handleLayerExtents = useCallback((next: Record<string, LayerExtent>) => {
-    setLayerExtents((prev) => (extentsEqual(prev, next) ? prev : next))
-  }, [])
-  const [overlayIds, setOverlayIds] = useState<Set<string>>(() => new Set())
-  // Phones land on a 2D axial slice (clearer on a small screen than the 3D
-  // render); desktop/iPad keep the 3D render default.
-  const [viewMode, setViewMode] = useState<ViewModeId>(() =>
-    isPhoneViewport() ? 'axial' : DEFAULT_VIEW_MODE
+  const [layerExtents, setLayerExtents] = useState<Record<string, LayerExtent>>(
+    {},
   )
+  const handleLayerExtents = useCallback(
+    (next: Record<string, LayerExtent>) => {
+      setLayerExtents((prev) => (extentsEqual(prev, next) ? prev : next))
+    },
+    [],
+  )
+  const [overlayIds, setOverlayIds] = useState<Set<string>>(() => new Set())
+  // Phones land on a 2D axial slice (clearer on a small screen); desktop/iPad
+  // reopen the view the user last picked, else the multiplanar default.
+  const [viewMode, setViewMode] = useState<ViewModeId>(() =>
+    isPhoneViewport()
+      ? 'axial'
+      : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
+  )
+  const [uiMode, setUiMode] = useState<UiMode>(() =>
+    loadRememberedUiMode(isAppleMobile() ? 'full' : 'express'),
+  )
+  const isExpress = uiMode === 'express'
+  const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
   const [atlasId, setAtlasId] = useState<string | null>(null)
-  const [locationReadout, setLocationReadout] = useState<NiiVueLocation | null>(null)
+  // The viewer's load progress (which preview level is showing), kept for the
+  // viewer-title tooltip rather than shown on the stage.
+  const [renderStatus, setRenderStatus] = useState('')
+  const [locationReadout, setLocationReadout] = useState<NiiVueLocation | null>(
+    null,
+  )
   // One-shot crosshair "go-to" request handed to NiivueStage; a fresh object per
   // request re-fires the move even for a repeated coordinate.
-  const [crosshairTarget, setCrosshairTarget] = useState<{ mm: [number, number, number] } | null>(null)
+  const [crosshairTarget, setCrosshairTarget] = useState<{
+    mm: [number, number, number]
+  } | null>(null)
+  // Block (volume-chunk explode) settings, applied across every loaded layer and
+  // persisted into the bundle/session.
+  const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
   const goToCoordinate = useCallback((x: number, y: number, z: number) => {
     setCrosshairTarget({ mm: [x, y, z] })
   }, [])
@@ -257,27 +372,52 @@ export function App(): JSX.Element {
     updateClipPlane,
     changeClipPlaneDepth,
     resetClipPlanes,
-    applyClipPlanes
+    applyClipPlanes,
   } = useClipPlanes()
   const [splitPercent, setSplitPercent] = useState(52)
   const [desktopZoom, setDesktopZoom] = useState(1)
   const [mouseContext, setMouseContext] = useState<MouseContext>(null)
   // On a phone both side panels start collapsed (off-screen drawers) so the
   // viewer is the landing surface; on desktop/iPad they start open.
-  const [isFileListCollapsed, setIsFileListCollapsed] = useState(isPhoneViewport)
-  const [isControlsCollapsed, setIsControlsCollapsed] = useState(isPhoneViewport)
+  const [isFileListCollapsed, setIsFileListCollapsed] =
+    useState(isPhoneViewport)
+  const [isControlsCollapsed, setIsControlsCollapsed] =
+    useState(isPhoneViewport)
   const [isRenderMaximized, setIsRenderMaximized] = useState(false)
   const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('inspect')
   const [isOpeningOverlay, setIsOpeningOverlay] = useState(false)
   const [isExportingBundle, setIsExportingBundle] = useState(false)
   const [isImportingBundle, setIsImportingBundle] = useState(false)
+  // Mirrors `isImportingBundle` for re-entrancy: the state value a handler closes
+  // over is stale within the same tick, so the button's `disabled` reads state
+  // while the handlers guard on the ref.
+  const isImportingBundleRef = useRef(false)
+  const reopenAttemptedRef = useRef(false)
+  const [reopeningPath, setReopeningPath] = useState<string | null>(null)
+  // Stays true while one dataset is swapped for another (the manifest is
+  // briefly empty then), so only "nothing open" brings back Welcome.
+  const [isWorkspaceVisible, setIsWorkspaceVisible] = useState(false)
+  // Surface meshes, in draw order. They outlive dataset switches and keep the
+  // workspace open on their own, as Surfice shows a mesh with no volume.
+  const [meshes, setMeshes] = useState<MeshLayer[]>([])
+  const [isOpeningMesh, setIsOpeningMesh] = useState(false)
+  const isBusyOpening = isOpeningDataset || isImportingBundle
+  useEffect(() => {
+    if (items.length > 0 || meshes.length > 0) setIsWorkspaceVisible(true)
+    else if (!isBusyOpening) setIsWorkspaceVisible(false)
+  }, [items.length, meshes.length, isBusyOpening])
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
-  const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } = useTerminalDock()
-  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen
+  const [isShareMenuOpen, setIsShareMenuOpen] = useState(false)
+  const shareMenuRef = useRef<HTMLDivElement | null>(null)
+  const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } =
+    useTerminalDock()
+  // The express view has no dock; the terminal keeps its state for the
+  // workbench.
+  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen && !isExpress
 
   useEffect(() => {
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
@@ -313,28 +453,33 @@ export function App(): JSX.Element {
       setIsFileListCollapsed(true)
       setIsControlsCollapsed(true)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Narrow desktop windows (down to the 900px minimum) can't fit both side
+  // panels plus Browse and Viewer, so fold the dataset panel to its rail when
+  // the window starts or becomes narrow. Only on that transition: the user can
+  // reopen it and it stays open until the window crosses the line again. The
+  // Inspect panel stays, and Browse still selects volumes. Phones have their
+  // own drawer defaults above.
   useEffect(() => {
-    if (!isRecentMenuOpen) return
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const narrow = window.matchMedia(
+      `(max-width: ${AUTO_COLLAPSE_WIDTH - 1}px)`,
+    )
+    const collapseIfNarrow = (): void => {
+      if (narrow.matches && !isPhoneViewport()) setIsFileListCollapsed(true)
+    }
+    collapseIfNarrow()
+    narrow.addEventListener('change', collapseIfNarrow)
+    return () => narrow.removeEventListener('change', collapseIfNarrow)
+  }, [])
 
-    function handleMouseDown(event: MouseEvent): void {
-      if (!recentMenuRef.current) return
-      if (recentMenuRef.current.contains(event.target as Node)) return
-      setIsRecentMenuOpen(false)
-    }
-    function handleKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') setIsRecentMenuOpen(false)
-    }
-
-    window.addEventListener('mousedown', handleMouseDown)
-    window.addEventListener('keydown', handleKey)
-    return () => {
-      window.removeEventListener('mousedown', handleMouseDown)
-      window.removeEventListener('keydown', handleKey)
-    }
-  }, [isRecentMenuOpen])
+  useDismissableMenu(isRecentMenuOpen, recentMenuRef, () =>
+    setIsRecentMenuOpen(false),
+  )
+  useDismissableMenu(isShareMenuOpen, shareMenuRef, () =>
+    setIsShareMenuOpen(false),
+  )
 
   const {
     query,
@@ -342,22 +487,18 @@ export function App(): JSX.Element {
     selectedImageTypes,
     selectedFormats,
     selectedDtypes,
-    activeFilterItemId,
     filteredItems,
     setQuery,
-    setActiveFilterItemId,
     toggleRole,
     toggleImageType,
     toggleFormat,
     toggleDtype,
-    clearFilters
+    clearFilters,
   } = useVolumeFilters(items)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; dataset-scoped filters reset only when the backing dataset changes.
   useEffect(() => {
     clearFilters()
-    setActiveFilterItemId(null)
-    // Reset dataset-scoped filters when the backing dataset changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasetRevision])
 
   const { metadata, metadataStatus } = useVolumeMetadata(selected)
@@ -371,38 +512,73 @@ export function App(): JSX.Element {
         isAtlas: atlasId === selected.id,
         ...resolveColormap(
           atlasId === selected.id
-            ? layerColormapForItem(selected, layerSettings, DEFAULT_ATLAS_COLORMAP)
-            : baseColormap(layerColormapForItem(selected, layerSettings, DEFAULT_BASE_COLORMAP))
+            ? layerColormapForItem(
+                selected,
+                layerSettings,
+                DEFAULT_ATLAS_COLORMAP,
+              )
+            : baseColormap(
+                layerColormapForItem(
+                  selected,
+                  layerSettings,
+                  DEFAULT_BASE_COLORMAP,
+                ),
+              ),
         ),
         ...windowForItem(selected.id, layerSettings),
         // The base is always fully opaque (its row has no opacity slider); only
         // its `hidden` flag applies. Reading a stored opacity here would leak a
         // value left over from when this volume was an overlay/atlas.
-        opacity: layerSettings[selected.id]?.hidden ? 0 : 1
-      }
+        opacity: layerSettings[selected.id]?.hidden ? 0 : 1,
+      },
     ]
 
     let overlayIndex = 0
     for (const item of items) {
-      if (!overlayIds.has(item.id) || item.id === selected.id || item.id === atlasId) continue
+      if (
+        !overlayIds.has(item.id) ||
+        item.id === selected.id ||
+        item.id === atlasId
+      )
+        continue
       layers.push({
         item,
         kind: 'overlay',
-        ...resolveColormap(layerColormapForItem(item, layerSettings, overlayColormapForIndex(overlayIndex))),
+        ...resolveColormap(
+          layerColormapForItem(
+            item,
+            layerSettings,
+            overlayColormapForIndex(overlayIndex),
+          ),
+        ),
         ...windowForItem(item.id, layerSettings),
-        opacity: renderOpacityForItem(item.id, layerSettings, DEFAULT_OVERLAY_OPACITY)
+        opacity: renderOpacityForItem(
+          item.id,
+          layerSettings,
+          DEFAULT_OVERLAY_OPACITY,
+        ),
       })
       overlayIndex += 1
     }
 
-    const atlasItem = atlasId ? items.find((item) => item.id === atlasId) ?? null : null
+    const atlasItem = atlasId
+      ? (items.find((item) => item.id === atlasId) ?? null)
+      : null
     if (atlasItem && atlasItem.id !== selected.id) {
       layers.push({
         item: atlasItem,
         kind: 'overlay',
         isAtlas: true,
-        colormap: layerColormapForItem(atlasItem, layerSettings, DEFAULT_ATLAS_COLORMAP),
-        opacity: renderOpacityForItem(atlasItem.id, layerSettings, DEFAULT_ATLAS_OPACITY)
+        colormap: layerColormapForItem(
+          atlasItem,
+          layerSettings,
+          DEFAULT_ATLAS_COLORMAP,
+        ),
+        opacity: renderOpacityForItem(
+          atlasItem.id,
+          layerSettings,
+          DEFAULT_ATLAS_OPACITY,
+        ),
       })
     }
 
@@ -441,15 +617,22 @@ export function App(): JSX.Element {
   function changeLayerColormap(itemId: string, nextColormap: string): void {
     setLayerSettings((current) => {
       if (current[itemId]?.colormap === nextColormap) return current
-      return { ...current, [itemId]: { ...current[itemId], colormap: nextColormap } }
+      return {
+        ...current,
+        [itemId]: { ...current[itemId], colormap: nextColormap },
+      }
     })
   }
 
   function changeLayerWindow(itemId: string, min: number, max: number): void {
     setLayerSettings((current) => {
       const existing = current[itemId]?.window
-      if (existing && existing.min === min && existing.max === max) return current
-      return { ...current, [itemId]: { ...current[itemId], window: { min, max } } }
+      if (existing && existing.min === min && existing.max === max)
+        return current
+      return {
+        ...current,
+        [itemId]: { ...current[itemId], window: { min, max } },
+      }
     })
   }
 
@@ -476,7 +659,10 @@ export function App(): JSX.Element {
       const existing = current[itemId]
       if (existing?.opacity === clamped && !existing?.hidden) return current
       // Adjusting opacity implies the layer should be visible, so clear hidden.
-      return { ...current, [itemId]: { ...existing, opacity: clamped, hidden: false } }
+      return {
+        ...current,
+        [itemId]: { ...existing, opacity: clamped, hidden: false },
+      }
     })
   }
 
@@ -487,6 +673,7 @@ export function App(): JSX.Element {
     })
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: renderLayers is the trigger; a new layer stack invalidates the crosshair readout.
   useEffect(() => {
     setLocationReadout(null)
   }, [renderLayers])
@@ -530,8 +717,11 @@ export function App(): JSX.Element {
       }
 
       const nextManifest = await refreshDesktopManifestData()
-      const overlayItem = nextManifest?.items.find((item) => item.id === result.id) ?? null
-      const isAtlas = overlayItem ? await volumeHasAtlasLabelSidecar(overlayItem) : false
+      const overlayItem =
+        nextManifest?.items.find((item) => item.id === result.id) ?? null
+      const isAtlas = overlayItem
+        ? await volumeHasAtlasLabelSidecar(overlayItem)
+        : false
       if (isAtlas) {
         setAtlasId(result.id)
         setLayerHidden(result.id, false)
@@ -541,26 +731,66 @@ export function App(): JSX.Element {
           next.delete(result.id)
           return next
         })
-        setStatus(`Atlas ${result.label} added with label sidecar.`)
+        setStatus(`Atlas ${result.label} added with label sidecar.`, 'success')
       } else {
         setOverlayIds((current) => {
           const next = new Set(current)
           next.add(result.id)
           return next
         })
-        setStatus(`Overlay ${result.label} added to every volume.`)
+        setStatus(`Overlay ${result.label} added to every volume.`, 'success')
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsOpeningOverlay(false)
     }
   }
 
+  async function loadMeshes(): Promise<void> {
+    if (isOpeningMesh) return
+
+    setIsOpeningMesh(true)
+    setStatus('Choosing surface meshes.')
+    try {
+      const added = await openMeshFiles(meshes.length)
+      if (!added) {
+        setStatus('Mesh load cancelled.')
+        return
+      }
+      // A mesh on its own is a 3D object; slices of nothing would be blank.
+      if (items.length === 0) setViewMode('render')
+      setMeshes((current) => [...current, ...added])
+      setStatus(
+        added.length === 1
+          ? `Mesh ${added[0].name} added.`
+          : `${added.length} meshes added.`,
+        'success',
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setIsOpeningMesh(false)
+    }
+  }
+
+  function updateMesh(id: string, patch: Partial<MeshLayer>): void {
+    setMeshes((current) =>
+      current.map((mesh) => (mesh.id === id ? { ...mesh, ...patch } : mesh)),
+    )
+  }
+
+  function removeMesh(id: string): void {
+    setMeshes((current) => current.filter((mesh) => mesh.id !== id))
+  }
+
   // Compose the current view + its ordered volume ids for export/share. Order
   // is base → overlays → atlas; the copied volumes derive from the same list so
   // files and view stay in lockstep, and the importer replays it in that order.
-  function composeCurrentBundle(base: DesktopItem): { volumeIds: string[]; view: BundleViewState } {
+  function composeCurrentBundle(base: DesktopItem): {
+    volumeIds: string[]
+    view: BundleViewState
+  } {
     const crosshairMm = locationReadout?.mm
     const view = buildBundleViewState({
       baseId: base.id,
@@ -573,7 +803,8 @@ export function App(): JSX.Element {
       crosshairPos:
         Array.isArray(crosshairMm) && crosshairMm.length >= 3
           ? [crosshairMm[0], crosshairMm[1], crosshairMm[2]]
-          : null
+          : null,
+      blocks,
     })
     return { volumeIds: view.volumes.map((volume) => volume.id), view }
   }
@@ -581,19 +812,21 @@ export function App(): JSX.Element {
   async function handleExportBundle(): Promise<void> {
     if (isExportingBundle) return
     if (!selected) {
-      setStatus('Select a volume before exporting a bundle.')
+      setStatus('Select a volume before exporting a bundle.', 'error')
       return
     }
 
     const { volumeIds, view } = composeCurrentBundle(selected)
 
     setIsExportingBundle(true)
-    setStatus(`Exporting bundle (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`)
+    setStatus(
+      `Exporting bundle (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+    )
     try {
       const result = await exportDatasetBundle({
         defaultName: selected.label ?? 'neurovue-bundle',
         volumeIds,
-        view
+        view,
       })
       if (!result) {
         setStatus('Bundle export cancelled.')
@@ -601,10 +834,11 @@ export function App(): JSX.Element {
       }
       setStatus(
         `Exported ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
-          `(${formatBundleBytes(result.totalBytes)}) to ${result.bundlePath}.`
+          `(${formatBundleBytes(result.totalBytes)}) to ${result.bundlePath}.`,
+        'success',
       )
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsExportingBundle(false)
     }
@@ -613,7 +847,7 @@ export function App(): JSX.Element {
   async function handleShareBundle(): Promise<void> {
     if (isSharingBundle) return
     if (!selected || items.length === 0) {
-      setStatus('Open a dataset before sharing.')
+      setStatus('Open a dataset before sharing.', 'error')
       return
     }
 
@@ -622,30 +856,63 @@ export function App(): JSX.Element {
     // sensible default; the rest show up in the recipient's dataset list.
     const { view } = composeCurrentBundle(selected)
     const volumeIds = items.map((item) => item.id)
-    const shareName = bidsName || datasetRoot?.split('/').pop() || selected.label || 'neurovue-dataset'
+    const shareName =
+      bidsName ||
+      datasetRoot?.split('/').pop() ||
+      selected.label ||
+      'neurovue-dataset'
 
     setIsSharingBundle(true)
-    setStatus(`Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`)
+    setStatus(
+      `Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+    )
     try {
       const result = await shareViewViaAirDrop({
         name: shareName,
         volumeIds,
-        view
+        view,
       })
       setStatus(
         `AirDrop sheet opened — ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
-          `(${formatBundleBytes(result.totalBytes)}).`
+          `(${formatBundleBytes(result.totalBytes)}).`,
+        'success',
       )
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsSharingBundle(false)
     }
   }
 
-  async function handleImportBundle(): Promise<void> {
-    if (isImportingBundle || isOpeningDataset) return
+  const toggleUiMode = () => {
+    const next: UiMode = isExpress ? 'full' : 'express'
+    setUiMode(next)
+    rememberUiMode(next)
+  }
 
+  useNativeMenu({
+    'express-view': toggleUiMode,
+    'open-file': openLocalVolumeFile,
+    'open-folder': openLocalDataset,
+    'open-mesh': loadMeshes,
+    'open-bundle': handleImportBundle,
+    'open-sample': async () => {
+      if (samplePath) await openSampleDataset()
+      else setStatus('This build has no sample dataset.')
+    },
+    'export-bundle': handleExportBundle,
+    share: () =>
+      isAirdropAvailable
+        ? handleShareBundle()
+        : setStatus('AirDrop is not available on this Mac.'),
+  })
+
+  // Hold the importing flag across the file dialog too, so the button stays
+  // disabled while the picker is open.
+  async function handleImportBundle(): Promise<void> {
+    if (isImportingBundleRef.current || isOpeningDataset) return
+
+    isImportingBundleRef.current = true
     setIsImportingBundle(true)
     setStatus('Choosing bundle to open.')
     try {
@@ -654,77 +921,145 @@ export function App(): JSX.Element {
         setStatus('Bundle open cancelled.')
         return
       }
-
-      const bundle = await readBundle(path)
-      if (bundle.manifest?.nvbundle == null) {
-        setStatus('Not a NeuroVue bundle (no manifest.json).')
-        return
-      }
-
-      // Load the bundle's copied volumes as the working dataset (the data/ dir
-      // opens like any dataset; each volume's new id is its filename stem).
-      await openRecentDataset(bundle.dataDir)
-      const nextManifest = await refreshDesktopManifestData()
-      const loadedIds = new Set((nextManifest?.items ?? []).map((item) => item.id))
-      if (loadedIds.size === 0) {
-        // openRecentDataset already surfaced the failure via setStatus.
-        return
-      }
-
-      // Map each recorded (original-dataset) id → its freshly-registered id.
-      const remap = new Map<string, string>()
-      for (const volume of bundle.manifest.volumes) {
-        remap.set(volume.id, bundleVolumeId(volume.data))
-      }
-
-      const view = bundle.manifest.view
-      if (view) {
-        const nextSettings: Record<string, LayerSettings> = {}
-        const nextOverlays = new Set<string>()
-        let nextAtlas: string | null = null
-        let nextBase: string | null = null
-
-        for (const docVolume of view.volumes) {
-          const newId = remap.get(docVolume.id) ?? docVolume.id
-          if (!loadedIds.has(newId)) continue
-
-          const settings: LayerSettings = {}
-          if (docVolume.colormap !== undefined) settings.colormap = docVolume.colormap
-          if (docVolume.opacity !== undefined) settings.opacity = docVolume.opacity
-          if (docVolume.hidden !== undefined) settings.hidden = docVolume.hidden
-          if (docVolume.calMin !== undefined && docVolume.calMax !== undefined) {
-            settings.window = { min: docVolume.calMin, max: docVolume.calMax }
-          }
-          if (Object.keys(settings).length > 0) nextSettings[newId] = settings
-
-          if (docVolume.role === 'base') nextBase = newId
-          else if (docVolume.role === 'overlay') nextOverlays.add(newId)
-          else if (docVolume.role === 'atlas') nextAtlas = newId
-        }
-
-        setLayerSettings(nextSettings)
-        setOverlayIds(nextOverlays)
-        setAtlasId(nextAtlas)
-        if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
-        applyClipPlanes(view.scene?.clipPlanes ?? [])
-        if (nextBase) setSelectedId(nextBase)
-        const crosshair = view.scene?.crosshairPos
-        if (Array.isArray(crosshair) && crosshair.length >= 3) {
-          setCrosshairTarget({ mm: [crosshair[0], crosshair[1], crosshair[2]] })
-        }
-      }
-
-      const failures = bundleVerifyFailures(bundle.verification)
-      const integrity =
-        failures.length > 0 ? ` ⚠ ${failures.length} file(s) failed the integrity check` : ''
-      setStatus(`Imported ${bundle.manifest.volumes.length} volume(s) from bundle.${integrity}`)
+      await runBundleImport(path)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
+      isImportingBundleRef.current = false
       setIsImportingBundle(false)
     }
   }
 
+  // A bundle must be re-verified and its view replayed, not opened as a plain
+  // directory.
+  /** False when a dataset failed to open; bundle imports report their own errors. */
+  async function openRecentEntry(path: string): Promise<boolean> {
+    if (!isBundlePath(path)) return openRecentDataset(path)
+    await importBundleFromPath(path)
+    return true
+  }
+
+  // Like VS Code reopening its last folder: once startup finds nothing to open
+  // (a dataset named by env or NeuroFlow wins), reopen the most recent one. A
+  // failure (moved, deleted) lands on Welcome with the error in the status line
+  // and keeps the entry, in case the drive is just unmounted.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once, when startup resolves; later recents/pref changes must not trigger a reopen.
+  useEffect(() => {
+    if (!isStartupResolved || reopenAttemptedRef.current) return
+    reopenAttemptedRef.current = true
+    const last = recentDatasets[0]
+    if (!reopenLast || !last || items.length > 0) return
+    setReopeningPath(last)
+    void openRecentEntry(last)
+      .then((opened) => {
+        if (opened) return
+        setStatus(
+          `Couldn't reopen ${recentDatasetLabel(last)}. It may have been moved, or be on a drive that isn't connected.`,
+          'error',
+        )
+      })
+      .finally(() => setReopeningPath(null))
+  }, [isStartupResolved])
+
+  /** Re-open a bundle straight from recents, skipping the file dialog. */
+  async function importBundleFromPath(path: string): Promise<void> {
+    if (isImportingBundleRef.current || isOpeningDataset) return
+
+    isImportingBundleRef.current = true
+    setIsImportingBundle(true)
+    try {
+      await runBundleImport(path)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      isImportingBundleRef.current = false
+      setIsImportingBundle(false)
+    }
+  }
+
+  // Verify a `.nvbundle`, open its extracted volumes as the working dataset, and
+  // replay the recorded view. Throws; callers own the importing flag.
+  async function runBundleImport(path: string): Promise<void> {
+    const bundle = await readBundle(path)
+    if (bundle.manifest?.nvbundle == null) {
+      setStatus('This file is not a NeuroVue bundle.', 'error')
+      return
+    }
+
+    // Load the bundle's copied volumes as the working dataset (the data/ dir
+    // opens like any dataset; each volume's new id is its filename stem), but
+    // record the bundle itself in recents — `dataDir` is a temp extraction.
+    // A failed open already put its error in the status line; stop here so the
+    // previous dataset isn't reported as "imported" over it.
+    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) return
+    const nextManifest = await refreshDesktopManifestData()
+    const loadedIds = new Set(
+      (nextManifest?.items ?? []).map((item) => item.id),
+    )
+    if (loadedIds.size === 0) {
+      // openRecentDataset already surfaced the failure via setStatus.
+      return
+    }
+
+    // Map each recorded (original-dataset) id → its freshly-registered id.
+    const remap = new Map<string, string>()
+    const newIds = bundleVolumeIds(
+      bundle.manifest.volumes.map((volume) => volume.data),
+    )
+    for (const volume of bundle.manifest.volumes) {
+      remap.set(volume.id, newIds.get(volume.data) ?? volume.id)
+    }
+
+    const view = bundle.manifest.view
+    if (view) {
+      const nextSettings: Record<string, LayerSettings> = {}
+      const nextOverlays = new Set<string>()
+      let nextAtlas: string | null = null
+      let nextBase: string | null = null
+
+      for (const docVolume of view.volumes) {
+        const newId = remap.get(docVolume.id) ?? docVolume.id
+        if (!loadedIds.has(newId)) continue
+
+        const settings: LayerSettings = {}
+        if (docVolume.colormap !== undefined)
+          settings.colormap = docVolume.colormap
+        if (docVolume.opacity !== undefined)
+          settings.opacity = docVolume.opacity
+        if (docVolume.hidden !== undefined) settings.hidden = docVolume.hidden
+        if (docVolume.calMin !== undefined && docVolume.calMax !== undefined) {
+          settings.window = { min: docVolume.calMin, max: docVolume.calMax }
+        }
+        if (Object.keys(settings).length > 0) nextSettings[newId] = settings
+
+        if (docVolume.role === 'base') nextBase = newId
+        else if (docVolume.role === 'overlay') nextOverlays.add(newId)
+        else if (docVolume.role === 'atlas') nextAtlas = newId
+      }
+
+      setLayerSettings(nextSettings)
+      setOverlayIds(nextOverlays)
+      setAtlasId(nextAtlas)
+      if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
+      setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
+      applyClipPlanes(view.scene?.clipPlanes ?? [])
+      if (nextBase) setSelectedId(nextBase)
+      const crosshair = view.scene?.crosshairPos
+      if (Array.isArray(crosshair) && crosshair.length >= 3) {
+        setCrosshairTarget({ mm: [crosshair[0], crosshair[1], crosshair[2]] })
+      }
+    }
+
+    const failures = bundleVerifyFailures(bundle.verification)
+    const integrity =
+      failures.length > 0
+        ? ` ⚠ ${failures.length} file(s) failed the integrity check`
+        : ''
+    setStatus(
+      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from bundle.${integrity}`,
+      failures.length > 0 ? 'error' : 'success',
+    )
+  }
 
   useEffect(() => {
     if (!isRenderMaximized) return
@@ -735,25 +1070,37 @@ export function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [isRenderMaximized])
 
-  const warmStatus = warmProgressLabel(warmProgress, datasetRoot)
+  const warmStatus = warmProgressLabel(warmProgress)
   // The atlas layer's display name, used to bind the region readout to the named
   // atlas (only atlas/label volumes carry per-voxel region labels).
   const atlasName = useMemo(
-    () => (atlasId ? items.find((item) => item.id === atlasId)?.label ?? null : null),
-    [atlasId, items]
+    () =>
+      atlasId
+        ? (items.find((item) => item.id === atlasId)?.label ?? null)
+        : null,
+    [atlasId, items],
   )
   const locationStatus = useMemo(
     () => locationStatusLabel(locationReadout, atlasName),
-    [locationReadout, atlasName]
+    [locationReadout, atlasName],
   )
   const slicePosition = useMemo(
     () => slicePositionLabel(locationReadout, viewMode),
-    [locationReadout, viewMode]
+    [locationReadout, viewMode],
   )
+
+  // Starting up or reopening the last dataset shows only what's pending, so a
+  // relaunch that restores a dataset doesn't flash the full Welcome screen.
+  const welcomeOpeningLabel = !isStartupResolved
+    ? 'Starting NeuroVue…'
+    : reopeningPath
+      ? `Reopening ${recentDatasetLabel(reopeningPath)}…`
+      : null
+  const showWelcome = welcomeOpeningLabel !== null || !isWorkspaceVisible
 
   return (
     <main
-      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''}`}
+      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''} ${isExpress ? 'is-express' : ''}`}
       style={{ '--terminal-height': `${terminalHeight}px` } as CSSProperties}
     >
       <header className="nv-topbar">
@@ -763,32 +1110,58 @@ export function App(): JSX.Element {
           </div>
           <div>
             <h1>NeuroVue</h1>
-            <p title={[datasetRoot, bidsDatasetDoi && `DOI: ${bidsDatasetDoi}`].filter(Boolean).join(' · ') || undefined}>
-              {bidsName || datasetRoot || serverUrl || 'Resolving local server'}
+            <p
+              title={
+                [datasetRoot, bidsDatasetDoi && `DOI: ${bidsDatasetDoi}`]
+                  .filter(Boolean)
+                  .join(' · ') || undefined
+              }
+            >
+              {showWelcome
+                ? 'No dataset open'
+                : isSampleDataset
+                  ? datasetName
+                  : bidsName ||
+                    datasetRoot ||
+                    serverUrl ||
+                    'Resolving local server'}
             </p>
+            {datasetNotice && !showWelcome ? (
+              <p className="nv-dataset-notice" role="status">
+                {datasetNotice}
+              </p>
+            ) : null}
           </div>
         </div>
 
-        <div className="nv-toolbar" aria-label="Viewer controls">
-          <button
-            aria-label={isFileListCollapsed ? 'Open dataset panel' : 'Close dataset panel'}
-            aria-expanded={!isFileListCollapsed}
-            className={`nv-icon-button nv-mobile-only ${!isFileListCollapsed ? 'is-active' : ''}`}
-            onClick={() => {
-              setIsFileListCollapsed((collapsed) => !collapsed)
-              setIsControlsCollapsed(true)
-            }}
-            title="Dataset panel"
-            type="button"
-          >
-            <Database size={16} />
-          </button>
+        <fieldset className="nv-toolbar" aria-label="Viewer controls">
+          {showWelcome ? null : (
+            <button
+              aria-label={
+                isFileListCollapsed
+                  ? 'Open dataset panel'
+                  : 'Close dataset panel'
+              }
+              aria-expanded={!isFileListCollapsed}
+              className={`nv-icon-button nv-mobile-only ${!isFileListCollapsed ? 'is-active' : ''}`}
+              onClick={() => {
+                setIsFileListCollapsed((collapsed) => !collapsed)
+                setIsControlsCollapsed(true)
+              }}
+              title="Dataset panel"
+              type="button"
+            >
+              <Database size={16} />
+            </button>
+          )}
           <div className="nv-open-group" ref={recentMenuRef}>
             <button
               className="nv-tool-button"
               disabled={isOpeningDataset}
               onClick={() => setIsRecentMenuOpen((open) => !open)}
-              title={cacheRoot ? `Datasets. Temp cache: ${cacheRoot}` : 'Datasets'}
+              title={
+                cacheRoot ? `Datasets. Temp cache: ${cacheRoot}` : 'Datasets'
+              }
               type="button"
               aria-haspopup="menu"
               aria-expanded={isRecentMenuOpen}
@@ -823,24 +1196,65 @@ export function App(): JSX.Element {
                   role="menuitem"
                 >
                   <FolderOpen size={14} />
-                  <span className="nv-recent-item-name">Open dataset directory…</span>
+                  <span className="nv-recent-item-name">
+                    Open dataset directory…
+                  </span>
                 </button>
+                <button
+                  aria-label="Open bundle"
+                  className="nv-recent-item nv-recent-open"
+                  disabled={isImportingBundle || isOpeningDataset}
+                  onClick={() => {
+                    setIsRecentMenuOpen(false)
+                    void handleImportBundle()
+                  }}
+                  title="Open a NeuroVue bundle (.nvbundle) — loads its volumes and restores the saved view"
+                  type="button"
+                  role="menuitem"
+                >
+                  {isImportingBundle ? (
+                    <LoaderCircle className="nv-spin" size={14} />
+                  ) : (
+                    <PackageOpen size={14} />
+                  )}
+                  <span className="nv-recent-item-name">Open bundle…</span>
+                </button>
+                {samplePath ? (
+                  <button
+                    className="nv-recent-item nv-recent-open"
+                    disabled={isBusyOpening}
+                    onClick={() => {
+                      setIsRecentMenuOpen(false)
+                      void openSampleDataset()
+                    }}
+                    title="Open the MNI152 template that ships with NeuroVue"
+                    type="button"
+                    role="menuitem"
+                  >
+                    <Brain size={14} />
+                    <span className="nv-recent-item-name">
+                      Open sample data
+                    </span>
+                  </button>
+                ) : null}
                 {recentDatasets.length > 0 ? (
                   <>
-                    <div className="nv-recent-divider" role="separator" />
+                    <hr className="nv-recent-divider" />
                     {recentDatasets.map((path) => (
                       <div key={path} className="nv-recent-row">
                         <button
                           className="nv-recent-item"
                           onClick={() => {
                             setIsRecentMenuOpen(false)
-                            void openRecentDataset(path)
+                            void openRecentEntry(path)
                           }}
                           title={path}
                           type="button"
                           role="menuitem"
                         >
-                          <span className="nv-recent-item-name">{recentDatasetLabel(path)}</span>
+                          <span className="nv-recent-item-name">
+                            {recentDatasetLabel(path)}
+                          </span>
                           <span className="nv-recent-item-path">{path}</span>
                         </button>
                         <button
@@ -862,391 +1276,573 @@ export function App(): JSX.Element {
             ) : null}
           </div>
 
-          <button
-            aria-label="Reset clip planes"
-            className="nv-icon-button"
-            title="Reset clip planes"
-            type="button"
-            onClick={resetClipPlanes}
-          >
-            <RotateCcw size={16} />
-          </button>
-          <button
-            aria-label="Save correction patch"
-            className="nv-icon-button"
-            title="Save correction patch"
-            type="button"
-            onClick={async () => {
-              try {
-                await savePatch(serverUrl, selected, clipPlanes, backend)
-                setStatus(`Correction patch saved for ${selected?.label ?? 'volume'}.`)
-              } catch (error) {
-                setStatus(error instanceof Error ? error.message : String(error))
-              }
-            }}
-          >
-            <Save size={16} />
-          </button>
-          <button
-            aria-label="Export bundle"
-            className="nv-icon-button"
-            title={
-              selected
-                ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
-                : 'Select a volume to export a bundle'
-            }
-            type="button"
-            disabled={!selected || isExportingBundle}
-            onClick={handleExportBundle}
-          >
-            {isExportingBundle ? (
-              <LoaderCircle className="nv-spin" size={16} />
-            ) : (
-              <Package size={16} />
-            )}
-          </button>
-          <button
-            aria-label="Open bundle"
-            className="nv-icon-button"
-            title="Open a NeuroVue bundle (.nvbundle) — loads its volumes and restores the saved view"
-            type="button"
-            disabled={isImportingBundle || isOpeningDataset}
-            onClick={handleImportBundle}
-          >
-            {isImportingBundle ? (
-              <LoaderCircle className="nv-spin" size={16} />
-            ) : (
-              <PackageOpen size={16} />
-            )}
-          </button>
-          {isAirdropAvailable ? (
+          {/* With AirDrop there are two ways to share, so group them under one
+              menu; without it, export is the only one, so skip the menu. */}
+          {showWelcome ? null : isAirdropAvailable ? (
+            <div className="nv-open-group" ref={shareMenuRef}>
+              <button
+                className="nv-tool-button"
+                onClick={() => setIsShareMenuOpen((open) => !open)}
+                title="Export this dataset as a bundle, or send it via AirDrop"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={isShareMenuOpen}
+              >
+                {isExportingBundle || isSharingBundle ? (
+                  <LoaderCircle className="nv-spin" size={15} />
+                ) : (
+                  <Share2 size={15} />
+                )}
+                <span>Share</span>
+                <ChevronDown size={14} />
+              </button>
+              {isShareMenuOpen ? (
+                <div className="nv-recent-menu nv-share-menu" role="menu">
+                  <button
+                    aria-label="Export bundle"
+                    className="nv-recent-item nv-recent-open"
+                    disabled={!selected || isExportingBundle}
+                    onClick={() => {
+                      setIsShareMenuOpen(false)
+                      void handleExportBundle()
+                    }}
+                    title={
+                      selected
+                        ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                        : 'Select a volume to export a bundle'
+                    }
+                    type="button"
+                    role="menuitem"
+                  >
+                    <Download size={14} />
+                    <span className="nv-menu-item-text">
+                      <span className="nv-recent-item-name">
+                        Export bundle…
+                      </span>
+                      <span className="nv-recent-item-path">
+                        {selected
+                          ? 'Volumes plus this view, as a .nvbundle file'
+                          : 'Select a volume first'}
+                      </span>
+                    </span>
+                  </button>
+                  {isAirdropAvailable ? (
+                    <button
+                      aria-label="Share dataset via AirDrop"
+                      className="nv-recent-item nv-recent-open"
+                      disabled={!selected || isSharingBundle}
+                      onClick={() => {
+                        setIsShareMenuOpen(false)
+                        void handleShareBundle()
+                      }}
+                      title={
+                        selected
+                          ? 'AirDrop the whole dataset — recipient can browse and pick any volume'
+                          : 'Open a dataset to share via AirDrop'
+                      }
+                      type="button"
+                      role="menuitem"
+                    >
+                      <Send size={14} />
+                      <span className="nv-menu-item-text">
+                        <span className="nv-recent-item-name">
+                          Send via AirDrop…
+                        </span>
+                        <span className="nv-recent-item-path">
+                          {selected
+                            ? 'The whole dataset; the recipient picks any volume'
+                            : 'Open a dataset first'}
+                        </span>
+                      </span>
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : (
             <button
-              aria-label="Share dataset via AirDrop"
-              className="nv-icon-button"
+              aria-label="Export bundle"
+              className="nv-tool-button"
+              disabled={!selected || isExportingBundle}
+              onClick={handleExportBundle}
               title={
                 selected
-                  ? 'AirDrop the whole dataset — recipient can browse and pick any volume'
-                  : 'Open a dataset to share via AirDrop'
+                  ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                  : 'Select a volume to export a bundle'
               }
               type="button"
-              disabled={!selected || isSharingBundle}
-              onClick={handleShareBundle}
             >
-              {isSharingBundle ? (
-                <LoaderCircle className="nv-spin" size={16} />
+              {isExportingBundle ? (
+                <LoaderCircle className="nv-spin" size={15} />
               ) : (
-                <Share2 size={16} />
+                <Download size={15} />
               )}
+              <span>Export</span>
             </button>
-          ) : null}
-          {isTerminalAvailable ? (
+          )}
+          <button
+            aria-label="Express view"
+            aria-pressed={isExpress}
+            className={`nv-icon-button nv-desktop-only ${isExpress ? 'is-active' : ''}`}
+            onClick={toggleUiMode}
+            title={
+              isExpress
+                ? 'Back to the dataset workbench (⌥⌘V)'
+                : 'Express view: one viewer and one tool panel (⌥⌘V)'
+            }
+            type="button"
+          >
+            <LayoutPanelLeft size={16} />
+          </button>
+          {isTerminalAvailable && !isExpress ? (
             <button
+              aria-label="Python terminal"
               aria-pressed={isTerminalOpen}
               className={`nv-icon-button ${isTerminalOpen ? 'is-active' : ''}`}
-              title={isTerminalOpen ? 'Hide Python terminal' : 'Show Python terminal'}
+              title={
+                isTerminalOpen ? 'Hide Python terminal' : 'Show Python terminal'
+              }
               onClick={toggleTerminal}
               type="button"
             >
               <SquareTerminal size={16} />
             </button>
           ) : null}
-          <button
-            aria-label={isControlsCollapsed ? 'Open controls panel' : 'Close controls panel'}
-            aria-expanded={!isControlsCollapsed}
-            className={`nv-icon-button nv-mobile-only ${!isControlsCollapsed ? 'is-active' : ''}`}
-            onClick={() => {
-              setIsControlsCollapsed((collapsed) => !collapsed)
-              setIsFileListCollapsed(true)
-            }}
-            title="Controls panel"
-            type="button"
-          >
-            <SlidersHorizontal size={16} />
-          </button>
-        </div>
+          {showWelcome ? null : (
+            <button
+              aria-label={
+                isControlsCollapsed
+                  ? 'Open controls panel'
+                  : 'Close controls panel'
+              }
+              aria-expanded={!isControlsCollapsed}
+              className={`nv-icon-button nv-mobile-only ${!isControlsCollapsed ? 'is-active' : ''}`}
+              onClick={() => {
+                setIsControlsCollapsed((collapsed) => !collapsed)
+                setIsFileListCollapsed(true)
+              }}
+              title="Controls panel"
+              type="button"
+            >
+              <SlidersHorizontal size={16} />
+            </button>
+          )}
+        </fieldset>
       </header>
 
-      {/* Tap-to-close backdrop for the mobile drawers (CSS hides it on desktop). */}
-      {!isFileListCollapsed || !isControlsCollapsed ? (
-        <button
-          aria-label="Close panel"
-          className="nv-mobile-scrim"
-          tabIndex={-1}
-          type="button"
-          onClick={() => {
-            setIsFileListCollapsed(true)
-            setIsControlsCollapsed(true)
-          }}
+      {showWelcome ? (
+        <WelcomeScreen
+          busy={isBusyOpening}
+          openingLabel={welcomeOpeningLabel}
+          recentDatasets={recentDatasets}
+          reopenLast={reopenLast}
+          onOpenBundle={() => void handleImportBundle()}
+          onOpenFile={() => void openLocalVolumeFile()}
+          onOpenFolder={() => void openLocalDataset()}
+          onOpenMesh={() => void loadMeshes()}
+          onOpenRecent={(path) => void openRecentEntry(path)}
+          onOpenSample={samplePath ? () => void openSampleDataset() : null}
+          onRemoveRecent={removeRecent}
+          onReopenLastChange={setReopenLast}
         />
-      ) : null}
-
-      <section
-        className={`nv-workbench ${isFileListCollapsed ? 'is-file-list-collapsed' : ''} ${
-          isControlsCollapsed ? 'is-controls-collapsed' : ''
-        }`}
-      >
-        <aside className={`nv-sidebar ${isFileListCollapsed ? 'is-collapsed' : ''}`}>
-          <div className="nv-panel-heading">
-            <span>
-              <Database size={15} />
-              <span className="nv-sidebar-title">Dataset</span>
-            </span>
-            <div className="nv-sidebar-heading-tools">
-              <em>{filteredItems.length}/{items.length}</em>
-              <button
-                aria-expanded={!isFileListCollapsed}
-                aria-label={isFileListCollapsed ? 'Expand dataset file list' : 'Collapse dataset file list'}
-                className="nv-sidebar-toggle"
-                onClick={() => setIsFileListCollapsed((collapsed) => !collapsed)}
-                title={isFileListCollapsed ? 'Expand file list' : 'Collapse file list'}
-                type="button"
-              >
-                {isFileListCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-              </button>
-            </div>
-          </div>
-
-          {!isFileListCollapsed ? (
-            <VolumeFilterPanel
-              activeItemId={activeFilterItemId}
-              filteredItems={filteredItems}
-              items={items}
-              query={query}
-              selected={selected}
-              selectedDtypes={selectedDtypes}
-              selectedFormats={selectedFormats}
-              selectedImageTypes={selectedImageTypes}
-              selectedRoles={selectedRoles}
-              onActiveItem={setActiveFilterItemId}
-              onClearFilters={clearFilters}
-              onQueryChange={setQuery}
-              onSelect={(item) => setSelectedId(item.id)}
-              onToggleDtype={toggleDtype}
-              onToggleFormat={toggleFormat}
-              onToggleImageType={toggleImageType}
-              onToggleRole={toggleRole}
+      ) : (
+        <>
+          {/* Tap-to-close backdrop for the mobile drawers (CSS hides it on desktop). */}
+          {!isFileListCollapsed || !isControlsCollapsed ? (
+            <button
+              aria-label="Close panel"
+              className="nv-mobile-scrim"
+              tabIndex={-1}
+              type="button"
+              onClick={() => {
+                setIsFileListCollapsed(true)
+                setIsControlsCollapsed(true)
+              }}
             />
           ) : null}
-        </aside>
-
-        <section
-          className="nv-split-workspace"
-          ref={splitRef}
-          style={{ '--split-left': `${splitPercent}%` } as CSSProperties}
-        >
-          <section
-            className={`nv-dataset-pane ${mouseContext === 'desktop' ? 'is-context-active' : ''}`}
-            aria-label="OSD dataset viewer"
-            onPointerEnter={() => setMouseContext('desktop')}
-            onPointerLeave={() => setMouseContext(null)}
-          >
-            <DatasetDesktop
-              items={filteredItems}
-              manifest={manifest}
-              selected={selected}
-              isActive={mouseContext === 'desktop'}
-              zoom={desktopZoom}
-              onZoom={setDesktopZoom}
-              onSelect={(item) => setSelectedId(item.id)}
-            />
-          </section>
-
-          <button
-            aria-label="Resize dataset and NiiVue panes"
-            aria-valuemax={MAX_SPLIT}
-            aria-valuemin={MIN_SPLIT}
-            aria-valuenow={splitPercent}
-            className="nv-splitter"
-            onPointerDown={(event) => beginSplitDrag(event, splitRef, setSplitPercent)}
-            role="separator"
-            title="Resize panes"
-            type="button"
-          >
-            <GripVertical size={16} />
-          </button>
 
           <section
-            className={`nv-niivue-pane ${mouseContext === 'niivue' ? 'is-context-active' : ''} ${isRenderMaximized ? 'is-maximized' : ''}`}
-            aria-label="NiiVue render window"
-            onPointerEnter={() => setMouseContext('niivue')}
-            onPointerLeave={() => setMouseContext(null)}
+            className={`nv-workbench ${isFileListCollapsed ? 'is-file-list-collapsed' : ''} ${
+              isControlsCollapsed ? 'is-controls-collapsed' : ''
+            }`}
           >
-            <div className="nv-stage-title nv-niivue-title" aria-hidden="true">
-              <span>NiiVue Window</span>
-              <strong>{selected?.label ?? 'No selection'}</strong>
-              <em>
-                {viewMode !== 'render'
-                  ? `${viewModeLabel(viewMode)}${slicePosition ? ` · ${slicePosition}` : ''}`
-                  : renderWheelMode === 'clip-plane'
-                    ? `wheel ${activeClipPlane?.label ?? 'clip'}`
-                    : backend.toUpperCase()}
-              </em>
-            </div>
-            <button
-              aria-label={isRenderMaximized ? 'Exit full screen' : 'View NiiVue full screen'}
-              aria-pressed={isRenderMaximized}
-              className="nv-pane-icon-button nv-render-maximize"
-              onClick={() => setIsRenderMaximized((value) => !value)}
-              title={isRenderMaximized ? 'Exit full screen (Esc)' : 'Full screen'}
-              type="button"
+            <aside
+              className={`nv-sidebar ${isFileListCollapsed ? 'is-collapsed' : ''}`}
             >
-              {isRenderMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-            </button>
-            <NiivueStage
-              activeClipPlaneId={activeClipPlaneId}
-              backend={backend}
-              clipPlanes={clipPlanes}
-              crosshairTarget={crosshairTarget}
-              isActive={mouseContext === 'niivue'}
-              item={selected}
-              layers={renderLayers}
-              onClipPlaneDepthChange={changeClipPlaneDepth}
-              onClipPlaneActivate={bindActiveClipPlane}
-              onLayerExtents={handleLayerExtents}
-              onLocationChange={setLocationReadout}
-              onResolvedWindows={handleResolvedWindows}
-              onViewModeChange={setViewMode}
-              renderWheelMode={renderWheelMode}
-              viewMode={viewMode}
-            />
-          </section>
-        </section>
+              <div className="nv-panel-heading">
+                <span>
+                  <Database size={15} />
+                  <span className="nv-sidebar-title">Dataset</span>
+                </span>
+                <div className="nv-sidebar-heading-tools">
+                  <em>
+                    {filteredItems.length}/{items.length}
+                  </em>
+                  <button
+                    aria-expanded={!isFileListCollapsed}
+                    aria-label={
+                      isFileListCollapsed
+                        ? 'Expand dataset file list'
+                        : 'Collapse dataset file list'
+                    }
+                    className="nv-sidebar-toggle"
+                    onClick={() =>
+                      setIsFileListCollapsed((collapsed) => !collapsed)
+                    }
+                    title={
+                      isFileListCollapsed
+                        ? 'Expand file list'
+                        : 'Collapse file list'
+                    }
+                    type="button"
+                  >
+                    {isFileListCollapsed ? (
+                      <PanelLeftOpen size={15} />
+                    ) : (
+                      <PanelLeftClose size={15} />
+                    )}
+                  </button>
+                </div>
+              </div>
 
-        <aside
-          className={`nv-controls ${isControlsCollapsed ? 'is-collapsed' : ''} ${
-            isRenderMaximized ? 'is-floating' : ''
-          }`}
-        >
-          <div className="nv-controls-toolbar">
-            <button
-              aria-expanded={!isControlsCollapsed}
-              aria-label={isControlsCollapsed ? 'Expand controls panel' : 'Collapse controls panel'}
-              className="nv-sidebar-toggle"
-              onClick={() => setIsControlsCollapsed((collapsed) => !collapsed)}
-              title={isControlsCollapsed ? 'Expand controls' : 'Collapse controls'}
-              type="button"
+              {!isFileListCollapsed ? (
+                <VolumeFilterPanel
+                  filteredItems={filteredItems}
+                  items={items}
+                  query={query}
+                  selected={selected}
+                  selectedDtypes={selectedDtypes}
+                  selectedFormats={selectedFormats}
+                  selectedImageTypes={selectedImageTypes}
+                  selectedRoles={selectedRoles}
+                  onClearFilters={clearFilters}
+                  onQueryChange={setQuery}
+                  onSelect={(item) => setSelectedId(item.id)}
+                  onToggleDtype={toggleDtype}
+                  onToggleFormat={toggleFormat}
+                  onToggleImageType={toggleImageType}
+                  onToggleRole={toggleRole}
+                />
+              ) : null}
+            </aside>
+
+            <section
+              className="nv-split-workspace"
+              ref={splitRef}
+              style={{ '--split-left': `${splitPercent}%` } as CSSProperties}
             >
-              {isControlsCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}
-            </button>
-          </div>
+              <section
+                className={`nv-dataset-pane ${mouseContext === 'desktop' ? 'is-context-active' : ''}`}
+                aria-label="OSD dataset viewer"
+                onPointerEnter={() => setMouseContext('desktop')}
+                onPointerLeave={() => setMouseContext(null)}
+              >
+                <DatasetDesktop
+                  datasetName={datasetName}
+                  items={filteredItems}
+                  manifest={manifest}
+                  selected={selected}
+                  zoom={desktopZoom}
+                  onZoom={setDesktopZoom}
+                  onSelect={(item) => setSelectedId(item.id)}
+                />
+              </section>
 
-          <div className="nv-inspector-tools" aria-label="Desktop controls">
-            <DesktopZoomControls
-              zoom={desktopZoom}
-              onFit={() => setDesktopZoom(1)}
-              onZoomIn={() => setDesktopZoom((zoom) => zoomBy(zoom, 1.25))}
-              onZoomOut={() => setDesktopZoom((zoom) => zoomBy(zoom, 0.8))}
-            />
-            <span className="nv-zoom-readout">{Math.round(desktopZoom * 100)}%</span>
-          </div>
+              {/* biome-ignore lint/a11y/useSemanticElements: a focusable, draggable splitter is a separator widget; <hr> cannot take focus or aria-valuenow. */}
+              <button
+                aria-label="Resize dataset and NiiVue panes"
+                aria-valuemax={MAX_SPLIT}
+                aria-valuemin={MIN_SPLIT}
+                aria-valuenow={splitPercent}
+                className="nv-splitter"
+                onPointerDown={(event) =>
+                  beginSplitDrag(event, splitRef, setSplitPercent)
+                }
+                role="separator"
+                title="Resize panes"
+                type="button"
+              >
+                <GripVertical size={16} />
+              </button>
 
-          <SidePanelTabs activeTab={sidePanelTab} onChange={setSidePanelTab} />
+              <section
+                className={`nv-niivue-pane ${mouseContext === 'niivue' ? 'is-context-active' : ''} ${isRenderMaximized ? 'is-maximized' : ''}`}
+                aria-label="NiiVue render window"
+                onPointerEnter={() => setMouseContext('niivue')}
+                onPointerLeave={() => setMouseContext(null)}
+              >
+                <div
+                  className="nv-stage-title nv-niivue-title"
+                  aria-hidden="true"
+                >
+                  <span>Viewer</span>
+                  <MiddleEllipsis
+                    text={selected?.label ?? 'No selection'}
+                    title={[
+                      selected?.label,
+                      `${backendLabel(backend)} renderer`,
+                      renderStatus,
+                    ]
+                      .filter(Boolean)
+                      .join('\n')}
+                  />
+                  <em>
+                    {viewMode !== 'render'
+                      ? `${viewModeLabel(viewMode)}${slicePosition ? ` · ${slicePosition}` : ''}`
+                      : renderWheelMode === 'clip-plane'
+                        ? `wheel ${activeClipPlane?.label ?? 'clip'}`
+                        : '3D'}
+                  </em>
+                </div>
+                <button
+                  aria-label={
+                    isRenderMaximized
+                      ? 'Exit full screen'
+                      : 'View NiiVue full screen'
+                  }
+                  aria-pressed={isRenderMaximized}
+                  className="nv-pane-icon-button nv-render-maximize"
+                  onClick={() => setIsRenderMaximized((value) => !value)}
+                  title={
+                    isRenderMaximized ? 'Exit full screen (Esc)' : 'Full screen'
+                  }
+                  type="button"
+                >
+                  {isRenderMaximized ? (
+                    <Minimize2 size={16} />
+                  ) : (
+                    <Maximize2 size={16} />
+                  )}
+                </button>
+                <NiivueStage
+                  activeClipPlaneId={activeClipPlaneId}
+                  backend={backend}
+                  blocks={blocks}
+                  clipPlanes={clipPlanes}
+                  crosshairTarget={crosshairTarget}
+                  isActive={mouseContext === 'niivue'}
+                  item={selected}
+                  layers={renderLayers}
+                  meshes={meshes}
+                  onClipPlaneDepthChange={changeClipPlaneDepth}
+                  onClipPlaneActivate={bindActiveClipPlane}
+                  onLayerExtents={handleLayerExtents}
+                  onLocationChange={setLocationReadout}
+                  onResolvedWindows={handleResolvedWindows}
+                  onViewModeChange={setViewMode}
+                  onRenderStatus={setRenderStatus}
+                  renderWheelMode={renderWheelMode}
+                  shading={shading}
+                  viewMode={viewMode}
+                />
+              </section>
+            </section>
 
-          <div className="nv-sidepanel-content">
-            {sidePanelTab === 'inspect' ? (
-              <>
-                {viewMode === 'render' ? (
+            <aside
+              className={`nv-controls ${isControlsCollapsed ? 'is-collapsed' : ''} ${
+                isRenderMaximized ? 'is-floating' : ''
+              }`}
+            >
+              <div className="nv-controls-toolbar">
+                <button
+                  aria-expanded={!isControlsCollapsed}
+                  aria-label={
+                    isControlsCollapsed
+                      ? 'Expand controls panel'
+                      : 'Collapse controls panel'
+                  }
+                  className="nv-sidebar-toggle"
+                  onClick={() =>
+                    setIsControlsCollapsed((collapsed) => !collapsed)
+                  }
+                  title={
+                    isControlsCollapsed
+                      ? 'Expand controls'
+                      : 'Collapse controls'
+                  }
+                  type="button"
+                >
+                  {isExpress ? (
+                    isControlsCollapsed ? (
+                      <PanelLeftOpen size={15} />
+                    ) : (
+                      <PanelLeftClose size={15} />
+                    )
+                  ) : isControlsCollapsed ? (
+                    <PanelRightOpen size={15} />
+                  ) : (
+                    <PanelRightClose size={15} />
+                  )}
+                </button>
+              </div>
+
+              {isExpress ? null : (
+                <fieldset
+                  className="nv-inspector-tools"
+                  aria-label="Desktop controls"
+                >
+                  <DesktopZoomControls
+                    zoom={desktopZoom}
+                    onFit={() => setDesktopZoom(1)}
+                    onZoomIn={() =>
+                      setDesktopZoom((zoom) => zoomBy(zoom, 1.25))
+                    }
+                    onZoomOut={() =>
+                      setDesktopZoom((zoom) => zoomBy(zoom, 0.8))
+                    }
+                  />
+                  <span className="nv-zoom-readout">
+                    {Math.round(desktopZoom * 100)}%
+                  </span>
+                </fieldset>
+              )}
+
+              {isExpress ? null : (
+                <SidePanelTabs
+                  activeTab={sidePanelTab}
+                  onChange={setSidePanelTab}
+                />
+              )}
+
+              <div className="nv-sidepanel-content">
+                {isExpress || sidePanelTab === 'inspect' ? (
                   <>
-                    <section className="nv-control-section">
-                      <div className="nv-panel-heading">
-                        <span>
-                          <ZoomIn size={15} />
-                          Zoom
-                        </span>
-                      </div>
+                    <LayerPanel
+                      atlasId={atlasId}
+                      isOpeningOverlay={isOpeningOverlay}
+                      items={items}
+                      layerSettings={layerSettings}
+                      layerExtents={layerExtents}
+                      resolvedWindows={resolvedWindows}
+                      overlayIds={overlayIds}
+                      selected={selected}
+                      onAtlasChange={changeAtlasLayer}
+                      onLayerColormapChange={changeLayerColormap}
+                      onLayerHiddenChange={setLayerHidden}
+                      onLayerOpacityChange={changeLayerOpacity}
+                      onLayerWindowChange={changeLayerWindow}
+                      onLayerWindowReset={resetLayerWindow}
+                      onLoadOverlay={loadOverlayVolume}
+                      onOverlayToggle={toggleOverlayLayer}
+                    />
 
-                      <button
-                        aria-pressed={renderWheelMode === 'zoom'}
-                        className={`nv-clip-card nv-zoom-card ${renderWheelMode === 'zoom' ? 'is-active' : ''}`}
-                        onClick={() => setRenderWheelMode('zoom')}
-                        type="button"
-                      >
-                        <span className="nv-clip-card-header">
-                          <span className="nv-zoom-card-title">Zoom render</span>
-                          {renderWheelMode === 'zoom' ? <span className="nv-clip-active-badge">wheel</span> : null}
-                        </span>
-                        <span className="nv-zoom-card-hint">Scroll the render to zoom in and out.</span>
-                      </button>
-                    </section>
+                    <MeshPanel
+                      isOpening={isOpeningMesh}
+                      meshes={meshes}
+                      onLoad={() => void loadMeshes()}
+                      onRemove={removeMesh}
+                      onUpdate={updateMesh}
+                    />
 
-                    <section className="nv-control-section">
-                      <div className="nv-panel-heading">
-                        <span>
-                          <SlidersHorizontal size={15} />
-                          Clip Planes
-                        </span>
-                        <em>
-                          {renderWheelMode === 'clip-plane'
-                            ? clipPlanes.find((plane) => plane.id === activeClipPlaneId)?.label ?? 'none'
-                            : 'none'}
-                        </em>
-                      </div>
+                    {viewMode === 'render' ? (
+                      <>
+                        <WheelModeRow
+                          activePlaneLabel={
+                            renderWheelMode === 'clip-plane'
+                              ? clipPlanes.find(
+                                  (plane) => plane.id === activeClipPlaneId,
+                                )?.label
+                              : undefined
+                          }
+                          onZoom={() => setRenderWheelMode('zoom')}
+                        />
 
-                      <div className="nv-clip-list">
-                        {clipPlanes.map((plane) => (
-                          <ClipPlaneEditor
-                            active={renderWheelMode === 'clip-plane' && plane.id === activeClipPlaneId}
-                            key={plane.id}
-                            plane={plane}
-                            onActivate={() => bindActiveClipPlane(plane.id)}
-                            onChange={updateClipPlane}
-                          />
-                        ))}
-                      </div>
-                    </section>
+                        <ClipPlanesSection
+                          activeClipPlaneId={
+                            renderWheelMode === 'clip-plane'
+                              ? activeClipPlaneId
+                              : null
+                          }
+                          clipPlanes={clipPlanes}
+                          saveDisabledReason={
+                            !selected
+                              ? 'Select a volume to save a clip-plane correction'
+                              : null
+                          }
+                          onActivate={bindActiveClipPlane}
+                          onChange={updateClipPlane}
+                          onReset={resetClipPlanes}
+                          onSave={async () => {
+                            try {
+                              await savePatch(
+                                serverUrl,
+                                selected,
+                                clipPlanes,
+                                backend,
+                              )
+                              setStatus(
+                                `Clip-plane correction saved for ${selected?.label ?? 'volume'}.`,
+                                'success',
+                              )
+                            } catch (error) {
+                              setStatus(
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error),
+                                'error',
+                              )
+                            }
+                          }}
+                        />
+
+                        <RenderShadingSection
+                          shading={shading}
+                          onChange={setShading}
+                        />
+
+                        <BlockControls blocks={blocks} onChange={setBlocks} />
+                      </>
+                    ) : (
+                      <section className="nv-control-section">
+                        <p className="nv-mode-note">
+                          Zoom and clip planes apply to the 3D render. In 2D
+                          modes, scroll to page through slices and click to move
+                          the crosshair. Switch to <strong>3D</strong> for
+                          render controls.
+                        </p>
+                      </section>
+                    )}
+
+                    {isExpress ? null : (
+                      <SelectionPanel
+                        item={selected}
+                        metadataStatus={metadataStatus}
+                      />
+                    )}
+                    <CrosshairPanel
+                      location={locationReadout}
+                      onGoTo={goToCoordinate}
+                    />
+                    {isExpress ? null : (
+                      <MetadataPanel
+                        item={selected}
+                        metadata={metadata}
+                        status={metadataStatus}
+                      />
+                    )}
                   </>
                 ) : (
-                  <section className="nv-control-section">
-                    <p className="nv-mode-note">
-                      Zoom and clip planes apply to the 3D render. In 2D modes, scroll to page through
-                      slices and click to move the crosshair. Switch to <strong>3D</strong> for render controls.
-                    </p>
-                  </section>
+                  <NiimathOperationsPanel
+                    item={selected}
+                    metadata={metadata}
+                    onDerivedVolume={refreshDesktopManifest}
+                    onStatus={setStatus}
+                  />
                 )}
-
-                <LayerPanel
-                  atlasId={atlasId}
-                  isOpeningOverlay={isOpeningOverlay}
-                  items={items}
-                  layerSettings={layerSettings}
-                  layerExtents={layerExtents}
-                  resolvedWindows={resolvedWindows}
-                  overlayIds={overlayIds}
-                  selected={selected}
-                  onAtlasChange={changeAtlasLayer}
-                  onLayerColormapChange={changeLayerColormap}
-                  onLayerHiddenChange={setLayerHidden}
-                  onLayerOpacityChange={changeLayerOpacity}
-                  onLayerWindowChange={changeLayerWindow}
-                  onLayerWindowReset={resetLayerWindow}
-                  onLoadOverlay={loadOverlayVolume}
-                  onOverlayToggle={toggleOverlayLayer}
-                />
-
-                <SelectionPanel item={selected} metadataStatus={metadataStatus} />
-                <CrosshairPanel location={locationReadout} onGoTo={goToCoordinate} />
-                <MetadataPanel item={selected} metadata={metadata} status={metadataStatus} />
-              </>
-            ) : (
-              <>
-                <NiimathOperationsPanel
-                  item={selected}
-                  metadata={metadata}
-                  onDerivedVolume={refreshDesktopManifest}
-                  onStatus={setStatus}
-                />
-              </>
-            )}
-          </div>
-        </aside>
-      </section>
+              </div>
+            </aside>
+          </section>
+        </>
+      )}
 
       {isTerminalDockOpen ? (
         <section className="nv-terminal-dock" aria-label="Python terminal">
           <button
             aria-label="Resize terminal"
             className="nv-hsplitter"
-            onPointerDown={(event) => beginVerticalDrag(event, setTerminalHeight)}
+            onPointerDown={(event) =>
+              beginVerticalDrag(event, setTerminalHeight)
+            }
             title="Drag to resize the terminal"
             type="button"
           >
@@ -1257,13 +1853,34 @@ export function App(): JSX.Element {
       ) : null}
 
       <footer className="nv-status">
-        <span>
-          <CircleDot size={12} />
+        {/* One stable live region: swapping roles on the fly is announced
+            unreliably, so errors stay "status" and say "Error:" instead. */}
+        <span
+          aria-atomic="true"
+          aria-live="polite"
+          className={`nv-status-message is-${statusTone}`}
+          role="status"
+          title={status}
+        >
+          {statusTone === 'error' ? (
+            <CircleAlert aria-hidden="true" size={12} />
+          ) : statusTone === 'success' ? (
+            <CheckCircle2 aria-hidden="true" size={12} />
+          ) : (
+            <CircleDot aria-hidden="true" size={12} />
+          )}
+          {statusTone === 'error' ? (
+            <span className="nv-visually-hidden">Error: </span>
+          ) : null}
           {status}
         </span>
         {warmStatus ? (
           <span className="nv-warm-status">
-            {warmProgress?.active ? <LoaderCircle size={12} /> : <CheckCircle2 size={12} />}
+            {warmProgress?.active ? (
+              <LoaderCircle size={12} />
+            ) : (
+              <CheckCircle2 size={12} />
+            )}
             {warmStatus}
           </span>
         ) : null}
@@ -1273,7 +1890,6 @@ export function App(): JSX.Element {
             {locationStatus}
           </span>
         ) : null}
-        <span>{mouseContextLabel(mouseContext)}</span>
         <span
           className="nv-disclaimer"
           role="note"
@@ -1287,15 +1903,90 @@ export function App(): JSX.Element {
   )
 }
 
+// Block (volume-chunk explode) controls: pick a grid (Off / 2³…6³) that tiles
+// every loaded layer into bricks, then spread them apart in the 3D render with
+// the Explode slider. The slider is disabled while untiled (grid = Off).
+function BlockControls({
+  blocks,
+  onChange,
+}: {
+  blocks: BlockSettings
+  onChange: (blocks: BlockSettings) => void
+}): JSX.Element {
+  const tiled = blocksAreTiled(blocks)
+  return (
+    <section className="nv-control-section">
+      <div className="nv-panel-heading">
+        <span>
+          <Boxes size={15} />
+          Blocks
+        </span>
+        <em>
+          {tiled
+            ? `${blockGridLabel(blocks.grid)} · ${blocks.explode.toFixed(2)}×`
+            : 'off'}
+        </em>
+      </div>
+
+      <fieldset className="nv-block-grid" aria-label="Block grid">
+        {BLOCK_GRID_OPTIONS.map((grid) => (
+          <button
+            aria-pressed={blocks.grid === grid}
+            className={`nv-block-grid-option ${blocks.grid === grid ? 'is-active' : ''}`}
+            key={grid}
+            onClick={() => onChange({ ...blocks, grid })}
+            title={
+              grid <= 1
+                ? 'No blocks — render each layer as a single volume'
+                : `Tile every layer into ${grid}×${grid}×${grid} bricks`
+            }
+            type="button"
+          >
+            {blockGridLabel(grid)}
+          </button>
+        ))}
+      </fieldset>
+
+      <label className="nv-block-explode">
+        <span className="nv-block-explode-label">
+          Explode
+          <em>{tiled ? `${blocks.explode.toFixed(2)}×` : '—'}</em>
+        </span>
+        <input
+          aria-label="Explode spacing"
+          disabled={!tiled}
+          max={MAX_EXPLODE}
+          min={MIN_EXPLODE}
+          step={0.05}
+          type="range"
+          value={blocks.explode}
+          onChange={(event) =>
+            onChange({ ...blocks, explode: Number(event.target.value) })
+          }
+        />
+      </label>
+
+      <p className="nv-block-hint">
+        Splits every layer into bricks and spreads them apart in the 3D render.
+        Pick a grid, then raise Explode.
+      </p>
+    </section>
+  )
+}
+
 function SidePanelTabs({
   activeTab,
-  onChange
+  onChange,
 }: {
   activeTab: SidePanelTab
   onChange: (tab: SidePanelTab) => void
 }): JSX.Element {
   return (
-    <div className="nv-sidepanel-tabs" role="tablist" aria-label="Side panel sections">
+    <div
+      className="nv-sidepanel-tabs"
+      role="tablist"
+      aria-label="Side panel sections"
+    >
       <button
         aria-selected={activeTab === 'inspect'}
         className={activeTab === 'inspect' ? 'is-active' : ''}
@@ -1324,7 +2015,7 @@ function DesktopZoomControls({
   zoom,
   onFit,
   onZoomIn,
-  onZoomOut
+  onZoomOut,
 }: {
   zoom: number
   onFit: () => void
@@ -1355,7 +2046,7 @@ function DesktopZoomControls({
         className="nv-pane-icon-button"
         disabled={zoom === 1}
         onClick={onFit}
-        title="Fit grid"
+        title="Reset zoom"
         type="button"
       >
         <Maximize2 size={15} />
@@ -1380,7 +2071,7 @@ function LayerPanel({
   onLayerWindowChange,
   onLayerWindowReset,
   onLoadOverlay,
-  onOverlayToggle
+  onOverlayToggle,
 }: {
   atlasId: string | null
   isOpeningOverlay: boolean
@@ -1399,27 +2090,47 @@ function LayerPanel({
   onLoadOverlay: () => void
   onOverlayToggle: (itemId: string) => void
 }): JSX.Element {
-  const [expandedId, setExpandedId] = useState<string | null | undefined>(undefined)
+  const [expandedId, setExpandedId] = useState<string | null | undefined>(
+    undefined,
+  )
   const atlasCandidates = useMemo(
     () => items.slice().sort(compareAtlasCandidates),
-    [items]
+    [items],
   )
   // Active overlay items in render order, excluding the base and atlas.
   const overlayItems = useMemo(
-    () => items.filter((item) => overlayIds.has(item.id) && item.id !== selected?.id && item.id !== atlasId),
-    [atlasId, items, overlayIds, selected?.id]
+    () =>
+      items.filter(
+        (item) =>
+          overlayIds.has(item.id) &&
+          item.id !== selected?.id &&
+          item.id !== atlasId,
+      ),
+    [atlasId, items, overlayIds, selected?.id],
   )
   // Volumes not yet used by any layer — the "add overlay" pool.
   const addCandidates = useMemo(
-    () => items.filter((item) => item.id !== selected?.id && item.id !== atlasId && !overlayIds.has(item.id)),
-    [atlasId, items, overlayIds, selected?.id]
+    () =>
+      items.filter(
+        (item) =>
+          item.id !== selected?.id &&
+          item.id !== atlasId &&
+          !overlayIds.has(item.id),
+      ),
+    [atlasId, items, overlayIds, selected?.id],
   )
   // The unified layer list, in NiiVue render order: base -> overlays -> atlas.
   const rows = useMemo(() => {
-    const out: Array<{ item: DesktopItem; role: 'base' | 'overlay' | 'atlas' }> = []
+    const out: Array<{
+      item: DesktopItem
+      role: 'base' | 'overlay' | 'atlas'
+    }> = []
     if (selected) out.push({ item: selected, role: 'base' })
     for (const item of overlayItems) out.push({ item, role: 'overlay' })
-    const atlasItem = atlasId && atlasId !== selected?.id ? items.find((item) => item.id === atlasId) : null
+    const atlasItem =
+      atlasId && atlasId !== selected?.id
+        ? items.find((item) => item.id === atlasId)
+        : null
     if (atlasItem) out.push({ item: atlasItem, role: 'atlas' })
     return out
   }, [atlasId, items, overlayItems, selected])
@@ -1432,7 +2143,7 @@ function LayerPanel({
   const rowIds = rows.map((row) => row.item.id)
   const expanded =
     expandedId === undefined
-      ? selected?.id ?? null
+      ? (selected?.id ?? null)
       : expandedId && rowIds.includes(expandedId)
         ? expandedId
         : null
@@ -1466,7 +2177,10 @@ function LayerPanel({
           {rows.map(({ item, role }) => {
             const settings = layerSettings[item.id]
             const isBaseAtlas = role === 'base' && atlasId === selected.id
-            const overlayIndex = role === 'overlay' ? overlayItems.findIndex((o) => o.id === item.id) : 0
+            const overlayIndex =
+              role === 'overlay'
+                ? overlayItems.findIndex((o) => o.id === item.id)
+                : 0
             const rawColormap = layerColormapForItem(
               item,
               layerSettings,
@@ -1474,23 +2188,34 @@ function LayerPanel({
                 ? overlayColormapForIndex(overlayIndex)
                 : isBaseAtlas
                   ? DEFAULT_ATLAS_COLORMAP
-                  : DEFAULT_BASE_COLORMAP
+                  : DEFAULT_BASE_COLORMAP,
             )
             // Keep the base's select in sync with what actually renders (grayscale).
-            const colormapValue = role === 'base' && !isBaseAtlas ? baseColormap(rawColormap) : rawColormap
+            const colormapValue =
+              role === 'base' && !isBaseAtlas
+                ? baseColormap(rawColormap)
+                : rawColormap
             return (
               <LayerRow
                 key={item.id}
-                role={role}
+                kind={role}
                 label={item.label}
                 meta={layerOptionMeta(item)}
                 warning={layerWarning(selected, item, layerExtents)}
                 hidden={!!settings?.hidden}
                 expanded={expanded === item.id}
                 removable={role !== 'base'}
-                onToggleExpand={() => setExpandedId(expanded === item.id ? null : item.id)}
-                onHiddenChange={(hidden) => onLayerHiddenChange(item.id, hidden)}
-                onRemove={role === 'atlas' ? () => onAtlasChange('') : () => onOverlayToggle(item.id)}
+                onToggleExpand={() =>
+                  setExpandedId(expanded === item.id ? null : item.id)
+                }
+                onHiddenChange={(hidden) =>
+                  onLayerHiddenChange(item.id, hidden)
+                }
+                onRemove={
+                  role === 'atlas'
+                    ? () => onAtlasChange('')
+                    : () => onOverlayToggle(item.id)
+                }
               >
                 {role === 'atlas' ? (
                   <Slider
@@ -1498,7 +2223,11 @@ function LayerPanel({
                     min={0}
                     max={1}
                     step={0.05}
-                    value={opacityForItem(item.id, layerSettings, DEFAULT_ATLAS_OPACITY)}
+                    value={opacityForItem(
+                      item.id,
+                      layerSettings,
+                      DEFAULT_ATLAS_OPACITY,
+                    )}
                     onChange={(value) => onLayerOpacityChange(item.id, value)}
                   />
                 ) : (
@@ -1507,7 +2236,11 @@ function LayerPanel({
                       ariaLabel={`Colormap for ${item.label}`}
                       itemId={item.id}
                       value={colormapValue}
-                      options={role === 'base' && !isBaseAtlas ? BASE_COLORMAP_OPTIONS : COLORMAP_OPTIONS}
+                      options={
+                        role === 'base' && !isBaseAtlas
+                          ? BASE_COLORMAP_OPTIONS
+                          : COLORMAP_OPTIONS
+                      }
                       onChange={onLayerColormapChange}
                     />
                     {role === 'overlay' ? (
@@ -1516,8 +2249,14 @@ function LayerPanel({
                         min={0}
                         max={1}
                         step={0.05}
-                        value={opacityForItem(item.id, layerSettings, DEFAULT_OVERLAY_OPACITY)}
-                        onChange={(value) => onLayerOpacityChange(item.id, value)}
+                        value={opacityForItem(
+                          item.id,
+                          layerSettings,
+                          DEFAULT_OVERLAY_OPACITY,
+                        )}
+                        onChange={(value) =>
+                          onLayerOpacityChange(item.id, value)
+                        }
                       />
                     ) : null}
                     {!isBaseAtlas ? (
@@ -1593,7 +2332,11 @@ function LayerPanel({
                 <small>{layerOptionMeta(item)}</small>
               </span>
               {warn ? (
-                <AlertTriangle aria-label="Different subject than base" className="nv-layer-add-warn" size={13} />
+                <AlertTriangle
+                  aria-label="Different subject than base"
+                  className="nv-layer-add-warn"
+                  size={13}
+                />
               ) : null}
             </button>
           )
@@ -1606,11 +2349,100 @@ function LayerPanel({
   )
 }
 
+// Surface meshes (.gii, .mz3, .obj, FreeSurfer, …): the Surfice side of the
+// viewer. Each row toggles, recolors, fades or removes one mesh.
+function MeshPanel({
+  isOpening,
+  meshes,
+  onLoad,
+  onRemove,
+  onUpdate,
+}: {
+  isOpening: boolean
+  meshes: MeshLayer[]
+  onLoad: () => void
+  onRemove: (id: string) => void
+  onUpdate: (id: string, patch: Partial<MeshLayer>) => void
+}): JSX.Element {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  return (
+    <section className="nv-control-section nv-layer-panel">
+      <div className="nv-panel-heading">
+        <span>
+          <Shapes size={15} />
+          Meshes
+        </span>
+        <em>{meshes.length > 0 ? meshes.length : 'none'}</em>
+      </div>
+
+      {meshes.length > 0 ? (
+        <div className="nv-layer-rows">
+          {meshes.map((mesh) => {
+            const hex = meshColorHex(mesh.color)
+            return (
+              <LayerRow
+                accent={hex}
+                expanded={expandedId === mesh.id}
+                hidden={!mesh.visible}
+                key={mesh.id}
+                label={mesh.name}
+                meta=""
+                removable
+                kind="mesh"
+                onHiddenChange={(hidden) =>
+                  onUpdate(mesh.id, { visible: !hidden })
+                }
+                onRemove={() => onRemove(mesh.id)}
+                onToggleExpand={() =>
+                  setExpandedId(expandedId === mesh.id ? null : mesh.id)
+                }
+              >
+                <label className="nv-slider nv-mesh-color">
+                  <span>Color</span>
+                  <input
+                    aria-label={`Color for ${mesh.name}`}
+                    type="color"
+                    value={hex}
+                    onChange={(event) =>
+                      onUpdate(mesh.id, {
+                        color: meshColorFromHex(event.target.value),
+                      })
+                    }
+                  />
+                  <code>{hex}</code>
+                </label>
+                <Slider
+                  label="Opacity"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={mesh.opacity}
+                  onChange={(opacity) => onUpdate(mesh.id, { opacity })}
+                />
+              </LayerRow>
+            )
+          })}
+        </div>
+      ) : null}
+
+      <button
+        className="nv-layer-load-button"
+        disabled={isOpening}
+        onClick={onLoad}
+        type="button"
+      >
+        <FolderOpen size={14} />
+        <span>{isOpening ? 'Loading mesh' : 'Load mesh'}</span>
+      </button>
+    </section>
+  )
+}
+
 // One expandable row in the unified Layers list. The header carries the
 // visibility toggle, label/role, expand caret, and (for non-base layers) a
 // remove button; the role-specific controls live in the expanded body.
 function LayerRow({
-  role,
+  kind,
   label,
   meta,
   warning,
@@ -1620,9 +2452,10 @@ function LayerRow({
   onToggleExpand,
   onHiddenChange,
   onRemove,
-  children
+  accent,
+  children,
 }: {
-  role: 'base' | 'overlay' | 'atlas'
+  kind: 'base' | 'overlay' | 'atlas' | 'mesh'
   label: string
   meta: string
   warning?: string | null
@@ -1632,12 +2465,20 @@ function LayerRow({
   onToggleExpand: () => void
   onHiddenChange: (hidden: boolean) => void
   onRemove: () => void
-  children: JSX.Element
+  /** Left-edge color, for rows (meshes) that carry their own. */
+  accent?: string
+  children: ReactNode
 }): JSX.Element {
-  const roleLabel = role === 'base' ? 'Base' : role === 'atlas' ? 'Atlas' : 'Overlay'
+  const roleLabel = {
+    base: 'Base',
+    overlay: 'Overlay',
+    atlas: 'Atlas',
+    mesh: 'Mesh',
+  }[kind]
   return (
     <div
-      className={`nv-layer-row is-${role}${expanded ? ' is-expanded' : ''}${hidden ? ' is-hidden' : ''}${warning ? ' is-warning' : ''}`}
+      className={`nv-layer-row is-${kind}${expanded ? ' is-expanded' : ''}${hidden ? ' is-hidden' : ''}${warning ? ' is-warning' : ''}`}
+      style={accent ? { borderLeftColor: accent } : undefined}
     >
       <div className="nv-layer-row-head">
         <button
@@ -1663,7 +2504,12 @@ function LayerRow({
             </small>
           </span>
           {warning ? (
-            <span aria-label={warning} className="nv-layer-row-warn" role="img" title={warning}>
+            <span
+              aria-label={warning}
+              className="nv-layer-row-warn"
+              role="img"
+              title={warning}
+            >
               <AlertTriangle size={15} />
             </span>
           ) : null}
@@ -1691,7 +2537,7 @@ function LayerColormapSelect({
   itemId,
   value,
   options = COLORMAP_OPTIONS,
-  onChange
+  onChange,
 }: {
   ariaLabel: string
   disabled?: boolean
@@ -1701,7 +2547,9 @@ function LayerColormapSelect({
   onChange: (itemId: string, colormap: string) => void
 }): JSX.Element {
   return (
-    <label className={`nv-select nv-layer-colormap-select ${disabled ? 'is-disabled' : ''}`}>
+    <label
+      className={`nv-select nv-layer-colormap-select ${disabled ? 'is-disabled' : ''}`}
+    >
       <span>Map</span>
       <select
         aria-label={ariaLabel}
@@ -1733,7 +2581,7 @@ function WindowControl({
   resolved,
   variant = 'window',
   onChange,
-  onReset
+  onReset,
 }: {
   itemId: string
   label: string
@@ -1762,10 +2610,14 @@ function WindowControl({
   const [minText, setMinText] = useState(window ? String(window.min) : '')
   const [maxText, setMaxText] = useState(window ? String(window.max) : '')
 
+  // Sync on the values, not the window object, so an equal window doesn't
+  // overwrite text being typed.
+  const windowMin = window?.min
+  const windowMax = window?.max
   useEffect(() => {
-    setMinText(window ? String(window.min) : '')
-    setMaxText(window ? String(window.max) : '')
-  }, [window?.min, window?.max])
+    setMinText(windowMin === undefined ? '' : String(windowMin))
+    setMaxText(windowMax === undefined ? '' : String(windowMax))
+  }, [windowMin, windowMax])
 
   // Commit whenever either field changes, reading both current values from
   // state (no stale closure across the two inputs). For the threshold variant a
@@ -1773,6 +2625,7 @@ function WindowControl({
   // rather than discarding the input — setting just a threshold is the common
   // case and must not look like a broken control.
   const resolvedMax = resolved?.max
+  // biome-ignore lint/correctness/useExhaustiveDependencies: onChange/itemId are stable for a given layer; re-running on a new onChange identity would re-commit the same window every render.
   useEffect(() => {
     if (!minText.trim()) return
     const min = Number(minText)
@@ -1785,8 +2638,6 @@ function WindowControl({
     if (Number.isFinite(max) && min < max) {
       onChange(itemId, min, max)
     }
-    // onChange/itemId are stable for a given layer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [minText, maxText, resolvedMax, isThreshold])
 
   return (
@@ -1837,7 +2688,11 @@ function WindowControl({
         <button
           className="nv-window-showall"
           onClick={() =>
-            onChange(itemId, resolved.robustMin as number, resolved.robustMax as number)
+            onChange(
+              itemId,
+              resolved.robustMin as number,
+              resolved.robustMax as number,
+            )
           }
           title="Display the full robust range with no threshold"
           type="button"
@@ -1851,7 +2706,7 @@ function WindowControl({
 
 function SelectionPanel({
   item,
-  metadataStatus
+  metadataStatus,
 }: {
   item: DesktopItem | null
   metadataStatus: string
@@ -1869,7 +2724,7 @@ function SelectionPanel({
           <dt>Format</dt>
           <dd>{item.format}</dd>
           <dt>Image</dt>
-          <dd>{volumeImageTypeLabel(item)}</dd>
+          <dd>{volumeImageTypeDisplay(item)}</dd>
           <dt>Role</dt>
           <dd>{item.role ?? 'source'}</dd>
           {item.derivedFrom ? (
@@ -1881,7 +2736,7 @@ function SelectionPanel({
           <dt>Shape</dt>
           <dd>{item.shape.join(' x ')}</dd>
           <dt>Spacing</dt>
-          <dd>{item.spacing.join(' x ')}</dd>
+          <dd>{formatVoxelSpacing(item.spacing)}</dd>
           <dt>Metadata</dt>
           <dd>{metadataStatus}</dd>
         </dl>
@@ -1899,27 +2754,39 @@ function SelectionPanel({
 // +Z=Superior).
 function CrosshairPanel({
   location,
-  onGoTo
+  onGoTo,
 }: {
   location: NiiVueLocation | null
   onGoTo: (x: number, y: number, z: number) => void
 }): JSX.Element {
   const mm = location?.mm
-  const hasLocation = Boolean(mm) && mm!.slice(0, 3).every((value) => Number.isFinite(value))
-  const anatomical = hasLocation ? formatAnatomicalCoordinates(mm!) : null
-  const rasTriplet = hasLocation ? mm!.slice(0, 3).map((value) => Number(value.toFixed(2))).join(', ') : null
+  const validMm = mm?.slice(0, 3).every((value) => Number.isFinite(value))
+    ? mm
+    : null
+  const hasLocation = validMm !== null
+  const anatomical = validMm ? formatAnatomicalCoordinates(validMm) : null
+  const rasTriplet = validMm
+    ? validMm
+        .slice(0, 3)
+        .map((value) => Number(value.toFixed(2)))
+        .join(', ')
+    : null
 
   // Go-to fields track the current crosshair (tweak-and-go); they follow the
   // crosshair when it moves via click/paging.
   const [x, setX] = useState('')
   const [y, setY] = useState('')
   const [z, setZ] = useState('')
+  // Keyed on the coordinates, not the array, which is new on every readout.
+  const mmX = validMm?.[0]
+  const mmY = validMm?.[1]
+  const mmZ = validMm?.[2]
   useEffect(() => {
-    if (!hasLocation) return
-    setX(String(Number(mm![0].toFixed(2))))
-    setY(String(Number(mm![1].toFixed(2))))
-    setZ(String(Number(mm![2].toFixed(2))))
-  }, [mm?.[0], mm?.[1], mm?.[2]])
+    if (mmX === undefined || mmY === undefined || mmZ === undefined) return
+    setX(String(Number(mmX.toFixed(2))))
+    setY(String(Number(mmY.toFixed(2))))
+    setZ(String(Number(mmZ.toFixed(2))))
+  }, [mmX, mmY, mmZ])
 
   const [copied, setCopied] = useState(false)
   function handleCopy(): void {
@@ -1936,7 +2803,9 @@ function CrosshairPanel({
   const parsed: [number, number, number] | null = (() => {
     if (![x, y, z].every((value) => value.trim().length > 0)) return null
     const values = [x, y, z].map((value) => Number(value))
-    return values.every(Number.isFinite) ? [values[0], values[1], values[2]] : null
+    return values.every(Number.isFinite)
+      ? [values[0], values[1], values[2]]
+      : null
   })()
 
   function handleGo(): void {
@@ -1950,7 +2819,9 @@ function CrosshairPanel({
         Crosshair
       </h2>
       <div className="nv-crosshair-readout">
-        <span className={hasLocation ? '' : 'is-empty'}>{anatomical ?? 'Click or page to place the crosshair'}</span>
+        <span className={hasLocation ? '' : 'is-empty'}>
+          {anatomical ?? 'Click or page to place the crosshair'}
+        </span>
         <button
           type="button"
           className="nv-crosshair-copy"
@@ -1970,7 +2841,9 @@ function CrosshairPanel({
               aria-label={`${axisLabel} millimetres`}
               className="nv-text-input"
               inputMode="decimal"
-              onChange={(event) => [setX, setY, setZ][index](event.target.value)}
+              onChange={(event) =>
+                [setX, setY, setZ][index](event.target.value)
+              }
               onKeyDown={(event) => {
                 if (event.key === 'Enter') handleGo()
               }}
@@ -1996,7 +2869,7 @@ function CrosshairPanel({
 function MetadataPanel({
   item,
   metadata,
-  status
+  status,
 }: {
   item: DesktopItem | null
   metadata: VolumeMetadata | null
@@ -2025,7 +2898,10 @@ function MetadataPanel({
           {sidecars.length > 0 ? (
             <div className="nv-sidecar-list">
               {sidecars.map((sidecar) => (
-                <details className="nv-sidecar" key={sidecar.path ?? sidecar.name}>
+                <details
+                  className="nv-sidecar"
+                  key={sidecar.path ?? sidecar.name}
+                >
                   <summary>
                     <span>{sidecar.name}</span>
                     <em>{sidecar.kind}</em>
@@ -2047,7 +2923,9 @@ function MetadataPanel({
             </div>
           ) : null}
           {sidecars.length === 0 && !embeddedMetadata ? (
-            <div className="nv-empty-meta">No JSON sidecar attached to this volume.</div>
+            <div className="nv-empty-meta">
+              No JSON sidecar attached to this volume.
+            </div>
           ) : null}
         </>
       ) : (
@@ -2057,11 +2935,139 @@ function MetadataPanel({
   )
 }
 
+function WheelModeRow({
+  activePlaneLabel,
+  onZoom,
+}: {
+  /** Label of the plane the scroll wheel moves, or undefined when it zooms. */
+  activePlaneLabel: string | undefined
+  onZoom: () => void
+}): JSX.Element {
+  return (
+    <div className="nv-wheel-row">
+      <Mouse size={14} aria-hidden="true" />
+      {activePlaneLabel ? (
+        <>
+          <span
+            title={`Scroll the render to move the ${activePlaneLabel} clip plane`}
+          >
+            Wheel: {activePlaneLabel} plane
+          </span>
+          <button
+            className="nv-wheel-zoom-button"
+            onClick={onZoom}
+            title="Scroll the render to zoom in and out instead"
+            type="button"
+          >
+            Use for zoom
+          </button>
+        </>
+      ) : (
+        <span title="Scroll the render to zoom in and out. Click a clip plane to move it with the wheel instead.">
+          Wheel: zoom
+        </span>
+      )}
+    </div>
+  )
+}
+
+function ClipPlanesSection({
+  activeClipPlaneId,
+  clipPlanes,
+  saveDisabledReason,
+  onActivate,
+  onChange,
+  onReset,
+  onSave,
+}: {
+  /** The plane bound to the scroll wheel, or null when the wheel zooms. */
+  activeClipPlaneId: string | null
+  clipPlanes: ClipPlane[]
+  /** Why saving is unavailable beyond "no plane enabled", or null. */
+  saveDisabledReason: string | null
+  onActivate: (planeId: string) => void
+  onChange: (plane: ClipPlane) => void
+  onReset: () => void
+  onSave: () => void
+}): JSX.Element {
+  const enabledCount = clipPlanes.filter((plane) => plane.enabled).length
+  const anyEnabled = enabledCount > 0
+  // Start open only when a plane is cutting the render, and open again if one
+  // gets enabled elsewhere (the stage chips, an opened bundle). Never close on
+  // its own, so unchecking the last plane doesn't collapse it under the cursor.
+  const [isOpen, setIsOpen] = useState(anyEnabled)
+  const wasEnabledRef = useRef(anyEnabled)
+  useEffect(() => {
+    if (anyEnabled && !wasEnabledRef.current) setIsOpen(true)
+    wasEnabledRef.current = anyEnabled
+  }, [anyEnabled])
+
+  const saveReason = !anyEnabled
+    ? 'Enable a clip plane to save a correction'
+    : saveDisabledReason
+
+  return (
+    <section className="nv-control-section nv-clip-section">
+      <div className="nv-panel-heading">
+        <button
+          aria-expanded={isOpen}
+          className="nv-disclosure"
+          onClick={() => setIsOpen((open) => !open)}
+          type="button"
+        >
+          <ChevronRight className="nv-disclosure-chevron" size={14} />
+          <SlidersHorizontal size={15} />
+          Clip planes
+        </button>
+        <span className="nv-sidebar-heading-tools">
+          <em>{anyEnabled ? `${enabledCount} on` : 'off'}</em>
+          <button
+            aria-label="Save clip-plane correction"
+            className="nv-pane-icon-button"
+            disabled={saveReason !== null}
+            onClick={onSave}
+            title={
+              saveReason ??
+              'Save clip-plane correction: records the enabled planes for this volume'
+            }
+            type="button"
+          >
+            <Save size={14} />
+          </button>
+          <button
+            aria-label="Reset clip planes"
+            className="nv-pane-icon-button"
+            onClick={onReset}
+            title="Reset clip planes"
+            type="button"
+          >
+            <RotateCcw size={14} />
+          </button>
+        </span>
+      </div>
+
+      {isOpen ? (
+        <div className="nv-clip-list">
+          {clipPlanes.map((plane) => (
+            <ClipPlaneEditor
+              active={plane.id === activeClipPlaneId}
+              key={plane.id}
+              plane={plane}
+              onActivate={() => onActivate(plane.id)}
+              onChange={onChange}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 function ClipPlaneEditor({
   active,
   onActivate,
   plane,
-  onChange
+  onChange,
 }: {
   active: boolean
   onActivate: () => void
@@ -2081,7 +3087,9 @@ function ClipPlaneEditor({
         <label className="nv-toggle">
           <input
             checked={plane.enabled}
-            onChange={(event) => onChange({ ...plane, enabled: event.target.checked })}
+            onChange={(event) =>
+              onChange({ ...plane, enabled: event.target.checked })
+            }
             type="checkbox"
           />
           <span>{plane.label}</span>
@@ -2091,7 +3099,7 @@ function ClipPlaneEditor({
         <button
           aria-label={`Reset ${plane.label} clip plane`}
           className="nv-pane-icon-button"
-          onClick={() => onChange(defaultPlane)}
+          onClick={() => onChange({ ...defaultPlane, enabled: plane.enabled })}
           title="Reset clip plane"
           type="button"
         >
@@ -2102,43 +3110,75 @@ function ClipPlaneEditor({
       <label className="nv-toggle nv-clip-flip">
         <input
           checked={isFlipped}
-          onChange={(event) => onChange(setClipPlaneFlipped(plane, event.target.checked))}
+          onChange={(event) =>
+            onChange(setClipPlaneFlipped(plane, event.target.checked))
+          }
           type="checkbox"
         />
         <span>Flip</span>
       </label>
 
-      <Slider label="Depth" max={1} min={-1} step={0.01} value={plane.depth} onChange={(depth) => onChange({ ...plane, depth })} />
-      <Slider label="Azimuth" max={360} min={-360} step={1} value={plane.azimuth} onChange={(azimuth) => onChange({ ...plane, azimuth })} />
-      <Slider label="Elevation" max={180} min={-180} step={1} value={plane.elevation} onChange={(elevation) => onChange({ ...plane, elevation })} />
+      <Slider
+        label="Depth"
+        max={1}
+        min={-1}
+        step={0.01}
+        value={plane.depth}
+        onChange={(depth) => onChange({ ...plane, depth })}
+      />
+      <Slider
+        label="Azimuth"
+        max={360}
+        min={-360}
+        step={1}
+        value={plane.azimuth}
+        onChange={(azimuth) => onChange({ ...plane, azimuth })}
+      />
+      <Slider
+        label="Elevation"
+        max={180}
+        min={-180}
+        step={1}
+        value={plane.elevation}
+        onChange={(elevation) => onChange({ ...plane, elevation })}
+      />
     </section>
   )
 }
 
 function defaultClipPlaneFor(plane: ClipPlane): ClipPlane {
-  return defaultClipPlanes().find((candidate) => candidate.id === plane.id) ?? plane
+  return (
+    defaultClipPlanes().find((candidate) => candidate.id === plane.id) ?? plane
+  )
 }
 
 function setClipPlaneFlipped(plane: ClipPlane, flipped: boolean): ClipPlane {
   const defaultPlane = defaultClipPlaneFor(plane)
-  const orientation = flipped ? flippedClipOrientation(defaultPlane) : defaultPlane
+  const orientation = flipped
+    ? flippedClipOrientation(defaultPlane)
+    : defaultPlane
   return {
     ...plane,
     azimuth: orientation.azimuth,
-    elevation: orientation.elevation
+    elevation: orientation.elevation,
   }
 }
 
 function isClipPlaneFlipped(plane: ClipPlane): boolean {
   const flipped = flippedClipOrientation(defaultClipPlaneFor(plane))
-  return degreesEqual(plane.azimuth, flipped.azimuth) && degreesEqual(plane.elevation, flipped.elevation)
+  return (
+    degreesEqual(plane.azimuth, flipped.azimuth) &&
+    degreesEqual(plane.elevation, flipped.elevation)
+  )
 }
 
-function flippedClipOrientation(plane: ClipPlane): Pick<ClipPlane, 'azimuth' | 'elevation'> {
+function flippedClipOrientation(
+  plane: ClipPlane,
+): Pick<ClipPlane, 'azimuth' | 'elevation'> {
   return (
     FLIPPED_CLIP_ORIENTATIONS[plane.id] ?? {
       azimuth: plane.azimuth + 180,
-      elevation: -plane.elevation
+      elevation: -plane.elevation,
     }
   )
 }
@@ -2157,7 +3197,7 @@ function Slider({
   max,
   step,
   value,
-  onChange
+  onChange,
 }: {
   label: string
   min: number
@@ -2177,15 +3217,17 @@ function Slider({
         type="range"
         value={value}
       />
-      <code>{Number.isFinite(value) ? value.toFixed(step < 1 ? 2 : 0) : '–'}</code>
+      <code>
+        {Number.isFinite(value) ? value.toFixed(step < 1 ? 2 : 0) : '–'}
+      </code>
     </label>
   )
 }
 
 function beginSplitDrag(
   event: ReactPointerEvent<HTMLButtonElement>,
-  workspaceRef: RefObject<HTMLElement>,
-  onChange: (value: number) => void
+  workspaceRef: RefObject<HTMLElement | null>,
+  onChange: (value: number) => void,
 ): void {
   const workspace = workspaceRef.current
   if (!workspace) return
@@ -2223,7 +3265,7 @@ function beginSplitDrag(
 
 function beginVerticalDrag(
   event: ReactPointerEvent<HTMLButtonElement>,
-  onChange: (value: number) => void
+  onChange: (value: number) => void,
 ): void {
   event.preventDefault()
   const handle = event.currentTarget
@@ -2263,7 +3305,9 @@ async function volumeHasAtlasLabelSidecar(item: DesktopItem): Promise<boolean> {
 
 function metadataHasAtlasLabelMap(metadata: VolumeMetadata): boolean {
   if (isAtlasLabelMap(metadata as unknown as JsonValue)) return true
-  return (metadata.sidecars ?? []).some((sidecar) => isAtlasLabelMap(sidecar.metadata))
+  return (metadata.sidecars ?? []).some((sidecar) =>
+    isAtlasLabelMap(sidecar.metadata),
+  )
 }
 
 function isAtlasLabelMap(value: JsonValue): boolean {
@@ -2278,13 +3322,17 @@ function isAtlasLabelMap(value: JsonValue): boolean {
 
 function numericList(value: JsonValue | undefined): number[] | null {
   if (!Array.isArray(value)) return null
-  const numbers = value.map((entry) => typeof entry === 'number' ? entry : Number(entry))
+  const numbers = value.map((entry) =>
+    typeof entry === 'number' ? entry : Number(entry),
+  )
   return numbers.length > 0 && numbers.every(Number.isFinite) ? numbers : null
 }
 
 function stringList(value: JsonValue | undefined): string[] | null {
   if (!Array.isArray(value)) return null
-  return value.map((entry) => typeof entry === 'string' ? entry : String(entry))
+  return value.map((entry) =>
+    typeof entry === 'string' ? entry : String(entry),
+  )
 }
 
 function isJsonObject(value: JsonValue): value is { [key: string]: JsonValue } {
@@ -2318,6 +3366,31 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function backendLabel(backend: Backend): string {
+  return backend === 'webgpu' ? 'WebGPU' : 'WebGL 2'
+}
+
+// A file name that ellipsizes in the middle, so "sub-10159_ses-01_…_T1w.nii.gz"
+// keeps both the subject and the suffix. The head shrinks with an end
+// ellipsis; the tail (last ~12 characters) never shrinks.
+function MiddleEllipsis({
+  text,
+  title,
+}: {
+  text: string
+  title?: string
+}): JSX.Element {
+  const tailLength = text.length > 20 ? 12 : 0
+  const head = tailLength ? text.slice(0, -tailLength) : text
+  const tail = tailLength ? text.slice(-tailLength) : ''
+  return (
+    <strong className="nv-middle-ellipsis" title={title}>
+      <span>{head}</span>
+      {tail ? <span>{tail}</span> : null}
+    </strong>
+  )
+}
+
 function viewModeLabel(mode: ViewModeId): string {
   switch (mode) {
     case 'axial':
@@ -2333,22 +3406,22 @@ function viewModeLabel(mode: ViewModeId): string {
   }
 }
 
-function mouseContextLabel(context: MouseContext): string {
-  if (context === 'desktop') return 'Mouse: desktop grid controls'
-  if (context === 'niivue') return 'Mouse: NiiVue controls'
-  return 'Mouse: no pane'
-}
-
 // Through-plane position of the current slice, as an anatomical mm coordinate
 // (RAS+, so it's correct regardless of the volume's raw voxel orientation).
 // Only meaningful for the single-plane 2D modes; multiplanar/render return null.
-const SLICE_THROUGH_PLANE: Record<string, { index: number; positive: string; negative: string }> = {
+const SLICE_THROUGH_PLANE: Record<
+  string,
+  { index: number; positive: string; negative: string }
+> = {
   axial: { index: 2, positive: 'S', negative: 'I' },
   coronal: { index: 1, positive: 'A', negative: 'P' },
-  sagittal: { index: 0, positive: 'R', negative: 'L' }
+  sagittal: { index: 0, positive: 'R', negative: 'L' },
 }
 
-function slicePositionLabel(location: NiiVueLocation | null, viewMode: ViewModeId): string | null {
+function slicePositionLabel(
+  location: NiiVueLocation | null,
+  viewMode: ViewModeId,
+): string | null {
   if (!location) return null
   const axis = SLICE_THROUGH_PLANE[viewMode]
   if (!axis) return null
@@ -2358,7 +3431,10 @@ function slicePositionLabel(location: NiiVueLocation | null, viewMode: ViewModeI
   return `${letter} ${formatCoordinate(Math.abs(value))} mm`
 }
 
-function locationStatusLabel(location: NiiVueLocation | null, atlasName: string | null): string | null {
+function locationStatusLabel(
+  location: NiiVueLocation | null,
+  atlasName: string | null,
+): string | null {
   if (!location) return null
   const mm = formatAnatomicalCoordinates(location.mm)
   const vox = location.vox.map(formatVoxelIndex).join(', ')
@@ -2374,12 +3450,17 @@ function locationStatusLabel(location: NiiVueLocation | null, atlasName: string 
 // +Z=Superior. Render the sign as anatomical letters so laterality is never
 // ambiguous (the unsigned XYZ readout could not distinguish left from right).
 function formatAnatomicalCoordinates(mm: number[]): string {
-  const axes: Array<[string, string]> = [['R', 'L'], ['A', 'P'], ['S', 'I']]
+  const axes: Array<[string, string]> = [
+    ['R', 'L'],
+    ['A', 'P'],
+    ['S', 'I'],
+  ]
   return mm
     .slice(0, 3)
     .map((value, index) => {
       const [positive, negative] = axes[index]
-      const letter = (Number.isFinite(value) ? value : 0) >= 0 ? positive : negative
+      const letter =
+        (Number.isFinite(value) ? value : 0) >= 0 ? positive : negative
       return `${letter} ${formatCoordinate(Math.abs(value))}`
     })
     .join(' / ')
@@ -2410,11 +3491,13 @@ function formatIntensity(value: number): string {
 // which atlas a region came from, and could report the wrong volume).
 function locationRegion(
   location: NiiVueLocation,
-  atlasName: string | null
+  atlasName: string | null,
 ): { region: string; atlas: string } | null {
   if (!atlasName) return null
   const value = location.values.find(
-    (candidate) => volumeBaseName(candidate.name) === atlasName && isRegionLabel(candidate.label)
+    (candidate) =>
+      volumeBaseName(candidate.name) === atlasName &&
+      isRegionLabel(candidate.label),
   )
   const region = value?.label?.trim()
   return region ? { region, atlas: atlasName } : null
@@ -2429,7 +3512,9 @@ function volumeBaseName(name: string): string {
 function isRegionLabel(label: string | undefined): boolean {
   if (!label) return false
   const normalized = label.trim().toLowerCase()
-  return normalized.length > 0 && normalized !== 'air' && normalized !== 'background'
+  return (
+    normalized.length > 0 && normalized !== 'air' && normalized !== 'background'
+  )
 }
 
 function formatCoordinate(value: number): string {
@@ -2442,22 +3527,25 @@ function formatVoxelIndex(value: number): string {
   return String(Math.round(value))
 }
 
-function warmProgressLabel(progress: WarmProgress | null, datasetRoot: string): string | null {
+// Background preview generation, in the user's terms ("previews", not the
+// pyramid cache that backs them).
+function warmProgressLabel(progress: WarmProgress | null): string | null {
   if (!progress || progress.total <= 0) return null
-  const datasetLabel = datasetRoot ? `${recentDatasetLabel(datasetRoot)}: ` : ''
-  if (!progress.active) return `${datasetLabel}Pyramid cache ready ${progress.completed}/${progress.total}`
-  const percent = Math.round((progress.completed / progress.total) * 100)
-  return `${datasetLabel}Warming pyramid ${progress.completed}/${progress.total} (${percent}%)`
+  if (!progress.active) return 'Previews ready'
+  return `Preparing previews ${progress.completed.toLocaleString()}/${progress.total.toLocaleString()}`
 }
 
 function compareAtlasCandidates(left: DesktopItem, right: DesktopItem): number {
-  return atlasCandidateScore(right) - atlasCandidateScore(left) || left.label.localeCompare(right.label)
+  return (
+    atlasCandidateScore(right) - atlasCandidateScore(left) ||
+    left.label.localeCompare(right.label)
+  )
 }
 
 function layerColormapForItem(
   item: DesktopItem,
   layerSettings: Record<string, LayerSettings>,
-  fallback: string
+  fallback: string,
 ): string {
   return layerSettings[item.id]?.colormap ?? fallback
 }
@@ -2465,7 +3553,9 @@ function layerColormapForItem(
 // Clamp the anatomical base to a grayscale-family map. A volume promoted from
 // overlay to base can carry a leaked pseudocolor setting; the base has no way to
 // display or change one (its dropdown is restricted), so force it grayscale.
-const BASE_COLORMAP_VALUES = new Set<string>(BASE_COLORMAP_OPTIONS.map((option) => option.value))
+const BASE_COLORMAP_VALUES = new Set<string>(
+  BASE_COLORMAP_OPTIONS.map((option) => option.value),
+)
 function baseColormap(value: string): string {
   return BASE_COLORMAP_VALUES.has(value) ? value : DEFAULT_BASE_COLORMAP
 }
@@ -2479,17 +3569,19 @@ function overlayColormapForIndex(index: number): string {
 function opacityForItem(
   itemId: string,
   layerSettings: Record<string, LayerSettings>,
-  fallback: number
+  fallback: number,
 ): number {
   const opacity = layerSettings[itemId]?.opacity
-  return typeof opacity === 'number' && Number.isFinite(opacity) ? opacity : fallback
+  return typeof opacity === 'number' && Number.isFinite(opacity)
+    ? opacity
+    : fallback
 }
 
 // The opacity actually sent to NiiVue: 0 when hidden, otherwise the stored value.
 function renderOpacityForItem(
   itemId: string,
   layerSettings: Record<string, LayerSettings>,
-  fallback: number
+  fallback: number,
 ): number {
   if (layerSettings[itemId]?.hidden) return 0
   return opacityForItem(itemId, layerSettings, fallback)
@@ -2497,10 +3589,15 @@ function renderOpacityForItem(
 
 function windowForItem(
   itemId: string,
-  layerSettings: Record<string, LayerSettings>
+  layerSettings: Record<string, LayerSettings>,
 ): { calMin: number; calMax: number } | Record<string, never> {
   const window = layerSettings[itemId]?.window
-  if (!window || !Number.isFinite(window.min) || !Number.isFinite(window.max) || window.min >= window.max) {
+  if (
+    !window ||
+    !Number.isFinite(window.min) ||
+    !Number.isFinite(window.max) ||
+    window.min >= window.max
+  ) {
     return {}
   }
   return { calMin: window.min, calMax: window.max }
@@ -2508,14 +3605,18 @@ function windowForItem(
 
 function atlasCandidateScore(item: DesktopItem): number {
   const text = `${item.id} ${item.label}`
-  if (/(^|[_\-\s.])(atlas|aal|bigbrain|parc|parcel|parcellation|labels?|dseg|aseg|seg|annotation)([_\-\s.]|$)/i.test(text)) {
+  if (
+    /(^|[_\-\s.])(atlas|aal|bigbrain|parc|parcel|parcellation|labels?|dseg|aseg|seg|annotation)([_\-\s.]|$)/i.test(
+      text,
+    )
+  ) {
     return 2
   }
   return 0
 }
 
 function layerOptionMeta(item: DesktopItem): string {
-  const base = `${volumeImageTypeLabel(item)} / ${item.shape.join(' x ')} / ${item.dtype}`
+  const base = volumeSummary(item)
   const subject = volumeSubject(item)
   return subject ? `${subject} · ${base}` : base
 }
@@ -2524,7 +3625,10 @@ function layerOptionMeta(item: DesktopItem): string {
 // subjects differ — the silent study-mix-up case. Returns a reason for the
 // warning, or null. Geometry (shape/spacing) is shown but not warned on: legit
 // co-registered overlays routinely have a different grid than the base.
-function layerSubjectWarning(base: DesktopItem | null, item: DesktopItem): string | null {
+function layerSubjectWarning(
+  base: DesktopItem | null,
+  item: DesktopItem,
+): string | null {
   if (!base || item.id === base.id) return null
   const baseSubject = volumeSubject(base)
   const itemSubject = volumeSubject(item)
@@ -2540,7 +3644,7 @@ function layerSubjectWarning(base: DesktopItem | null, item: DesktopItem): strin
 
 function extentsEqual(
   a: Record<string, LayerExtent>,
-  b: Record<string, LayerExtent>
+  b: Record<string, LayerExtent>,
 ): boolean {
   const aKeys = Object.keys(a)
   if (aKeys.length !== Object.keys(b).length) return false
@@ -2571,7 +3675,7 @@ const SPACE_OVERLAP_MIN = 0.5
 
 function layerSpaceWarning(
   base: LayerExtent | undefined,
-  item: LayerExtent | undefined
+  item: LayerExtent | undefined,
 ): string | null {
   if (!base || !item || base.min.length < 3 || item.min.length < 3) return null
   let intersection = 1
@@ -2595,7 +3699,7 @@ function layerSpaceWarning(
 function layerWarning(
   base: DesktopItem | null,
   item: DesktopItem,
-  layerExtents: Record<string, LayerExtent>
+  layerExtents: Record<string, LayerExtent>,
 ): string | null {
   if (!base || item.id === base.id) return null
   return (
@@ -2608,10 +3712,10 @@ async function savePatch(
   serverUrl: string,
   item: DesktopItem | null,
   clipPlanes: ClipPlane[],
-  backend: Backend
+  backend: Backend,
 ): Promise<void> {
   if (!serverUrl || !item) {
-    throw new Error('Select a volume before saving a correction patch.')
+    throw new Error('Select a volume before saving a clip-plane correction.')
   }
 
   const response = await fetch(`${serverUrl}/session/correction.patch.json`, {
@@ -2622,14 +3726,45 @@ async function savePatch(
       asset: {
         id: item.id,
         type: item.type,
-        manifest: item.manifest
+        manifest: item.manifest,
       },
       backend,
       clipPlanes: clipPlanes.filter((plane) => plane.enabled),
-      savedAt: new Date().toISOString()
-    })
+      savedAt: new Date().toISOString(),
+    }),
   })
   if (!response.ok) {
-    throw new Error(`Correction patch save failed with HTTP ${response.status}.`)
+    throw new Error(
+      `Clip-plane correction was not saved (HTTP ${response.status}).`,
+    )
   }
+}
+
+/** Close a dropdown menu on an outside mouse-down or Escape. */
+function useDismissableMenu(
+  isOpen: boolean,
+  ref: RefObject<HTMLElement | null>,
+  close: () => void,
+): void {
+  const closeRef = useRef(close)
+  closeRef.current = close
+  useEffect(() => {
+    if (!isOpen) return
+
+    function handleMouseDown(event: MouseEvent): void {
+      if (!ref.current) return
+      if (ref.current.contains(event.target as Node)) return
+      closeRef.current()
+    }
+    function handleKey(event: KeyboardEvent): void {
+      if (event.key === 'Escape') closeRef.current()
+    }
+
+    window.addEventListener('mousedown', handleMouseDown)
+    window.addEventListener('keydown', handleKey)
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown)
+      window.removeEventListener('keydown', handleKey)
+    }
+  }, [isOpen, ref])
 }

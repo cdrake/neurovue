@@ -1,19 +1,22 @@
-import { useMemo } from 'react'
+import { type JSX, useMemo } from 'react'
 import type { DesktopItem } from '../domain/desktop'
 import {
+  formatVoxelSpacing,
+  volumeDisplayLabel,
   volumeFacetCounts,
   volumeFacetValue,
+  volumeImageTypeDisplay,
   volumeImageTypeLabel,
-  volumeRoleLabel
+  volumeRoleLabel,
+  volumeSummary,
 } from '../domain/volumeFacets'
 import {
+  previewImageForSize,
   SIDEBAR_PREVIEW_SIZE,
   StablePreviewImage,
-  previewImageForSize
 } from './StablePreviewImage'
 
 export interface VolumeFilterPanelProps {
-  activeItemId: string | null
   filteredItems: DesktopItem[]
   items: DesktopItem[]
   query: string
@@ -22,7 +25,6 @@ export interface VolumeFilterPanelProps {
   selectedFormats: Set<string>
   selectedImageTypes: Set<string>
   selectedRoles: Set<string>
-  onActiveItem: (id: string | null) => void
   onClearFilters: () => void
   onQueryChange: (query: string) => void
   onSelect: (item: DesktopItem) => void
@@ -33,7 +35,6 @@ export interface VolumeFilterPanelProps {
 }
 
 export function VolumeFilterPanel({
-  activeItemId,
   filteredItems,
   items,
   query,
@@ -42,30 +43,30 @@ export function VolumeFilterPanel({
   selectedFormats,
   selectedImageTypes,
   selectedRoles,
-  onActiveItem,
   onClearFilters,
   onQueryChange,
   onSelect,
   onToggleDtype,
   onToggleFormat,
   onToggleImageType,
-  onToggleRole
+  onToggleRole,
 }: VolumeFilterPanelProps): JSX.Element {
-  const roleCounts = useMemo(() => volumeFacetCounts(items, volumeRoleLabel), [items])
-  const imageTypeCounts = useMemo(() => volumeFacetCounts(items, volumeImageTypeLabel), [items])
+  const roleCounts = useMemo(
+    () => volumeFacetCounts(items, volumeRoleLabel),
+    [items],
+  )
+  const imageTypeCounts = useMemo(
+    () => volumeFacetCounts(items, volumeImageTypeLabel),
+    [items],
+  )
   const formatCounts = useMemo(
     () => volumeFacetCounts(items, (item) => volumeFacetValue(item.format)),
-    [items]
+    [items],
   )
   const dtypeCounts = useMemo(
     () => volumeFacetCounts(items, (item) => volumeFacetValue(item.dtype)),
-    [items]
+    [items],
   )
-  const activeItem =
-    filteredItems.find((item) => item.id === activeItemId) ??
-    (selected && filteredItems.some((item) => item.id === selected.id) ? selected : null) ??
-    filteredItems[0] ??
-    null
   const hasFilters =
     query.trim().length > 0 ||
     selectedRoles.size > 0 ||
@@ -75,9 +76,13 @@ export function VolumeFilterPanel({
 
   return (
     <div className="nv-volume-filter">
-      <section className="nv-volume-filter-panel nv-volume-filter-facets" aria-label="Volume filters">
+      <section
+        className="nv-volume-filter-panel nv-volume-filter-facets"
+        aria-label="Volume filters"
+      >
         <div className="nv-filter-search-row">
           <input
+            aria-label="Filter volumes"
             className="nv-search"
             placeholder="Filter volumes"
             value={query}
@@ -114,12 +119,15 @@ export function VolumeFilterPanel({
         <VolumeFacetGroup
           counts={dtypeCounts}
           selected={selectedDtypes}
-          title="Dtype"
+          title="Data type"
           onToggle={onToggleDtype}
         />
       </section>
 
-      <section className="nv-volume-filter-panel nv-volume-results-panel" aria-label="Filtered volumes">
+      <section
+        className="nv-volume-filter-panel nv-volume-results-panel"
+        aria-label="Filtered volumes"
+      >
         <div className="nv-filter-panel-title">
           <span>Volumes</span>
           <em>{filteredItems.length}</em>
@@ -130,9 +138,9 @@ export function VolumeFilterPanel({
             <button
               className={`nv-volume-card ${selected?.id === item.id ? 'is-selected' : ''}`}
               key={item.id}
+              aria-pressed={selected?.id === item.id}
               onClick={() => onSelect(item)}
-              onFocus={() => onActiveItem(item.id)}
-              onMouseEnter={() => onActiveItem(item.id)}
+              title={item.label}
               type="button"
             >
               <StablePreviewImage
@@ -140,8 +148,8 @@ export function VolumeFilterPanel({
                 frameClassName="nv-volume-thumb"
               />
               <span>
-                <strong>{item.label}</strong>
-                <small>{volumeImageTypeLabel(item)} / {item.shape.join(' x ')} / {item.dtype}</small>
+                <strong>{volumeDisplayLabel(item)}</strong>
+                <small>{volumeSummary(item)}</small>
               </span>
             </button>
           ))}
@@ -151,7 +159,9 @@ export function VolumeFilterPanel({
         </div>
       </section>
 
-      <VolumeFilterDetails item={activeItem} />
+      {/* Metadata always describes the selected (loaded) volume, even when a
+          filter hides it; hovering or focusing a row only highlights it. */}
+      <VolumeFilterDetails item={selected} />
     </div>
   )
 }
@@ -160,20 +170,22 @@ function VolumeFacetGroup({
   counts,
   selected,
   title,
-  onToggle
+  onToggle,
 }: {
   counts: Map<string, number>
   selected: Set<string>
   title: string
   onToggle: (value: string) => void
 }): JSX.Element {
-  const entries = Array.from(counts.entries()).sort((left, right) => left[0].localeCompare(right[0]))
+  const entries = Array.from(counts.entries()).sort((left, right) =>
+    left[0].localeCompare(right[0]),
+  )
 
   return (
     <div className="nv-filter-facet-group">
       <div className="nv-filter-panel-title">
         <span>{title}</span>
-        <em>{selected.size > 0 ? selected.size : 'all'}</em>
+        <em>{selected.size > 0 ? selected.size : 'Any'}</em>
       </div>
       <div className="nv-filter-facet-options">
         {entries.map(([value, count]) => (
@@ -187,18 +199,27 @@ function VolumeFacetGroup({
             <em>{count}</em>
           </label>
         ))}
-        {entries.length === 0 ? <div className="nv-filter-empty">None</div> : null}
+        {entries.length === 0 ? (
+          <div className="nv-filter-empty">None</div>
+        ) : null}
       </div>
     </div>
   )
 }
 
-function VolumeFilterDetails({ item }: { item: DesktopItem | null }): JSX.Element {
+function VolumeFilterDetails({
+  item,
+}: {
+  item: DesktopItem | null
+}): JSX.Element {
   return (
-    <section className="nv-volume-filter-panel nv-volume-filter-details" aria-label="Volume metadata">
+    <section
+      className="nv-volume-filter-panel nv-volume-filter-details"
+      aria-label="Volume metadata"
+    >
       <div className="nv-filter-panel-title">
         <span>Metadata</span>
-        <em>{item ? volumeRoleLabel(item) : 'none'}</em>
+        <em>{item ? volumeRoleLabel(item) : 'None'}</em>
       </div>
 
       {item ? (
@@ -210,13 +231,13 @@ function VolumeFilterDetails({ item }: { item: DesktopItem | null }): JSX.Elemen
           <dt>Format</dt>
           <dd>{volumeFacetValue(item.format)}</dd>
           <dt>Image</dt>
-          <dd>{volumeImageTypeLabel(item)}</dd>
-          <dt>Dtype</dt>
+          <dd>{volumeImageTypeDisplay(item)}</dd>
+          <dt>Data type</dt>
           <dd>{volumeFacetValue(item.dtype)}</dd>
           <dt>Shape</dt>
           <dd>{item.shape.join(' x ')}</dd>
           <dt>Spacing</dt>
-          <dd>{item.spacing.join(' x ')}</dd>
+          <dd>{formatVoxelSpacing(item.spacing)}</dd>
           {item.derivedFrom ? (
             <>
               <dt>Source</dt>

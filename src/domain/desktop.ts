@@ -2,6 +2,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 
 export type Backend = 'webgl2' | 'webgpu'
+
+/** How the footer status line presents a message. */
+export type StatusTone = 'info' | 'success' | 'error'
 export type Axis = 'axial' | 'coronal' | 'sagittal'
 
 export interface WorldRect {
@@ -98,7 +101,59 @@ export interface DesktopManifest {
     rows: number
   }
   itemCount: number
+  /** NIfTI files found in the dataset (excludes overlays and derivatives). */
+  totalDiscovered?: number
+  /** True when the volume cap left some of `totalDiscovered` out of `items`. */
+  truncated?: boolean
   items: DesktopItem[]
+}
+
+/**
+ * Plain-language notice when the dataset has more volumes than NeuroVue shows,
+ * e.g. "Showing 512 of 1,284 volumes". Null when nothing was left out.
+ */
+export function truncationNotice(manifest: DesktopManifest): string | null {
+  if (!manifest.truncated || manifest.totalDiscovered === undefined) return null
+  const shown = manifest.items.filter(
+    (item) => (item.role ?? 'source') === 'source',
+  ).length
+  return `Showing ${shown.toLocaleString()} of ${manifest.totalDiscovered.toLocaleString()} volumes`
+}
+
+/**
+ * True while the only dataset is the MNI152 template NeuroVue ships (or falls
+ * back to): every source volume is the `mni152` entry and the dataset root is
+ * inside an app bundle (`….app/…`, macOS and iOS), is a `resources` dir (the
+ * `tauri dev` resource dir), or is unresolved. niimath
+ * derivatives of the sample don't count, so it keeps its plain label.
+ */
+export function isBundledSampleDataset(
+  items: readonly DesktopItem[],
+  datasetRoot: string,
+): boolean {
+  const sources = items.filter((item) => (item.role ?? 'source') === 'source')
+  if (sources.length === 0 || sources.some((item) => item.id !== 'mni152')) {
+    return false
+  }
+  return datasetRoot === '' || /(\.app(\/|$)|\/resources\/?$)/.test(datasetRoot)
+}
+
+/** Status-line text for a freshly loaded manifest. */
+export function manifestLoadedStatus(
+  manifest: DesktopManifest,
+  datasetRoot?: string,
+): string {
+  if (manifest.itemCount === 0) return 'No dataset open.'
+  const from = datasetRoot ? ` from ${datasetRoot}` : ''
+  const notice = truncationNotice(manifest)
+  return notice
+    ? `${notice}${from}. Only the first ones by file path are loaded.`
+    : `${volumeCountLabel(manifest.itemCount)} loaded${from}.`
+}
+
+/** "1 volume" / "265 volumes". */
+export function volumeCountLabel(count: number): string {
+  return `${count.toLocaleString()} ${count === 1 ? 'volume' : 'volumes'}`
 }
 
 export interface DesktopManifestVersion {
@@ -122,6 +177,8 @@ export interface ServerInfo {
   bidsVersion?: string | null
   bidsDatasetDoi?: string | null
   warmProgress?: WarmProgress
+  /** The bundled MNI152 sample, offered on the Welcome screen. */
+  samplePath?: string | null
 }
 
 export interface DatasetOpenResult {
@@ -162,7 +219,7 @@ const BROWSER_REFERENCE_SERVER = 'http://127.0.0.1:8087'
 const BROWSER_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   terminalAvailable: false,
   nativeNiimathAvailable: false,
-  airdropAvailable: false
+  airdropAvailable: false,
 }
 
 export async function resolveRuntimeCapabilities(): Promise<RuntimeCapabilities> {
@@ -178,7 +235,7 @@ export async function resolveServerInfo(): Promise<ServerInfo | null> {
     const info = await invoke<ServerInfo>('neurovue_server_info')
     return {
       ...info,
-      url: trimTrailingSlash(info.url)
+      url: trimTrailingSlash(info.url),
     }
   } catch {
     return null
@@ -192,40 +249,60 @@ export async function resolveServerUrl(): Promise<string> {
   return (await resolveServerInfo())?.url ?? BROWSER_REFERENCE_SERVER
 }
 
-export async function fetchDesktopManifest(serverUrl: string): Promise<DesktopManifest> {
-  const response = await fetch(`${trimTrailingSlash(serverUrl)}/iiif/desktop/neuro/manifest`)
+export async function fetchDesktopManifest(
+  serverUrl: string,
+): Promise<DesktopManifest> {
+  const response = await fetch(
+    `${trimTrailingSlash(serverUrl)}/iiif/desktop/neuro/manifest`,
+  )
   if (!response.ok) {
-    throw new Error(`Desktop manifest request failed with HTTP ${response.status}.`)
+    throw new Error(
+      `Desktop manifest request failed with HTTP ${response.status}.`,
+    )
   }
   return response.json() as Promise<DesktopManifest>
 }
 
-export async function fetchDesktopManifestVersion(serverUrl: string): Promise<string> {
-  const response = await fetch(`${trimTrailingSlash(serverUrl)}/iiif/desktop/neuro/version`)
+export async function fetchDesktopManifestVersion(
+  serverUrl: string,
+): Promise<string> {
+  const response = await fetch(
+    `${trimTrailingSlash(serverUrl)}/iiif/desktop/neuro/version`,
+  )
   if (!response.ok) {
-    throw new Error(`Desktop manifest version request failed with HTTP ${response.status}.`)
+    throw new Error(
+      `Desktop manifest version request failed with HTTP ${response.status}.`,
+    )
   }
-  const payload = await response.json() as DesktopManifestVersion
+  const payload = (await response.json()) as DesktopManifestVersion
   return payload.version
 }
 
-export async function fetchVolumeMetadata(item: DesktopItem): Promise<VolumeMetadata> {
+export async function fetchVolumeMetadata(
+  item: DesktopItem,
+): Promise<VolumeMetadata> {
   const response = await fetch(item.metadata)
   if (!response.ok) {
-    throw new Error(`Volume metadata request failed with HTTP ${response.status}.`)
+    throw new Error(
+      `Volume metadata request failed with HTTP ${response.status}.`,
+    )
   }
   return response.json() as Promise<VolumeMetadata>
 }
 
 export function rawVolumeUrl(item: DesktopItem): string {
-  return item.levels.find((level) => level.level === 0)?.raw ?? item.levels[0]?.raw ?? item.manifest
+  return (
+    item.levels.find((level) => level.level === 0)?.raw ??
+    item.levels[0]?.raw ??
+    item.manifest
+  )
 }
 
 export async function openDatasetDirectory(): Promise<DatasetOpenResult | null> {
   const selected = await open({
     directory: true,
     multiple: false,
-    title: 'Open NeuroVue dataset folder'
+    title: 'Open NeuroVue dataset folder',
   })
   if (!selected || Array.isArray(selected)) return null
   return openDatasetByPath(selected)
@@ -239,9 +316,9 @@ export async function openVolumeFile(): Promise<DatasetOpenResult | null> {
     filters: [
       {
         name: 'NIfTI volumes',
-        extensions: ['nii', 'gz']
-      }
-    ]
+        extensions: ['nii', 'gz'],
+      },
+    ],
   })
   if (!selected || Array.isArray(selected)) return null
   // A single file opens as a single-volume dataset (open_dataset_root accepts a
@@ -258,43 +335,50 @@ export async function openOverlayVolume(): Promise<OverlayAddResult | null> {
     filters: [
       {
         name: 'NIfTI volumes',
-        extensions: ['nii', 'gz']
-      }
-    ]
+        extensions: ['nii', 'gz'],
+      },
+    ],
   })
   if (!selected || Array.isArray(selected)) return null
   return addOverlayVolumeByPath(selected)
 }
 
-export async function openDatasetByPath(path: string): Promise<DatasetOpenResult> {
+export async function openDatasetByPath(
+  path: string,
+): Promise<DatasetOpenResult> {
   const result = await invoke<DatasetOpenResult>('open_dataset_path', { path })
   return {
     ...result,
-    url: trimTrailingSlash(result.url)
+    url: trimTrailingSlash(result.url),
   }
 }
 
-export async function addOverlayVolumeByPath(path: string): Promise<OverlayAddResult> {
+export async function addOverlayVolumeByPath(
+  path: string,
+): Promise<OverlayAddResult> {
   return invoke<OverlayAddResult>('add_overlay_volume_path', { path })
 }
 
+// All planes start off: 3D opens as a whole brain, and the user turns on the
+// cut they want. Bundles store only enabled planes and merge onto these, so a
+// saved view restores exactly the planes it had.
 export function defaultClipPlanes(): ClipPlane[] {
   return [
     {
       id: 'anterior',
       label: 'Anterior',
-      enabled: true,
+      enabled: false,
       depth: 0,
       azimuth: 180,
-      elevation: 0
+      elevation: 0,
     },
     {
       id: 'inferior',
       label: 'Inferior',
-      enabled: true,
+      enabled: false,
       depth: 0,
       azimuth: 0,
-      elevation: -90
+      elevation: -90,
     },
     {
       id: 'right',
@@ -302,8 +386,8 @@ export function defaultClipPlanes(): ClipPlane[] {
       enabled: false,
       depth: 0,
       azimuth: 90,
-      elevation: 0
-    }
+      elevation: 0,
+    },
   ]
 }
 

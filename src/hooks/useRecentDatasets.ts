@@ -1,7 +1,17 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 
 const RECENT_DATASETS_KEY = 'neurovue.recentDatasets.v1'
 const MAX_RECENT_DATASETS = 10
+const REOPEN_LAST_KEY = 'neurovue.reopenLastDataset.v1'
+
+// On by default, like VS Code restoring its last folder.
+function loadReopenLast(): boolean {
+  try {
+    return window.localStorage.getItem(REOPEN_LAST_KEY) !== 'false'
+  } catch {
+    return true
+  }
+}
 
 function loadRecentDatasets(): string[] {
   try {
@@ -9,10 +19,33 @@ function loadRecentDatasets(): string[] {
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    return parsed.filter(
+      (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+    )
   } catch {
     return []
   }
+}
+
+const normalizeSeparators = (path: string): string =>
+  path.replace(/\\/g, '/').replace(/\/+$/, '')
+
+/**
+ * Bundle import once recorded the bundle's extracted `<cacheRoot>/imports/<stem>/
+ * data` dir instead of the `.nvbundle`. Those entries are dead: the dir sits under
+ * the OS temp dir and is deleted on every re-import — and since the label is the
+ * last path segment, each one displayed as a bare "data". Matching against the
+ * server's real `cacheRoot` (rather than sniffing for temp-looking paths) keeps a
+ * user's own `…/neurovue/imports/x/data` directory from being pruned too.
+ */
+function isExtractedBundleDir(path: string, cacheRoot: string): boolean {
+  const root = normalizeSeparators(cacheRoot)
+  if (!root) return false
+  const prefix = `${root}/imports/`
+  const normalized = normalizeSeparators(path)
+  if (!normalized.startsWith(prefix)) return false
+  const segments = normalized.slice(prefix.length).split('/')
+  return segments.length === 2 && segments[1] === 'data'
 }
 
 function persistRecentDatasets(entries: string[]): string[] {
@@ -44,19 +77,60 @@ export interface RecentDatasets {
   promoteRecent: (path: string) => void
   /** Drop `path` from the recents list (and persist). */
   removeRecent: (path: string) => void
+  /** One-time cleanup of pre-fix entries pointing into `<cacheRoot>/imports/`. */
+  pruneExtractedBundleDirs: (cacheRoot: string) => void
+  /** Reopen the most recent dataset at launch instead of showing Welcome. */
+  reopenLast: boolean
+  setReopenLast: (reopen: boolean) => void
 }
 
 /** Owns the persisted "recent datasets" list. */
 export function useRecentDatasets(): RecentDatasets {
-  const [recentDatasets, setRecentDatasets] = useState<string[]>(() => loadRecentDatasets())
+  const [recentDatasets, setRecentDatasets] = useState<string[]>(() =>
+    loadRecentDatasets(),
+  )
+  const [reopenLast, setReopenLastState] = useState(loadReopenLast)
+
+  function setReopenLast(reopen: boolean): void {
+    setReopenLastState(reopen)
+    try {
+      window.localStorage.setItem(REOPEN_LAST_KEY, String(reopen))
+    } catch {
+      // localStorage may be disabled — the choice lasts for this session.
+    }
+  }
 
   function promoteRecent(path: string): void {
-    setRecentDatasets((previous) => persistRecentDatasets(promoteRecentDataset(previous, path)))
+    setRecentDatasets((previous) =>
+      persistRecentDatasets(promoteRecentDataset(previous, path)),
+    )
   }
 
   function removeRecent(path: string): void {
-    setRecentDatasets((previous) => persistRecentDatasets(previous.filter((entry) => entry !== path)))
+    setRecentDatasets((previous) =>
+      persistRecentDatasets(previous.filter((entry) => entry !== path)),
+    )
   }
 
-  return { recentDatasets, promoteRecent, removeRecent }
+  // Stable identity, and returns `previous` untouched when there's nothing to
+  // drop — otherwise the caller's effect would loop on a fresh array each render.
+  const pruneExtractedBundleDirs = useCallback((cacheRoot: string): void => {
+    setRecentDatasets((previous) => {
+      const kept = previous.filter(
+        (entry) => !isExtractedBundleDir(entry, cacheRoot),
+      )
+      return kept.length === previous.length
+        ? previous
+        : persistRecentDatasets(kept)
+    })
+  }, [])
+
+  return {
+    recentDatasets,
+    promoteRecent,
+    removeRecent,
+    pruneExtractedBundleDirs,
+    reopenLast,
+    setReopenLast,
+  }
 }

@@ -52,8 +52,8 @@ sequencing in `docs/roadmap.md`; provenance detail in `docs/provenance.md`. The
 
 ## Mobile (iPhone / iPad)
 
-The codebase is already Tauri-v2 mobile-capable; these are the remaining blockers
-to an actual iOS/iPadOS build. See `AGENTS.md` for the guardrails.
+The codebase is Tauri-v2 mobile-capable and builds for iOS (status below).
+See `AGENTS.md` for the guardrails.
 
 **iOS build works — app runs on the simulator (2026-07-06).** `tauri ios init`
 scaffolded `src-tauri/gen/apple`; the Rust lib cross-compiles for
@@ -87,7 +87,8 @@ iOS sandbox, registering a phantom volume with `source_path: None` (raw endpoint
 server inside `.setup()`, resolves the resource via
 `app.path().resolve("resources/mni152.nii.gz", Resource)`, and sets
 `NEUROVUE_DEFAULT_VOLUME`, which `discovery_roots()` appends **last** (so desktop
-still prefers a real dev dataset). Verified on the simulator: launches → renders
+still prefers a real dev dataset; since 2026-10-23 the `~/Dev` checkouts are probed
+in debug builds only, so release builds go straight to explicit roots, then MNI152). Verified on the simulator: launches → renders
 an axial MNI152 slice with A/L orientation labels. Note: on iOS the resource lands
 at `.app/assets/resources/mni152.nii.gz` and `BaseDirectory::Resource` resolves it
 correctly. A user-facing **document picker** for opening *arbitrary* datasets is
@@ -490,8 +491,18 @@ RAS+value widget.)
   - **Clip planes** not restored — `applyClipPlanes` sets state but the planes
     don't take effect on load (our-side, not niivue-blocked; a quick fix if we
     want it before the port).
-  Also interim-wart: import promotes the bundle's `…/data` subdir into recent
-  datasets (should promote the `.nvbundle` path). Remaining beyond that: a
+  **Recents fixed (2026-07-08):** import used to promote the bundle's extracted
+  `…/data` subdir into recent datasets. That path lives under `cache_root()` (the
+  OS temp dir) and is `remove_dir_all`'d on every re-import, so the entry was both
+  ephemeral and — since `recentDatasetLabel` takes the last path segment — shown
+  as a bare `data` for *every* bundle. Recents now records the `.nvbundle` itself
+  (`openRecentDataset(dataDir, { promoteAs: path })`), and clicking a `.nvbundle`
+  recent routes through `importBundleFromPath` so it is re-verified and its view
+  replayed, rather than opened as a plain directory. Pre-fix entries already in
+  `localStorage` are pruned once the server reports its `cacheRoot`
+  (`pruneExtractedBundleDirs`) — matched against the real `<cacheRoot>/imports/
+  <stem>/data` shape rather than a temp-path heuristic, so a user's own
+  `…/neurovue/imports/x/data` directory survives. Remaining: a
   lighter "save view only" (no data copy) if wanted. `savePatch` (the old obscure
   "Save correction patch") still only writes clip planes + backend and is
   superseded for view-sharing.

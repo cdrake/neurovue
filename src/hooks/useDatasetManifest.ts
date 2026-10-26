@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
 import type {
   DatasetOpenResult,
   DesktopItem,
   DesktopManifest,
-  WarmProgress
+  StatusTone,
+  WarmProgress,
 } from '../domain/desktop'
 import {
   fetchDesktopManifest,
   fetchDesktopManifestVersion,
+  manifestLoadedStatus,
   openDatasetByPath,
   openDatasetDirectory,
   openVolumeFile,
   resolveServerInfo,
-  resolveServerUrl
+  resolveServerUrl,
 } from '../domain/desktop'
 
 const EMPTY_DESKTOP_ITEMS: DesktopItem[] = []
@@ -25,20 +26,40 @@ export interface DatasetManifestState {
   datasetRevision: number
   datasetRoot: string
   isOpeningDataset: boolean
+  /** The launch-time server/manifest lookup has finished (even if it failed). */
+  isStartupResolved: boolean
   items: DesktopItem[]
   manifest: DesktopManifest | null
   selected: DesktopItem | null
   selectedId: string | null
   serverUrl: string
   status: string
+  statusTone: StatusTone
   warmProgress: WarmProgress | null
   openLocalDataset: () => Promise<void>
   openLocalVolumeFile: () => Promise<void>
-  openRecentDataset: (path: string) => Promise<void>
+  /**
+   * Resolves false when the open failed (the error is already in the status).
+   * `remember: false` keeps the path out of recents.
+   */
+  openRecentDataset: (
+    path: string,
+    options?: { promoteAs?: string; remember?: boolean },
+  ) => Promise<boolean>
+  /** Open the bundled MNI152 sample (never recorded in recents). */
+  openSampleDataset: () => Promise<boolean>
+  /** Empty when the build ships no sample (e.g. a plain browser). */
+  samplePath: string
   refreshDesktopManifest: (selectId?: string) => Promise<void>
-  refreshDesktopManifestData: (selectId?: string) => Promise<DesktopManifest | null>
+  refreshDesktopManifestData: (
+    selectId?: string,
+  ) => Promise<DesktopManifest | null>
   setSelectedId: (id: string | null) => void
-  setStatus: (status: string) => void
+  /**
+   * Replace the status line. Every user action calls this, so it always wins,
+   * including over an error.
+   */
+  setStatus: (status: string, tone?: StatusTone) => void
 }
 
 export interface UseDatasetManifestOptions {
@@ -46,7 +67,7 @@ export interface UseDatasetManifestOptions {
 }
 
 export function useDatasetManifest({
-  promoteRecent
+  promoteRecent,
 }: UseDatasetManifestOptions): DatasetManifestState {
   const manifestRef = useRef<DesktopManifest | null>(null)
   const manifestVersionRef = useRef<string | null>(null)
@@ -58,11 +79,30 @@ export function useDatasetManifest({
   const [bidsName, setBidsName] = useState('')
   const [bidsDatasetDoi, setBidsDatasetDoi] = useState('')
   const [cacheRoot, setCacheRoot] = useState('')
+  const [samplePath, setSamplePath] = useState('')
+  const [isStartupResolved, setIsStartupResolved] = useState(false)
   const [datasetRevision, setDatasetRevision] = useState(0)
   const [warmProgress, setWarmProgress] = useState<WarmProgress | null>(null)
   const [manifest, setManifest] = useState<DesktopManifest | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [status, setStatus] = useState('Starting NeuroVue.')
+  const [statusLine, setStatusLine] = useState<{
+    text: string
+    tone: StatusTone
+  }>({ text: 'Starting NeuroVue.', tone: 'info' })
+  const setStatus = useCallback(
+    (text: string, tone: StatusTone = 'info'): void => {
+      setStatusLine({ text, tone })
+    },
+    [],
+  )
+  // Routine refreshes (the manifest poll, re-reads after an action) must not
+  // wipe an error or success the user hasn't acted on yet; the next real
+  // action replaces it.
+  const setBackgroundStatus = useCallback((text: string): void => {
+    setStatusLine((current) =>
+      current.tone === 'info' ? { text, tone: 'info' } : current,
+    )
+  }, [])
   const [isOpeningDataset, setIsOpeningDataset] = useState(false)
 
   useEffect(() => {
@@ -77,10 +117,13 @@ export function useDatasetManifest({
     selectedIdRef.current = selectedId
   }, [selectedId])
 
-  const items = useMemo(() => manifest?.items ?? EMPTY_DESKTOP_ITEMS, [manifest])
+  const items = useMemo(
+    () => manifest?.items ?? EMPTY_DESKTOP_ITEMS,
+    [manifest],
+  )
   const selected = useMemo(
     () => items.find((item) => item.id === selectedId) ?? items[0] ?? null,
-    [items, selectedId]
+    [items, selectedId],
   )
 
   useEffect(() => {
@@ -89,24 +132,33 @@ export function useDatasetManifest({
     async function load(): Promise<void> {
       try {
         const serverInfo = await resolveServerInfo()
-        const resolved = serverInfo?.url ?? await resolveServerUrl()
+        const resolved = serverInfo?.url ?? (await resolveServerUrl())
         if (cancelled) return
         setServerUrl(resolved)
         setDatasetRoot(serverInfo?.datasetRoot ?? '')
         setBidsName(serverInfo?.bidsName ?? '')
         setBidsDatasetDoi(serverInfo?.bidsDatasetDoi ?? '')
         setCacheRoot(serverInfo?.cacheRoot ?? '')
+        setSamplePath(serverInfo?.samplePath ?? '')
         setWarmProgress(serverInfo?.warmProgress ?? null)
         const nextManifest = await fetchDesktopManifest(resolved)
-        const nextVersion = await fetchDesktopManifestVersion(resolved).catch(() => null)
+        const nextVersion = await fetchDesktopManifestVersion(resolved).catch(
+          () => null,
+        )
         if (cancelled) return
         manifestVersionRef.current = nextVersion
         setManifest(nextManifest)
         setSelectedId(nextManifest.items[0]?.id ?? null)
         setDatasetRevision((revision) => revision + 1)
-        setStatus(`${nextManifest.itemCount} volume item(s) loaded.`)
+        setStatus(manifestLoadedStatus(nextManifest))
       } catch (error) {
-        if (!cancelled) setStatus(error instanceof Error ? error.message : String(error))
+        if (!cancelled)
+          setStatus(
+            error instanceof Error ? error.message : String(error),
+            'error',
+          )
+      } finally {
+        if (!cancelled) setIsStartupResolved(true)
       }
     }
 
@@ -114,43 +166,67 @@ export function useDatasetManifest({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [setStatus])
 
-  const refreshDesktopManifestData = useCallback(async (selectId?: string): Promise<DesktopManifest | null> => {
-    if (!serverUrl) return null
-    const nextManifest = await fetchDesktopManifest(serverUrl)
-    manifestVersionRef.current = await fetchDesktopManifestVersion(serverUrl).catch(() => null)
-    setManifest(nextManifest)
-    if (selectId && nextManifest.items.some((item) => item.id === selectId)) {
-      setSelectedId(selectId)
-    }
-    setStatus(`${nextManifest.itemCount} volume item(s) loaded.`)
-    return nextManifest
-  }, [serverUrl])
+  const refreshDesktopManifestData = useCallback(
+    async (selectId?: string): Promise<DesktopManifest | null> => {
+      if (!serverUrl) return null
+      const nextManifest = await fetchDesktopManifest(serverUrl)
+      manifestVersionRef.current = await fetchDesktopManifestVersion(
+        serverUrl,
+      ).catch(() => null)
+      setManifest(nextManifest)
+      if (selectId && nextManifest.items.some((item) => item.id === selectId)) {
+        setSelectedId(selectId)
+      }
+      setBackgroundStatus(manifestLoadedStatus(nextManifest))
+      return nextManifest
+    },
+    [serverUrl, setBackgroundStatus],
+  )
 
-  const refreshDesktopManifest = useCallback(async (selectId?: string): Promise<void> => {
-    await refreshDesktopManifestData(selectId)
-  }, [refreshDesktopManifestData])
+  const refreshDesktopManifest = useCallback(
+    async (selectId?: string): Promise<void> => {
+      await refreshDesktopManifestData(selectId)
+    },
+    [refreshDesktopManifestData],
+  )
 
-  const applyDatasetOpenResult = useCallback(async (result: DatasetOpenResult): Promise<void> => {
-    setManifest(null)
-    setSelectedId(null)
-    setServerUrl(result.url)
-    setDatasetRoot(result.datasetRoot)
-    setBidsName(result.bidsName ?? '')
-    setBidsDatasetDoi(result.bidsDatasetDoi ?? '')
-    setCacheRoot(result.cacheRoot)
-    setWarmProgress(result.warmProgress ?? null)
-    setDatasetRevision((revision) => revision + 1)
-    setStatus(`Loading ${result.datasetRoot}.`)
+  // `promoteAs` overrides which path lands in recents. A bundle import opens the
+  // bundle's extracted `data/` dir, but that is an app-internal copy that is
+  // re-extracted on every import — so recents must remember the `.nvbundle`.
+  // `remember: false` skips recents entirely (the bundled sample).
+  const applyDatasetOpenResult = useCallback(
+    async (
+      result: DatasetOpenResult,
+      promoteAs?: string,
+      remember = true,
+    ): Promise<void> => {
+      setManifest(null)
+      setSelectedId(null)
+      setServerUrl(result.url)
+      setDatasetRoot(result.datasetRoot)
+      setBidsName(result.bidsName ?? '')
+      setBidsDatasetDoi(result.bidsDatasetDoi ?? '')
+      setCacheRoot(result.cacheRoot)
+      setWarmProgress(result.warmProgress ?? null)
+      setDatasetRevision((revision) => revision + 1)
+      setStatus(`Loading ${result.datasetRoot}.`)
 
-    const nextManifest = await fetchDesktopManifest(result.url)
-    manifestVersionRef.current = await fetchDesktopManifestVersion(result.url).catch(() => null)
-    setManifest(nextManifest)
-    setSelectedId(nextManifest.items[0]?.id ?? null)
-    setStatus(`${nextManifest.itemCount} volume item(s) loaded from ${result.datasetRoot}.`)
-    promoteRecentRef.current(result.datasetRoot)
-  }, [])
+      const nextManifest = await fetchDesktopManifest(result.url)
+      manifestVersionRef.current = await fetchDesktopManifestVersion(
+        result.url,
+      ).catch(() => null)
+      setManifest(nextManifest)
+      setSelectedId(nextManifest.items[0]?.id ?? null)
+      setStatus(
+        manifestLoadedStatus(nextManifest, result.datasetRoot),
+        'success',
+      )
+      if (remember) promoteRecentRef.current(promoteAs ?? result.datasetRoot)
+    },
+    [setStatus],
+  )
 
   const openLocalDataset = useCallback(async (): Promise<void> => {
     if (isOpeningDatasetRef.current) return
@@ -166,12 +242,12 @@ export function useDatasetManifest({
       }
       await applyDatasetOpenResult(result)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       isOpeningDatasetRef.current = false
       setIsOpeningDataset(false)
     }
-  }, [applyDatasetOpenResult])
+  }, [applyDatasetOpenResult, setStatus])
 
   const openLocalVolumeFile = useCallback(async (): Promise<void> => {
     if (isOpeningDatasetRef.current) return
@@ -187,45 +263,52 @@ export function useDatasetManifest({
       }
       await applyDatasetOpenResult(result)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       isOpeningDatasetRef.current = false
       setIsOpeningDataset(false)
     }
-  }, [applyDatasetOpenResult])
+  }, [applyDatasetOpenResult, setStatus])
 
-  const openRecentDataset = useCallback(async (path: string): Promise<void> => {
-    if (isOpeningDatasetRef.current) return
+  const openRecentDataset = useCallback(
+    async (
+      path: string,
+      options?: { promoteAs?: string; remember?: boolean },
+    ): Promise<boolean> => {
+      if (isOpeningDatasetRef.current) return false
 
-    isOpeningDatasetRef.current = true
-    setIsOpeningDataset(true)
-    setStatus(`Opening ${path}.`)
-    try {
-      const result = await openDatasetByPath(path)
-      await applyDatasetOpenResult(result)
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
-      isOpeningDatasetRef.current = false
-      setIsOpeningDataset(false)
-    }
-  }, [applyDatasetOpenResult])
+      isOpeningDatasetRef.current = true
+      setIsOpeningDataset(true)
+      setStatus(`Opening ${options?.promoteAs ?? path}.`)
+      try {
+        const result = await openDatasetByPath(path)
+        await applyDatasetOpenResult(
+          result,
+          options?.promoteAs,
+          options?.remember,
+        )
+        return true
+      } catch (error) {
+        setStatus(
+          error instanceof Error ? error.message : String(error),
+          'error',
+        )
+        return false
+      } finally {
+        isOpeningDatasetRef.current = false
+        setIsOpeningDataset(false)
+      }
+    },
+    [applyDatasetOpenResult, setStatus],
+  )
 
-  useEffect(() => {
-    let unlisten: (() => void) | null = null
-
-    void listen('neurovue-open-directory', () => {
-      void openLocalDataset()
-    }).then((nextUnlisten) => {
-      unlisten = nextUnlisten
-    }).catch(() => {
-      unlisten = null
-    })
-
-    return () => {
-      unlisten?.()
-    }
-  }, [openLocalDataset])
+  const openSampleDataset = useCallback(async (): Promise<boolean> => {
+    if (!samplePath) return false
+    const opened = await openRecentDataset(samplePath, { remember: false })
+    // The default status names the app bundle's Resources folder.
+    if (opened) setStatus('Opened the MNI152 sample template.', 'success')
+    return opened
+  }, [openRecentDataset, samplePath, setStatus])
 
   useEffect(() => {
     if (!serverUrl) return
@@ -248,10 +331,13 @@ export function useDatasetManifest({
         manifestVersionRef.current = nextVersion
         setManifest(nextManifest)
         const currentSelectedId = selectedIdRef.current
-        if (!currentSelectedId || !nextManifest.items.some((item) => item.id === currentSelectedId)) {
+        if (
+          !currentSelectedId ||
+          !nextManifest.items.some((item) => item.id === currentSelectedId)
+        ) {
           setSelectedId(nextManifest.items[0]?.id ?? null)
         }
-        setStatus(`${nextManifest.itemCount} volume item(s) loaded.`)
+        setBackgroundStatus(manifestLoadedStatus(nextManifest))
       } catch {
         try {
           const serverInfo = await resolveServerInfo()
@@ -285,7 +371,7 @@ export function useDatasetManifest({
       window.clearInterval(interval)
       window.removeEventListener('focus', onFocus)
     }
-  }, [serverUrl])
+  }, [serverUrl, setBackgroundStatus])
 
   useEffect(() => {
     if (!serverUrl) return
@@ -321,19 +407,23 @@ export function useDatasetManifest({
     datasetRevision,
     datasetRoot,
     isOpeningDataset,
+    isStartupResolved,
     items,
     manifest,
+    samplePath,
     selected,
     selectedId,
     serverUrl,
-    status,
+    status: statusLine.text,
+    statusTone: statusLine.tone,
     warmProgress,
     openLocalDataset,
     openLocalVolumeFile,
     openRecentDataset,
+    openSampleDataset,
     refreshDesktopManifest,
     refreshDesktopManifestData,
     setSelectedId,
-    setStatus
+    setStatus,
   }
 }
