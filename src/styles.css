@@ -3189,3 +3189,14 @@ button {
     left: var(--controls-width);
   }
 }
+
+/* Mesh color swatch: a native color well in the slider grid. */
+.nv-mesh-color input[type="color"] {
+  width: 100%;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}

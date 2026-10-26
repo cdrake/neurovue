@@ -5,6 +5,7 @@ import {
   FolderOpen,
   LoaderCircle,
   PackageOpen,
+  Shapes,
   X,
 } from 'lucide-react'
 import type { JSX, ReactNode } from 'react'
@@ -24,6 +25,7 @@ export function WelcomeScreen({
   onOpenBundle,
   onOpenFile,
   onOpenFolder,
+  onOpenMesh,
   onOpenRecent,
   onOpenSample,
   onRemoveRecent,
@@ -37,6 +39,7 @@ export function WelcomeScreen({
   onOpenBundle: () => void
   onOpenFile: () => void
   onOpenFolder: () => void
+  onOpenMesh: () => void
   onOpenRecent: (path: string) => void
   /** Null when this build ships no sample. */
   onOpenSample: (() => void) | null
@@ -80,6 +83,13 @@ export function WelcomeScreen({
                 icon={<FileJson aria-hidden="true" size={16} />}
                 label="Open NIfTI file…"
                 onClick={onOpenFile}
+              />
+              <WelcomeAction
+                disabled={busy}
+                hint="A surface: GIfTI, MZ3, OBJ, STL, FreeSurfer…"
+                icon={<Shapes aria-hidden="true" size={16} />}
+                label="Open mesh…"
+                onClick={onOpenMesh}
               />
               <WelcomeAction
                 disabled={busy}

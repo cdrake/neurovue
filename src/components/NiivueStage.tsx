@@ -23,6 +23,7 @@ import type {
   VolumeMetadata,
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
+import type { MeshLayer } from '../domain/meshes'
 import type { RenderShading } from '../domain/shading'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
@@ -49,6 +50,9 @@ interface NiivueStageProps {
   blocks: BlockSettings
   // 3D render look (lighting, gradient opacity, silhouette, MIP).
   shading: RenderShading
+  // Surface meshes shown with the volumes, or on their own when no volume is
+  // open (the Surfice case).
+  meshes: MeshLayer[]
   // A one-shot request to move the crosshair to an absolute RAS+ mm position.
   // A fresh object identity re-triggers the move (so going to the same
   // coordinate twice still fires).
@@ -186,6 +190,10 @@ interface NiiVueLike {
   }
   setClipPlanes?(planes: number[][]): void
   setClipPlane?(plane: number[]): void
+  meshes?: unknown[]
+  addMesh?(mesh: NiiVueMeshOptions): Promise<unknown>
+  removeAllMeshes?(): Promise<void>
+  setMesh?(meshIndex: number, options: NiiVueMeshDisplay): Promise<void>
   drawScene(): void
   resize?: () => void
   destroy?: () => void
@@ -206,6 +214,17 @@ interface NiiVueVolumeOptions {
   isColorbarVisible?: boolean
   calMin?: number
   calMax?: number
+}
+
+interface NiiVueMeshDisplay {
+  color: [number, number, number, number]
+  opacity: number
+  visible: boolean
+}
+
+interface NiiVueMeshOptions extends NiiVueMeshDisplay {
+  url: File
+  name: string
 }
 
 interface VolumePrefetch {
@@ -383,6 +402,7 @@ export function NiivueStage({
   viewMode,
   blocks,
   shading,
+  meshes,
   crosshairTarget,
   onClipPlaneDepthChange,
   onClipPlaneActivate,
@@ -406,6 +426,10 @@ export function NiivueStage({
   // display-only re-applies (which run on a possibly-reordered `layers`) still
   // target the correct volume. `volumeIndexOfLayer` is the single lookup.
   const loadedLayerIdsRef = useRef<string[]>([])
+  // Mesh ids in NiiVue's mesh order, and the queue mesh updates run through so
+  // a quick add-then-recolor can't interleave with the add.
+  const loadedMeshIdsRef = useRef<string[]>([])
+  const meshSyncRef = useRef<Promise<void>>(Promise.resolve())
   // Two-finger pinch tracking for render-view zoom (see handlePinch*).
   const pinchPointers = useRef<Map<number, { x: number; y: number }>>(new Map())
   const pinchDistance = useRef<number | null>(null)
@@ -431,6 +455,9 @@ export function NiivueStage({
     'Loading measure tool.',
   )
   const primaryItem = layers[0]?.item ?? item
+  // Meshes with no volume still need a viewer; with volumes, adding a mesh
+  // goes through the in-place mesh effect instead of a reload.
+  const isMeshOnly = layers.length === 0 && meshes.length > 0
   const isRenderMode = viewMode === 'render'
   const currentViewLabel = (
     VIEW_MODES.find((mode) => mode.id === viewMode) ??
@@ -511,7 +538,7 @@ export function NiivueStage({
     async function attach(): Promise<void> {
       const canvas = canvasRef.current
       const stage = stageRef.current
-      if (!canvas || layers.length === 0 || !primaryItem) {
+      if (!canvas || (!isMeshOnly && (layers.length === 0 || !primaryItem))) {
         setSnapId(null)
         setStatus('Waiting for a dataset selection.')
         onLocationChange?.(null)
@@ -521,7 +548,9 @@ export function NiivueStage({
       setSnapId(null)
       setIsStatusError(false)
       syncCanvasSize(canvas, stage)
-      setStatus(`Loading ${layerStackLabel(layers)}.`)
+      setStatus(
+        isMeshOnly ? 'Loading meshes.' : `Loading ${layerStackLabel(layers)}.`,
+      )
       try {
         const loaded = await loadNiiVue(backend)
         if (cancelled) return
@@ -582,7 +611,7 @@ export function NiivueStage({
           nvRef.current = null
           setIsStatusError(true)
           setStatus(
-            `Couldn't display ${primaryItem.label}: ${
+            `Couldn't display ${primaryItem?.label ?? 'the meshes'}: ${
               error instanceof Error ? error.message : String(error)
             }`,
           )
@@ -603,10 +632,11 @@ export function NiivueStage({
         localNv.destroy?.()
         nvRef.current = null
         loadedLayerIdsRef.current = []
+        loadedMeshIdsRef.current = []
       }
       onLocationChange?.(null)
     }
-  }, [backend, layerLoadKey, primaryItem, onLocationChange])
+  }, [backend, layerLoadKey, primaryItem, isMeshOnly, onLocationChange])
 
   // Apply display changes in place. Recreating the NiiVue instance (as the
   // attach effect does) just to recolor or hide an atlas would re-import the
@@ -784,6 +814,32 @@ export function NiivueStage({
     nv.volumeRenderMode = shading.isMip ? NIVUE_RENDER_MODE_MAXIMUM : 0
     nv.drawScene()
   }, [shading, loadedVersion])
+
+  // Meshes live beside the volumes: adding, removing or restyling one updates
+  // the current instance. loadedVersion re-adds them all to a rebuilt one.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion is the trigger for a rebuilt instance, not a value read here.
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv) return
+    meshSyncRef.current = meshSyncRef.current.then(async () => {
+      if (nvRef.current !== nv) return
+      try {
+        const loaded = await syncMeshes(nv, meshes, loadedMeshIdsRef.current)
+        if (nvRef.current === nv) loadedMeshIdsRef.current = loaded
+        nv.drawScene()
+      } catch (error) {
+        if (nvRef.current !== nv) return
+        // A half-applied reload leaves NiiVue's order unknown; reload next time.
+        loadedMeshIdsRef.current = []
+        setIsStatusError(true)
+        setStatus(
+          `Couldn't display the mesh: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      }
+    })
+  }, [meshes, loadedVersion])
 
   useEffect(() => {
     const stage = stageRef.current
@@ -1155,6 +1211,44 @@ export function NiivueStage({
       ) : null}
     </div>
   )
+}
+
+function meshDisplay(mesh: MeshLayer): NiiVueMeshDisplay {
+  return {
+    color: [...mesh.color, 1],
+    opacity: mesh.opacity,
+    visible: mesh.visible,
+  }
+}
+
+// Bring NiiVue's meshes in line with `meshes` and return the loaded ids. Adding
+// or removing a mesh reloads them all in panel order, so `nv.meshes[i]` stays
+// `meshes[i]`; a color, opacity or visibility change updates in place.
+async function syncMeshes(
+  nv: NiiVueLike,
+  meshes: MeshLayer[],
+  loadedIds: string[],
+): Promise<string[]> {
+  const ids = meshes.map((mesh) => mesh.id)
+  const isSameList =
+    ids.length === loadedIds.length &&
+    ids.every((id, index) => id === loadedIds[index])
+  if (isSameList) {
+    await Promise.all(
+      meshes.map((mesh, index) => nv.setMesh?.(index, meshDisplay(mesh))),
+    )
+    return ids
+  }
+  // Ask NiiVue rather than trust loadedIds: a failed reload leaves it unsure.
+  if ((nv.meshes?.length ?? 0) > 0) await nv.removeAllMeshes?.()
+  for (const mesh of meshes) {
+    await nv.addMesh?.({
+      url: mesh.file,
+      name: mesh.name,
+      ...meshDisplay(mesh),
+    })
+  }
+  return ids
 }
 
 async function loadNiiVue(backend: Backend): Promise<LoadedNiiVue> {

@@ -26,6 +26,8 @@ const MENU_OPEN_FILE: &str = "file-open-file";
 #[cfg(desktop)]
 const MENU_OPEN_FOLDER: &str = "file-open-folder";
 #[cfg(desktop)]
+const MENU_OPEN_MESH: &str = "file-open-mesh";
+#[cfg(desktop)]
 const MENU_OPEN_BUNDLE: &str = "file-open-bundle";
 #[cfg(desktop)]
 const MENU_OPEN_SAMPLE: &str = "file-open-sample";
@@ -292,6 +294,39 @@ async fn read_bundle_manifest(path: String) -> Result<serde_json::Value, String>
         .map_err(|error| format!("read_bundle_manifest: join error: {error}"))?
 }
 
+/// Surface mesh formats NiiVue reads (its `mesh/readers`), lower-case. FreeSurfer
+/// surfaces are named by their type (`lh.pial`), so those count as extensions.
+const MESH_EXTENSIONS: &[&str] = &[
+    "asc", "byu", "dfs", "geo", "gii", "ico", "mz3", "nv", "obj", "off", "ply", "srf", "stl",
+    "vtk", "wrl", "x3d", "cbor", "white", "pial", "inflated", "sphere", "orig", "smoothwm",
+    "qsphere",
+];
+
+/// The raw bytes of a surface mesh. Meshes skip the volume server: the viewer
+/// hands the bytes straight to NiiVue, which parses the format itself.
+#[tauri::command]
+async fn read_mesh_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let path = PathBuf::from(normalize_local_path(&path));
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !MESH_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(format!(
+            "{} is not a mesh NeuroVue can open.",
+            path.display()
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::read(&path)
+            .map(tauri::ipc::Response::new)
+            .map_err(|error| format!("Couldn't read {}: {error}", path.display()))
+    })
+    .await
+    .map_err(|error| format!("read_mesh_file: join error: {error}"))?
+}
+
 fn open_dataset_at_path(
     server: &volumetric_server::ServerHandle,
     root: &Path,
@@ -335,6 +370,13 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
+    let open_mesh = MenuItem::with_id(
+        handle,
+        MENU_OPEN_MESH,
+        "Open Mesh\u{2026}",
+        true,
+        Some("CmdOrCtrl+Shift+M"),
+    )?;
     let open_bundle = MenuItem::with_id(
         handle,
         MENU_OPEN_BUNDLE,
@@ -371,6 +413,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     let items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![
         &open_file,
         &open_folder,
+        &open_mesh,
         &open_bundle,
         &open_sample,
         &open_separator,
@@ -477,6 +520,7 @@ pub fn run() {
             neurovue_server_info,
             open_dataset_path,
             add_overlay_volume_path,
+            read_mesh_file,
             export_dataset_bundle,
             read_bundle_manifest,
             share_view_via_airdrop,
@@ -495,6 +539,7 @@ pub fn run() {
         neurovue_server_info,
         open_dataset_path,
         add_overlay_volume_path,
+        read_mesh_file,
         export_dataset_bundle,
         read_bundle_manifest,
         share_view_via_airdrop

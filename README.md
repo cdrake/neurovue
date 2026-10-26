@@ -9,6 +9,9 @@ The intended split is:
 - Rust local server: IIIF desktop manifests, volume metadata, raw NIfTI bytes,
   session patch files, and future OME-Zarr/tract/mesh routes.
 - Web viewer: OSD-style dataset browsing plus NiiVue WebGPU/WebGL rendering.
+  Surface meshes (GIfTI, MZ3, OBJ, STL, FreeSurfer, …) open with File → Open
+  Mesh, alone or over a volume; the host reads their bytes and NiiVue parses
+  them, so they skip the local server.
 - Tauri wrapper: native file access, session lifecycle, and app windows.
 
 ## Development

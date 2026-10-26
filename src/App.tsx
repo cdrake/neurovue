@@ -34,6 +34,7 @@ import {
   RotateCcw,
   Save,
   Send,
+  Shapes,
   Share2,
   SlidersHorizontal,
   SquareTerminal,
@@ -110,6 +111,12 @@ import {
   truncationNotice,
   volumeCountLabel,
 } from './domain/desktop'
+import {
+  type MeshLayer,
+  meshColorFromHex,
+  meshColorHex,
+  openMeshFiles,
+} from './domain/meshes'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
   loadRememberedUiMode,
@@ -389,11 +396,15 @@ export function App(): JSX.Element {
   // Stays true while one dataset is swapped for another (the manifest is
   // briefly empty then), so only "nothing open" brings back Welcome.
   const [isWorkspaceVisible, setIsWorkspaceVisible] = useState(false)
+  // Surface meshes, in draw order. They outlive dataset switches and keep the
+  // workspace open on their own, as Surfice shows a mesh with no volume.
+  const [meshes, setMeshes] = useState<MeshLayer[]>([])
+  const [isOpeningMesh, setIsOpeningMesh] = useState(false)
   const isBusyOpening = isOpeningDataset || isImportingBundle
   useEffect(() => {
-    if (items.length > 0) setIsWorkspaceVisible(true)
+    if (items.length > 0 || meshes.length > 0) setIsWorkspaceVisible(true)
     else if (!isBusyOpening) setIsWorkspaceVisible(false)
-  }, [items.length, isBusyOpening])
+  }, [items.length, meshes.length, isBusyOpening])
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
@@ -735,6 +746,43 @@ export function App(): JSX.Element {
     }
   }
 
+  async function loadMeshes(): Promise<void> {
+    if (isOpeningMesh) return
+
+    setIsOpeningMesh(true)
+    setStatus('Choosing surface meshes.')
+    try {
+      const added = await openMeshFiles(meshes.length)
+      if (!added) {
+        setStatus('Mesh load cancelled.')
+        return
+      }
+      // A mesh on its own is a 3D object; slices of nothing would be blank.
+      if (items.length === 0) setViewMode('render')
+      setMeshes((current) => [...current, ...added])
+      setStatus(
+        added.length === 1
+          ? `Mesh ${added[0].name} added.`
+          : `${added.length} meshes added.`,
+        'success',
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setIsOpeningMesh(false)
+    }
+  }
+
+  function updateMesh(id: string, patch: Partial<MeshLayer>): void {
+    setMeshes((current) =>
+      current.map((mesh) => (mesh.id === id ? { ...mesh, ...patch } : mesh)),
+    )
+  }
+
+  function removeMesh(id: string): void {
+    setMeshes((current) => current.filter((mesh) => mesh.id !== id))
+  }
+
   // Compose the current view + its ordered volume ids for export/share. Order
   // is base → overlays → atlas; the copied volumes derive from the same list so
   // files and view stay in lockstep, and the importer replays it in that order.
@@ -845,6 +893,7 @@ export function App(): JSX.Element {
     'simple-view': toggleUiMode,
     'open-file': openLocalVolumeFile,
     'open-folder': openLocalDataset,
+    'open-mesh': loadMeshes,
     'open-bundle': handleImportBundle,
     'open-sample': async () => {
       if (samplePath) await openSampleDataset()
@@ -1389,6 +1438,7 @@ export function App(): JSX.Element {
           onOpenBundle={() => void handleImportBundle()}
           onOpenFile={() => void openLocalVolumeFile()}
           onOpenFolder={() => void openLocalDataset()}
+          onOpenMesh={() => void loadMeshes()}
           onOpenRecent={(path) => void openRecentEntry(path)}
           onOpenSample={samplePath ? () => void openSampleDataset() : null}
           onRemoveRecent={removeRecent}
@@ -1572,6 +1622,7 @@ export function App(): JSX.Element {
                   isActive={mouseContext === 'niivue'}
                   item={selected}
                   layers={renderLayers}
+                  meshes={meshes}
                   onClipPlaneDepthChange={changeClipPlaneDepth}
                   onClipPlaneActivate={bindActiveClipPlane}
                   onLayerExtents={handleLayerExtents}
@@ -1672,6 +1723,14 @@ export function App(): JSX.Element {
                       onLayerWindowReset={resetLayerWindow}
                       onLoadOverlay={loadOverlayVolume}
                       onOverlayToggle={toggleOverlayLayer}
+                    />
+
+                    <MeshPanel
+                      isOpening={isOpeningMesh}
+                      meshes={meshes}
+                      onLoad={() => void loadMeshes()}
+                      onRemove={removeMesh}
+                      onUpdate={updateMesh}
                     />
 
                     {viewMode === 'render' ? (
@@ -2140,7 +2199,7 @@ function LayerPanel({
             return (
               <LayerRow
                 key={item.id}
-                role={role}
+                kind={role}
                 label={item.label}
                 meta={layerOptionMeta(item)}
                 warning={layerWarning(selected, item, layerExtents)}
@@ -2291,11 +2350,102 @@ function LayerPanel({
   )
 }
 
+// Surface meshes (.gii, .mz3, .obj, FreeSurfer, …): the Surfice side of the
+// viewer. Each row toggles, recolors, fades or removes one mesh.
+function MeshPanel({
+  isOpening,
+  meshes,
+  onLoad,
+  onRemove,
+  onUpdate,
+}: {
+  isOpening: boolean
+  meshes: MeshLayer[]
+  onLoad: () => void
+  onRemove: (id: string) => void
+  onUpdate: (id: string, patch: Partial<MeshLayer>) => void
+}): JSX.Element {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  return (
+    <section className="nv-control-section nv-layer-panel">
+      <div className="nv-panel-heading">
+        <span>
+          <Shapes size={15} />
+          Meshes
+        </span>
+        <em>{meshes.length > 0 ? meshes.length : 'none'}</em>
+      </div>
+
+      {meshes.length > 0 ? (
+        <div className="nv-layer-rows">
+          {meshes.map((mesh) => {
+            const hex = meshColorHex(mesh.color)
+            return (
+              <LayerRow
+                accent={hex}
+                expanded={expandedId === mesh.id}
+                hidden={!mesh.visible}
+                key={mesh.id}
+                label={mesh.name}
+                meta=""
+                removable
+                kind="mesh"
+                onHiddenChange={(hidden) =>
+                  onUpdate(mesh.id, { visible: !hidden })
+                }
+                onRemove={() => onRemove(mesh.id)}
+                onToggleExpand={() =>
+                  setExpandedId(expandedId === mesh.id ? null : mesh.id)
+                }
+              >
+                <>
+                  <label className="nv-slider nv-mesh-color">
+                    <span>Color</span>
+                    <input
+                      aria-label={`Color for ${mesh.name}`}
+                      type="color"
+                      value={hex}
+                      onChange={(event) =>
+                        onUpdate(mesh.id, {
+                          color: meshColorFromHex(event.target.value),
+                        })
+                      }
+                    />
+                    <code>{hex}</code>
+                  </label>
+                  <Slider
+                    label="Opacity"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={mesh.opacity}
+                    onChange={(opacity) => onUpdate(mesh.id, { opacity })}
+                  />
+                </>
+              </LayerRow>
+            )
+          })}
+        </div>
+      ) : null}
+
+      <button
+        className="nv-layer-load-button"
+        disabled={isOpening}
+        onClick={onLoad}
+        type="button"
+      >
+        <FolderOpen size={14} />
+        <span>{isOpening ? 'Loading mesh' : 'Load mesh'}</span>
+      </button>
+    </section>
+  )
+}
+
 // One expandable row in the unified Layers list. The header carries the
 // visibility toggle, label/role, expand caret, and (for non-base layers) a
 // remove button; the role-specific controls live in the expanded body.
 function LayerRow({
-  role,
+  kind,
   label,
   meta,
   warning,
@@ -2305,9 +2455,10 @@ function LayerRow({
   onToggleExpand,
   onHiddenChange,
   onRemove,
+  accent,
   children,
 }: {
-  role: 'base' | 'overlay' | 'atlas'
+  kind: 'base' | 'overlay' | 'atlas' | 'mesh'
   label: string
   meta: string
   warning?: string | null
@@ -2317,13 +2468,20 @@ function LayerRow({
   onToggleExpand: () => void
   onHiddenChange: (hidden: boolean) => void
   onRemove: () => void
+  /** Left-edge color, for rows (meshes) that carry their own. */
+  accent?: string
   children: JSX.Element
 }): JSX.Element {
-  const roleLabel =
-    role === 'base' ? 'Base' : role === 'atlas' ? 'Atlas' : 'Overlay'
+  const roleLabel = {
+    base: 'Base',
+    overlay: 'Overlay',
+    atlas: 'Atlas',
+    mesh: 'Mesh',
+  }[kind]
   return (
     <div
-      className={`nv-layer-row is-${role}${expanded ? ' is-expanded' : ''}${hidden ? ' is-hidden' : ''}${warning ? ' is-warning' : ''}`}
+      className={`nv-layer-row is-${kind}${expanded ? ' is-expanded' : ''}${hidden ? ' is-hidden' : ''}${warning ? ' is-warning' : ''}`}
+      style={accent ? { borderLeftColor: accent } : undefined}
     >
       <div className="nv-layer-row-head">
         <button
