@@ -16,9 +16,9 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(desktop)]
 use tauri::Emitter;
 
-// File menu item ids. Each click is forwarded to the frontend as a
-// `neurovue-menu` event whose payload is the id minus its `file-` prefix
-// (see `src/hooks/useNativeMenu.ts`).
+// File and View menu item ids. Each click is forwarded to the frontend as a
+// `neurovue-menu` event whose payload is the id minus its `file-` or `view-`
+// prefix (see `src/hooks/useNativeMenu.ts`).
 #[cfg(desktop)]
 const MENU_EVENT: &str = "neurovue-menu";
 #[cfg(desktop)]
@@ -33,6 +33,8 @@ const MENU_OPEN_SAMPLE: &str = "file-open-sample";
 const MENU_EXPORT_BUNDLE: &str = "file-export-bundle";
 #[cfg(target_os = "macos")]
 const MENU_SHARE: &str = "file-share";
+#[cfg(desktop)]
+const MENU_SIMPLE_VIEW: &str = "view-simple-view";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -393,6 +395,29 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
             menu.insert(&file_menu, 0)?;
         }
     }
+
+    // Same for View: macOS's default has one (Enter Full Screen), others may not.
+    let simple_view = MenuItem::with_id(
+        handle,
+        MENU_SIMPLE_VIEW,
+        "Toggle Simple View",
+        true,
+        Some("CmdOrCtrl+Alt+V"),
+    )?;
+    let existing_view = menu.items()?.into_iter().find_map(|item| {
+        item.as_submenu()
+            .filter(|submenu| submenu.text().is_ok_and(|text| text == "View"))
+            .cloned()
+    });
+    match existing_view {
+        Some(view_menu) => {
+            view_menu.prepend_items(&[&simple_view, &PredefinedMenuItem::separator(handle)?])?
+        }
+        None => {
+            let view_menu = Submenu::with_items(handle, "View", true, &[&simple_view])?;
+            menu.append(&view_menu)?;
+        }
+    }
     Ok(menu)
 }
 
@@ -433,7 +458,11 @@ pub fn run() {
     // opens datasets through on-screen controls instead.
     #[cfg(desktop)]
     let builder = builder.menu(neurovue_menu).on_menu_event(|app, event| {
-        if let Some(action) = event.id().as_ref().strip_prefix("file-") {
+        let id = event.id().as_ref();
+        if let Some(action) = id
+            .strip_prefix("file-")
+            .or_else(|| id.strip_prefix("view-"))
+        {
             let _ = app.emit(MENU_EVENT, action);
         }
     });

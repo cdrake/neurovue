@@ -1,8 +1,9 @@
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useRef } from 'react'
 
-/** Actions the desktop File menu can send (see `neurovue_menu` in lib.rs). */
+/** Actions the desktop menus can send (see `neurovue_menu` in lib.rs). */
 export type NativeMenuAction =
+  | 'simple-view'
   | 'open-file'
   | 'open-folder'
   | 'open-bundle'
@@ -16,7 +17,7 @@ export type NativeMenuHandlers = Record<
 >
 
 /**
- * Routes clicks in the desktop File menu to the same handlers the toolbar
+ * Routes clicks in the desktop File and View menus to the same handlers the toolbar
  * uses. The menu bar exists only on desktop, so on iOS (and in a plain
  * browser) no event ever arrives and this is a no-op.
  */

@@ -23,6 +23,7 @@ import type {
   VolumeMetadata,
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
+import type { RenderShading } from '../domain/shading'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
 // The window NiiVue actually applied for a layer, plus the volume's robust
@@ -46,6 +47,8 @@ interface NiivueStageProps {
   // Block (volume-chunk explode) settings, applied to every loaded layer: tile
   // each volume into a grid of bricks and separate them in the 3D render.
   blocks: BlockSettings
+  // 3D render look (lighting, gradient opacity, silhouette, MIP).
+  shading: RenderShading
   // A one-shot request to move the crosshair to an absolute RAS+ mm position.
   // A fresh object identity re-triggers the move (so going to the same
   // coordinate twice still fires).
@@ -171,6 +174,11 @@ interface NiiVueLike {
   registerOverlayRenderer?(renderer: UIKitOverlayRenderer): () => void
   azimuth?: number
   elevation?: number
+  volumeIllumination?: number
+  volumeGradientOpacity?: number
+  volumeSilhouette?: number
+  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection.
+  volumeRenderMode?: number
   model?: {
     scene?: {
       scaleMultiplier?: number
@@ -228,6 +236,7 @@ type VoxelStep = readonly [di: number, dj: number, dk: number]
 const CLIP_DEPTH_WHEEL_STEP = 0.0015
 const NIVUE_SLICE_TYPE_RENDER = 4
 const NIVUE_SHOW_RENDER_ALWAYS = 1
+const NIVUE_RENDER_MODE_MAXIMUM = 1
 
 // NiiVue SLICE_TYPE values for each selectable view mode.
 export type ViewModeId =
@@ -373,6 +382,7 @@ export function NiivueStage({
   renderWheelMode,
   viewMode,
   blocks,
+  shading,
   crosshairTarget,
   onClipPlaneDepthChange,
   onClipPlaneActivate,
@@ -761,6 +771,19 @@ export function NiivueStage({
     applyBlockExplode(nv, blocks)
     nv.drawScene()
   }, [blocks.explode])
+
+  // Shading is plain draw-time state: set it and repaint. loadedVersion
+  // reapplies it to a fresh instance after a backend/layer change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion is the trigger for a rebuilt instance, not a value read here.
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv) return
+    nv.volumeIllumination = shading.illumination
+    nv.volumeGradientOpacity = shading.gradientOpacity
+    nv.volumeSilhouette = shading.silhouette
+    nv.volumeRenderMode = shading.isMip ? NIVUE_RENDER_MODE_MAXIMUM : 0
+    nv.drawScene()
+  }, [shading, loadedVersion])
 
   useEffect(() => {
     const stage = stageRef.current

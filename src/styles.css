@@ -3150,3 +3150,42 @@ button {
     transition: none;
   }
 }
+
+/* Simple view (MRIcroGL/Surfice layout): no dataset browser, the viewer fills
+   the window and the tool panel sits on the left. Phones already show a single
+   viewer with drawers, so this only reshapes the desktop grid. */
+@media (min-width: 701px) {
+  .nv-app.is-simple .nv-workbench {
+    grid-template-columns: var(--controls-width) minmax(0, 1fr);
+  }
+
+  .nv-app.is-simple .nv-sidebar,
+  .nv-app.is-simple .nv-dataset-pane,
+  .nv-app.is-simple .nv-splitter {
+    display: none;
+  }
+
+  .nv-app.is-simple .nv-split-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nv-app.is-simple .nv-controls {
+    order: -1;
+    border-right: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .nv-app.is-simple .nv-controls-toolbar {
+    justify-content: flex-start;
+  }
+
+  .nv-app.is-simple .nv-controls.is-floating {
+    right: auto;
+    left: 0;
+  }
+
+  .nv-app.is-simple .nv-niivue-pane.is-maximized {
+    right: 0;
+    left: var(--controls-width);
+  }
+}

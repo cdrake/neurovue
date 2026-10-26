@@ -20,6 +20,7 @@ import {
   GripHorizontal,
   GripVertical,
   Layers,
+  LayoutPanelLeft,
   LoaderCircle,
   Maximize2,
   Minimize2,
@@ -67,6 +68,7 @@ import {
   type ResolvedWindow,
   type ViewModeId,
 } from './components/NiivueStage'
+import { RenderShadingSection } from './components/RenderShadingSection'
 import { TerminalPanel } from './components/TerminalPanel'
 import { VolumeFilterPanel } from './components/VolumeFilterPanel'
 import { WelcomeScreen } from './components/WelcomeScreen'
@@ -108,6 +110,12 @@ import {
   truncationNotice,
   volumeCountLabel,
 } from './domain/desktop'
+import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
+import {
+  loadRememberedUiMode,
+  rememberUiMode,
+  type UiMode,
+} from './domain/uiMode'
 import {
   formatVoxelSpacing,
   volumeImageTypeDisplay,
@@ -323,6 +331,9 @@ export function App(): JSX.Element {
       ? 'axial'
       : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
   )
+  const [uiMode, setUiMode] = useState<UiMode>(loadRememberedUiMode)
+  const isSimple = uiMode === 'simple'
+  const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
   const [atlasId, setAtlasId] = useState<string | null>(null)
   // The viewer's load progress (which preview level is showing), kept for the
   // viewer-title tooltip rather than shown on the stage.
@@ -390,7 +401,9 @@ export function App(): JSX.Element {
   const shareMenuRef = useRef<HTMLDivElement | null>(null)
   const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } =
     useTerminalDock()
-  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen
+  // The simple view has no dock; the terminal keeps its state for the
+  // workbench.
+  const isTerminalDockOpen = isTerminalAvailable && isTerminalOpen && !isSimple
 
   useEffect(() => {
     let favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
@@ -820,7 +833,14 @@ export function App(): JSX.Element {
     }
   }
 
+  const toggleUiMode = () => {
+    const next: UiMode = isSimple ? 'full' : 'simple'
+    setUiMode(next)
+    rememberUiMode(next)
+  }
+
   useNativeMenu({
+    'simple-view': toggleUiMode,
     'open-file': openLocalVolumeFile,
     'open-folder': openLocalDataset,
     'open-bundle': handleImportBundle,
@@ -1028,7 +1048,7 @@ export function App(): JSX.Element {
 
   return (
     <main
-      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''}`}
+      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''} ${isSimple ? 'is-simple' : ''}`}
       style={{ '--terminal-height': `${terminalHeight}px` } as CSSProperties}
     >
       <header className="nv-topbar">
@@ -1308,7 +1328,21 @@ export function App(): JSX.Element {
               <span>Export</span>
             </button>
           )}
-          {isTerminalAvailable ? (
+          <button
+            aria-label="Simple view"
+            aria-pressed={isSimple}
+            className={`nv-icon-button nv-desktop-only ${isSimple ? 'is-active' : ''}`}
+            onClick={toggleUiMode}
+            title={
+              isSimple
+                ? 'Back to the dataset workbench (⌥⌘V)'
+                : 'Simple view: one viewer and one tool panel (⌥⌘V)'
+            }
+            type="button"
+          >
+            <LayoutPanelLeft size={16} />
+          </button>
+          {isTerminalAvailable && !isSimple ? (
             <button
               aria-label="Python terminal"
               aria-pressed={isTerminalOpen}
@@ -1544,6 +1578,7 @@ export function App(): JSX.Element {
                   onViewModeChange={setViewMode}
                   onRenderStatus={setRenderStatus}
                   renderWheelMode={renderWheelMode}
+                  shading={shading}
                   viewMode={viewMode}
                 />
               </section>
@@ -1573,7 +1608,13 @@ export function App(): JSX.Element {
                   }
                   type="button"
                 >
-                  {isControlsCollapsed ? (
+                  {isSimple ? (
+                    isControlsCollapsed ? (
+                      <PanelLeftOpen size={15} />
+                    ) : (
+                      <PanelLeftClose size={15} />
+                    )
+                  ) : isControlsCollapsed ? (
                     <PanelRightOpen size={15} />
                   ) : (
                     <PanelRightClose size={15} />
@@ -1581,28 +1622,36 @@ export function App(): JSX.Element {
                 </button>
               </div>
 
-              <fieldset
-                className="nv-inspector-tools"
-                aria-label="Desktop controls"
-              >
-                <DesktopZoomControls
-                  zoom={desktopZoom}
-                  onFit={() => setDesktopZoom(1)}
-                  onZoomIn={() => setDesktopZoom((zoom) => zoomBy(zoom, 1.25))}
-                  onZoomOut={() => setDesktopZoom((zoom) => zoomBy(zoom, 0.8))}
-                />
-                <span className="nv-zoom-readout">
-                  {Math.round(desktopZoom * 100)}%
-                </span>
-              </fieldset>
+              {isSimple ? null : (
+                <fieldset
+                  className="nv-inspector-tools"
+                  aria-label="Desktop controls"
+                >
+                  <DesktopZoomControls
+                    zoom={desktopZoom}
+                    onFit={() => setDesktopZoom(1)}
+                    onZoomIn={() =>
+                      setDesktopZoom((zoom) => zoomBy(zoom, 1.25))
+                    }
+                    onZoomOut={() =>
+                      setDesktopZoom((zoom) => zoomBy(zoom, 0.8))
+                    }
+                  />
+                  <span className="nv-zoom-readout">
+                    {Math.round(desktopZoom * 100)}%
+                  </span>
+                </fieldset>
+              )}
 
-              <SidePanelTabs
-                activeTab={sidePanelTab}
-                onChange={setSidePanelTab}
-              />
+              {isSimple ? null : (
+                <SidePanelTabs
+                  activeTab={sidePanelTab}
+                  onChange={setSidePanelTab}
+                />
+              )}
 
               <div className="nv-sidepanel-content">
-                {sidePanelTab === 'inspect' ? (
+                {isSimple || sidePanelTab === 'inspect' ? (
                   <>
                     <LayerPanel
                       atlasId={atlasId}
@@ -1674,7 +1723,14 @@ export function App(): JSX.Element {
                           }}
                         />
 
-                        <BlockControls blocks={blocks} onChange={setBlocks} />
+                        <RenderShadingSection
+                          shading={shading}
+                          onChange={setShading}
+                        />
+
+                        {isSimple ? null : (
+                          <BlockControls blocks={blocks} onChange={setBlocks} />
+                        )}
                       </>
                     ) : (
                       <section className="nv-control-section">
@@ -1687,19 +1743,23 @@ export function App(): JSX.Element {
                       </section>
                     )}
 
-                    <SelectionPanel
-                      item={selected}
-                      metadataStatus={metadataStatus}
-                    />
+                    {isSimple ? null : (
+                      <SelectionPanel
+                        item={selected}
+                        metadataStatus={metadataStatus}
+                      />
+                    )}
                     <CrosshairPanel
                       location={locationReadout}
                       onGoTo={goToCoordinate}
                     />
-                    <MetadataPanel
-                      item={selected}
-                      metadata={metadata}
-                      status={metadataStatus}
-                    />
+                    {isSimple ? null : (
+                      <MetadataPanel
+                        item={selected}
+                        metadata={metadata}
+                        status={metadataStatus}
+                      />
+                    )}
                   </>
                 ) : (
                   <NiimathOperationsPanel
