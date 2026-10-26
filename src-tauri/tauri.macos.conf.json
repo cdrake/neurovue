@@ -1,0 +1,13 @@
+{
+  "build": {
+    "beforeBuildCommand": "bun run ensure-niimath && bun run build-quicklook && bun run build"
+  },
+  "bundle": {
+    "macOS": {
+      "files": {
+        "PlugIns/NeuroVuePreview.appex": "target/quicklook/NeuroVuePreview.appex",
+        "PlugIns/NeuroVueThumbnail.appex": "target/quicklook/NeuroVueThumbnail.appex"
+      }
+    }
+  }
+}
