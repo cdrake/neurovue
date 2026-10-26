@@ -1,6 +1,6 @@
 // 3D render shading. MRIcroGL and Surfice pick a look from a short list of
 // shaders; NiiVue builds the same looks from a few volume settings, so NeuroVue
-// offers them as presets over those settings, with a slider for fine-tuning.
+// offers them as presets over those settings.
 // gradientOpacity and silhouette (a Glass look) are wired through but not
 // offered yet: in the macOS WKWebView any value above 0 blanks the render,
 // though the same code works in Chrome.
@@ -59,7 +59,7 @@ export const SHADING_PRESETS: ReadonlyArray<{
 
 export const DEFAULT_RENDER_SHADING: RenderShading = SHADING_PRESETS[0].shading
 
-/** The preset these settings match exactly, or null once a slider moved off it. */
+/** The preset these settings match exactly, or null if none does. */
 export function matchingShadingPreset(
   shading: RenderShading,
 ): ShadingPresetId | null {

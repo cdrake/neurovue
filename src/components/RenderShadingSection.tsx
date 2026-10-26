@@ -6,19 +6,7 @@ import {
   SHADING_PRESETS,
 } from '../domain/shading'
 
-const SLIDERS: ReadonlyArray<{
-  key: 'illumination'
-  label: string
-  title: string
-}> = [
-  {
-    key: 'illumination',
-    label: 'Lighting',
-    title: 'Shade surfaces by their normal, from flat (0) to fully lit (1)',
-  },
-]
-
-/** MRIcroGL-style shader presets plus a lighting slider for the 3D render. */
+/** MRIcroGL-style shader presets for the 3D render. */
 export function RenderShadingSection({
   shading,
   onChange,
@@ -53,27 +41,6 @@ export function RenderShadingSection({
           </button>
         ))}
       </fieldset>
-
-      {SLIDERS.map(({ key, label, title }) => (
-        <label className="nv-block-explode" key={key} title={title}>
-          <span className="nv-block-explode-label">
-            {label}
-            <em>{shading.isMip ? '—' : shading[key].toFixed(2)}</em>
-          </span>
-          <input
-            aria-label={label}
-            disabled={shading.isMip}
-            max={1}
-            min={0}
-            step={0.05}
-            type="range"
-            value={shading[key]}
-            onChange={(event) =>
-              onChange({ ...shading, [key]: Number(event.target.value) })
-            }
-          />
-        </label>
-      ))}
     </section>
   )
 }
