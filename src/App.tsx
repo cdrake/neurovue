@@ -45,6 +45,7 @@ import {
 import {
   type CSSProperties,
   type JSX,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   useCallback,
@@ -2398,30 +2399,28 @@ function MeshPanel({
                   setExpandedId(expandedId === mesh.id ? null : mesh.id)
                 }
               >
-                <>
-                  <label className="nv-slider nv-mesh-color">
-                    <span>Color</span>
-                    <input
-                      aria-label={`Color for ${mesh.name}`}
-                      type="color"
-                      value={hex}
-                      onChange={(event) =>
-                        onUpdate(mesh.id, {
-                          color: meshColorFromHex(event.target.value),
-                        })
-                      }
-                    />
-                    <code>{hex}</code>
-                  </label>
-                  <Slider
-                    label="Opacity"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={mesh.opacity}
-                    onChange={(opacity) => onUpdate(mesh.id, { opacity })}
+                <label className="nv-slider nv-mesh-color">
+                  <span>Color</span>
+                  <input
+                    aria-label={`Color for ${mesh.name}`}
+                    type="color"
+                    value={hex}
+                    onChange={(event) =>
+                      onUpdate(mesh.id, {
+                        color: meshColorFromHex(event.target.value),
+                      })
+                    }
                   />
-                </>
+                  <code>{hex}</code>
+                </label>
+                <Slider
+                  label="Opacity"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={mesh.opacity}
+                  onChange={(opacity) => onUpdate(mesh.id, { opacity })}
+                />
               </LayerRow>
             )
           })}
@@ -2470,7 +2469,7 @@ function LayerRow({
   onRemove: () => void
   /** Left-edge color, for rows (meshes) that carry their own. */
   accent?: string
-  children: JSX.Element
+  children: ReactNode
 }): JSX.Element {
   const roleLabel = {
     base: 'Base',

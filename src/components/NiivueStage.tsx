@@ -430,6 +430,9 @@ export function NiivueStage({
   // a quick add-then-recolor can't interleave with the add.
   const loadedMeshIdsRef = useRef<string[]>([])
   const meshSyncRef = useRef<Promise<void>>(Promise.resolve())
+  // Whether the error overlay is a mesh's, so a later good sync can clear it
+  // without hiding a volume error.
+  const hasMeshErrorRef = useRef(false)
   // Two-finger pinch tracking for render-view zoom (see handlePinch*).
   const pinchPointers = useRef<Map<number, { x: number; y: number }>>(new Map())
   const pinchDistance = useRef<number | null>(null)
@@ -826,17 +829,19 @@ export function NiivueStage({
       try {
         const loaded = await syncMeshes(nv, meshes, loadedMeshIdsRef.current)
         if (nvRef.current === nv) loadedMeshIdsRef.current = loaded
+        if (hasMeshErrorRef.current) {
+          hasMeshErrorRef.current = false
+          setIsStatusError(false)
+          setStatus('')
+        }
         nv.drawScene()
       } catch (error) {
         if (nvRef.current !== nv) return
         // A half-applied reload leaves NiiVue's order unknown; reload next time.
         loadedMeshIdsRef.current = []
+        hasMeshErrorRef.current = true
         setIsStatusError(true)
-        setStatus(
-          `Couldn't display the mesh: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        )
+        setStatus(error instanceof Error ? error.message : String(error))
       }
     })
   }, [meshes, loadedVersion])
@@ -1242,11 +1247,19 @@ async function syncMeshes(
   // Ask NiiVue rather than trust loadedIds: a failed reload leaves it unsure.
   if ((nv.meshes?.length ?? 0) > 0) await nv.removeAllMeshes?.()
   for (const mesh of meshes) {
-    await nv.addMesh?.({
-      url: mesh.file,
-      name: mesh.name,
-      ...meshDisplay(mesh),
-    })
+    try {
+      await nv.addMesh?.({
+        url: mesh.file,
+        name: mesh.name,
+        ...meshDisplay(mesh),
+      })
+    } catch (error) {
+      throw new Error(
+        `Couldn't display ${mesh.name}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )
+    }
   }
   return ids
 }
