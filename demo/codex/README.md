@@ -7,12 +7,16 @@ following a script ([prompt.md](prompt.md)). The person watches it happen:
    map in warm colours, and shows the multiplanar layout with a render tile.
 2. **Window B**: opens a second window, titled "Codex demo: tracts", with the
    same template, a left-hemisphere surface and a tractogram, as a render
-   alone.
+   alone, with the template hidden and the surface drawn as an outline so the
+   tracts show through.
 3. It goes back to A, moves the crosshair to the strongest activation, and
    takes a screenshot.
 4. It goes to B, turns the render so the left hemisphere faces the viewer,
    and takes a screenshot.
-5. It brings A to the front again and makes it the tab later calls go to.
+5. It goes back to A, explodes the template into bricks in the render,
+   labels the motor peak and dims the other bricks, takes a screenshot,
+   closes them up again, and spins the render one full turn over ten seconds.
+6. It makes A the tab later calls go to.
 
 Each switch is a `focus_window` call, so the window comes to the front as
 Codex starts working in it. Every call names its `tab`.

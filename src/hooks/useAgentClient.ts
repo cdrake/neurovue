@@ -2,6 +2,7 @@ import type { Handlers, NiiVueHost } from '@niivue/nv-mcp/browser'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useRef, useState } from 'react'
+import { setPointLabels } from '../domain/pointLabels'
 
 /** The agent server's state, as `mcp_status` and the `neurovue-mcp` event report it. */
 export interface AgentServerStatus {
@@ -88,7 +89,13 @@ export function useAgentClient(options: {
             )
           }
           if (bound?.view !== view) {
-            bound = { view, handlers: coreHandlers({ view: view as HostView }) }
+            bound = {
+              view,
+              handlers: coreHandlers({
+                view: view as HostView,
+                labels: setPointLabels,
+              }),
+            }
           }
           return bound.handlers
         }

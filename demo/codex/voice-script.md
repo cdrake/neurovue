@@ -29,7 +29,7 @@ unattended.
 > "Open a new NeuroVue window called tracts. Call it window B and bring it to the front."
 
 **6. Load surfaces and tracts**
-> "In window B, open the same MNI152 template, then load the left hemisphere brain mesh and the dpsv tract file from the demo folder. Show only the 3D render."
+> "In window B, open the same MNI152 template, then load the left hemisphere brain mesh and the dpsv tract file from the demo folder. Show only the 3D render, hide the template there, and draw the brain mesh as an outline so the tracts show through."
 
 **7. Switch back and explore**
 > "Go back to window A and bring it to the front. Move the crosshair to the strongest motor activation and tell me where it is in MNI coordinates."
@@ -38,16 +38,31 @@ unattended.
 > "Take a screenshot of window A and describe what you see."
 
 **9. Switch again**
-> "Switch to window B, bring it to the front, and rotate the brain so the left hemisphere faces me."
+> "Switch to window B, bring it to the front, and rotate the brain so the left hemisphere faces me. The orientation cube should show L."
 
-**10. Save the results**
-> "Save a picture of window B called tracts view, then switch to window A and save the whole scene as a document called motor demo."
+**10. Explode the brain**
+> "Switch to window A, bring it to the front, show only the 3D render, and explode the brain into bricks."
 
-**11. Wrap up**
+**11. Label it**
+> "Turn window A so the right hemisphere faces me, label the strongest motor activation as motor peak, and dim all the other bricks."
+
+**12. Put it back together**
+> "Take the labels down, close the bricks back up, and go back to the three slice views plus the 3D render."
+
+**13. Spin it**
+> "Animate one full 360 degree turn of the 3D render over 10 seconds."
+
+**14. Save the results**
+> "Save a picture of window B called tracts view, then save window A's whole scene as a document called motor demo."
+
+**15. Wrap up**
 > "Bring window A to the front and give me a one paragraph summary of what each window shows."
 
 ## Tips
 
+- Wait for Codex to say a step is finished before reading the next line. A
+  line read while it is still reporting the last step may only get "next,
+  I'll…" with nothing happening; if so, say "go ahead" or repeat the line.
 - Say "window A" and "window B" every time. Codex keeps track of which window
   ID is which, and naming them keeps it from drifting.
 - Dictation may write file names oddly, such as "spm motor" or "d p s v". If
@@ -60,3 +75,8 @@ unattended.
 - Codex can take 10 to 30 seconds per step, longer when it takes screenshots.
   Steps 8 and 9 are the slowest, so that's a good moment to talk the audience
   through what's on screen.
+- Dimming works through labels: the bricks holding a label stay solid and
+  the rest fade. To dim a whole side, ask for a label on just the bricks you
+  want to keep, such as "label the motor peak and dim everything else".
+- The 3D render draws the template as a solid brain, which hides any surface
+  or tracts inside it. That is why step 6 hides the template in window B.

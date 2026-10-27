@@ -24,6 +24,7 @@ import type {
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
+import { attachPointLabels } from '../domain/pointLabels'
 import type { RenderShading } from '../domain/shading'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
@@ -509,6 +510,7 @@ export function NiivueStage({
       | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
+    let detachPointLabels: (() => void) | null = null
 
     // Draw annotations with uikit once its font is in. Core's own annotation
     // draw stays on until then, and stays as the fallback if the font fails.
@@ -528,6 +530,7 @@ export function NiivueStage({
           unregisterAnnotationLayer = register.call(nv, annotationLayer)
           nv.isAnnotationDrawn = false
           setMeasureUnavailable(null)
+          detachPointLabels = attachPointLabels(nv, font)
           nv.drawScene()
         })
         .catch((error: unknown) => {
@@ -632,6 +635,7 @@ export function NiivueStage({
       // Release the overlay's GPU resources before the instance goes.
       unregisterAnnotationLayer?.()
       annotationLayer?.destroy()
+      detachPointLabels?.()
       if (localNv && nvRef.current === localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
