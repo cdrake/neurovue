@@ -165,10 +165,18 @@ interface NiiVueLike {
     listener: (event: CustomEvent<NiiVueLocation>) => void,
     options?: boolean | AddEventListenerOptions,
   ): void
+  addEventListener?(
+    type: 'sliceTypeChange',
+    listener: (event: CustomEvent<{ sliceType: number }>) => void,
+  ): void
   removeEventListener?(
     type: 'locationChange',
     listener: (event: CustomEvent<NiiVueLocation>) => void,
     options?: boolean | EventListenerOptions,
+  ): void
+  removeEventListener?(
+    type: 'sliceTypeChange',
+    listener: (event: CustomEvent<{ sliceType: number }>) => void,
   ): void
   // Vector annotations (the measure tool). Shapes are drawn by our uikit
   // overlay from annotationScreenShapes, with isAnnotationDrawn off.
@@ -508,6 +516,9 @@ export function NiivueStage({
     let locationListener:
       | ((event: CustomEvent<NiiVueLocation>) => void)
       | null = null
+    let sliceTypeListener:
+      | ((event: CustomEvent<{ sliceType: number }>) => void)
+      | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
     let detachPointLabels: (() => void) | null = null
@@ -593,6 +604,15 @@ export function NiivueStage({
             onLocationChange?.(event.detail)
           }
           nv.addEventListener('locationChange', locationListener)
+          // An agent's set_view changes NiiVue's layout directly. Follow it,
+          // or the next new viewer (any layer change) brings the old one back.
+          sliceTypeListener = (event) => {
+            const mode = VIEW_MODES.find(
+              (candidate) => candidate.sliceType === event.detail.sliceType,
+            )
+            if (!cancelled && mode) onViewModeChange(mode.id)
+          }
+          nv.addEventListener('sliceTypeChange', sliceTypeListener)
         }
         attachAnnotationLayer(nv)
         const attachedCanvas = activeCanvasFor(nv, canvas)
@@ -639,6 +659,9 @@ export function NiivueStage({
       if (localNv && nvRef.current === localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
+        }
+        if (sliceTypeListener) {
+          localNv.removeEventListener?.('sliceTypeChange', sliceTypeListener)
         }
         onViewer?.(null)
         localNv.destroy?.()
