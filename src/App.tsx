@@ -996,6 +996,31 @@ export function App(): JSX.Element {
         await untilNextViewer(() => placeOverlay(result))
         return { id: result.id, label: result.label }
       },
+      removeVolumes: async (index) => {
+        const layers = index === 'all' ? renderLayers : [renderLayers[index]]
+        if (layers.some((layer) => !layer)) {
+          throw new Error(
+            `No volume ${index} is shown; there are ${renderLayers.length}.`,
+          )
+        }
+        // The dataset's base volume can't be unloaded, only hidden; overlays
+        // and the atlas leave the stack, which reloads the viewer.
+        const base = layers.find((layer) => layer.item.id === selected?.id)
+        if (base) setLayerHidden(base.item.id, true)
+        const removed = layers.filter((layer) => layer !== base)
+        if (removed.length > 0) {
+          await untilNextViewer(async () => {
+            for (const layer of removed) {
+              if (layer.isAtlas) changeAtlasLayer('')
+              else toggleOverlayLayer(layer.item.id)
+            }
+          })
+        }
+        return {
+          removed: removed.map((layer) => layer.item.label),
+          hidden: base ? base.item.label : null,
+        }
+      },
       addMeshes: async (paths) => {
         const added = await Promise.all(
           paths.map((path, index) =>

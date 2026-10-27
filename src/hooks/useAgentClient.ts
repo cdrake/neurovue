@@ -21,6 +21,13 @@ export interface NeuroVueAgentActions {
   addOverlay(path: string): Promise<{ id: string; label: string }>
   /** Adds surfaces or tracts to the meshes shown and returns their names. */
   addMeshes(paths: string[]): Promise<string[]>
+  /**
+   * Takes shown volumes (by viewer index, or all) out of the layer stack.
+   * The dataset's base volume is hidden instead, since it can't be unloaded.
+   */
+  removeVolumes(
+    index: number | 'all',
+  ): Promise<{ removed: string[]; hidden: string | null }>
 }
 
 type HostView = NiiVueHost['view']
@@ -110,6 +117,17 @@ export function useAgentClient(options: {
             ]),
           ),
           ...neuroVueHandlers(() => optionsRef.current.actions),
+          // NeuroVue owns the layer stack: core remove_volume would take the
+          // volume out of NiiVue alone, leaving NeuroVue drawing it.
+          remove_volume: async (params) => {
+            const actions = optionsRef.current.actions
+            const result = await actions.removeVolumes(
+              params.all === true
+                ? 'all'
+                : volumeIndex(params.volume, optionsRef.current.viewer()),
+            )
+            return { ...result, dataset: actions.dataset() }
+          },
         }
         const next = new AgentClient(handlers, {
           urls: [`ws://127.0.0.1:${port}/app`],
@@ -210,6 +228,22 @@ function untilVisible(ms = 2000): Promise<void> {
     const timer = setTimeout(done, ms)
     document.addEventListener('visibilitychange', done)
   })
+}
+
+/** A volume named by index or name, as the core tools take it. */
+function volumeIndex(volume: unknown, viewer: unknown): number {
+  if (typeof volume === 'number' && Number.isInteger(volume)) return volume
+  const volumes =
+    (viewer as { volumes?: { name?: string }[] } | null)?.volumes ?? []
+  if (typeof volume === 'string') {
+    const index = volumes.findIndex((shown) => shown.name === volume)
+    if (index >= 0) return index
+  }
+  throw new Error(
+    `volume is an index or a name: one of ${volumes
+      .map((shown, index) => `${index} "${shown.name}"`)
+      .join(', ')}.`,
+  )
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {
