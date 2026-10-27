@@ -17,6 +17,9 @@ following a script ([prompt.md](prompt.md)). The person watches it happen:
 Each switch is a `focus_window` call, so the window comes to the front as
 Codex starts working in it. Every call names its `tab`.
 
+To run it live by voice in the Codex desktop app instead, read
+[voice-script.md](voice-script.md) aloud.
+
 ## Run it
 
 You need NeuroVue, with View > Allow AI Agents turned on, and the Codex CLI,
