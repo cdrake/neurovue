@@ -96,10 +96,13 @@ Xcode 27's SwiftPM hides the Swift functions Tauri's Rust code calls. swift-rs
 
 Tauri doesn't cross-compile installers, so each OS builds on its own runner.
 The `Build` workflow (`.github/workflows/build.yml`) builds unsigned installers
-on macOS (universal .dmg), Linux (.deb, .rpm, .AppImage) and Windows (.msi,
+on macOS (universal .dmg), Linux (.deb, .rpm) and Windows (.msi,
 NSIS .exe), and runs lint, typecheck and the Rust tests. It runs on pushes and
 PRs to `main` and can also be run manually. Download the installers from the run's
 artifacts.
+
+There is no AppImage (`src-tauri/tauri.linux.conf.json`): linuxdeploy can't
+bundle the bun-compiled `neurovue-mcp` sidecar, since `ldd` fails on it.
 
 The Tauri host starts a local server and the viewer asks the host for its URL.
 In browser-only Vite development, the app falls back to
