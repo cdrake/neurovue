@@ -23,11 +23,10 @@ export interface NeuroVueAgentActions {
   addMeshes(paths: string[]): Promise<string[]>
   /**
    * Takes shown volumes (by viewer index, or all) out of the layer stack.
-   * The dataset's base volume is hidden instead, since it can't be unloaded.
+   * Removing the base volume takes its overlays too and leaves the view
+   * empty until a volume is selected or opened.
    */
-  removeVolumes(
-    index: number | 'all',
-  ): Promise<{ removed: string[]; hidden: string | null }>
+  removeVolumes(index: number | 'all'): Promise<{ removed: string[] }>
 }
 
 type HostView = NiiVueHost['view']
@@ -120,13 +119,22 @@ export function useAgentClient(options: {
           // NeuroVue owns the layer stack: core remove_volume would take the
           // volume out of NiiVue alone, leaving NeuroVue drawing it.
           remove_volume: async (params) => {
-            const actions = optionsRef.current.actions
-            const result = await actions.removeVolumes(
+            const result = await optionsRef.current.actions.removeVolumes(
               params.all === true
                 ? 'all'
                 : volumeIndex(params.volume, optionsRef.current.viewer()),
             )
-            return { ...result, dataset: actions.dataset() }
+            // Read after the removal renders, not from the actions it ran with.
+            return { ...result, dataset: optionsRef.current.actions.dataset() }
+          },
+          // Core load_document fetches a URL into NiiVue alone. A saved
+          // document is a file on this computer, so it opens as a dataset.
+          load_document: async (params) => {
+            const path = documentPath(params.url)
+            await optionsRef.current.actions.openPath(
+              await agentPath({ path }, 'path'),
+            )
+            return optionsRef.current.actions.dataset()
           },
         }
         const next = new AgentClient(handlers, {
@@ -228,6 +236,18 @@ function untilVisible(ms = 2000): Promise<void> {
     const timer = setTimeout(done, ms)
     document.addEventListener('visibilitychange', done)
   })
+}
+
+/** The file a load_document `url` names: an absolute path or a file:// URL. */
+function documentPath(url: unknown): string {
+  if (typeof url === 'string' && url.startsWith('/')) return url
+  if (typeof url === 'string' && url.startsWith('file://')) {
+    return decodeURIComponent(new URL(url).pathname)
+  }
+  throw new Error(
+    'NeuroVue opens documents from this computer: pass the absolute path of the .nvd file. ' +
+      'save puts documents in the Downloads folder.',
+  )
 }
 
 /** A volume named by index or name, as the core tools take it. */

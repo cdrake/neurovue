@@ -92,6 +92,7 @@ import {
   exportDatasetBundle,
   formatBundleBytes,
   isBundlePath,
+  isDocumentPath,
   pickBundle,
   readBundle,
   shareViewViaAirDrop,
@@ -350,6 +351,10 @@ export function App(): JSX.Element {
     [],
   )
   const [overlayIds, setOverlayIds] = useState<Set<string>>(() => new Set())
+  // The base volume an agent removed: nothing is shown until a volume is
+  // picked again, rather than falling back to the dataset's first.
+  const [removedBaseId, setRemovedBaseId] = useState<string | null>(null)
+  const shownBase = selected?.id === removedBaseId ? null : selected
   // Phones land on a 2D axial slice (clearer on a small screen); desktop/iPad
   // reopen the view the user last picked, else the multiplanar default.
   const [viewMode, setViewMode] = useState<ViewModeId>(() =>
@@ -521,7 +526,7 @@ export function App(): JSX.Element {
 
   const { metadata, metadataStatus } = useVolumeMetadata(selected)
   const renderLayers = useMemo<NiivueRenderLayer[]>(() => {
-    if (!selected) return []
+    if (!selected || selected.id === removedBaseId) return []
 
     const layers: NiivueRenderLayer[] = [
       {
@@ -601,7 +606,13 @@ export function App(): JSX.Element {
     }
 
     return layers
-  }, [atlasId, items, layerSettings, overlayIds, selected])
+  }, [atlasId, items, layerSettings, overlayIds, removedBaseId, selected])
+
+  // A new dataset, or the same one reopened, shows its base again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: items is the trigger.
+  useEffect(() => {
+    setRemovedBaseId(null)
+  }, [items])
 
   useEffect(() => {
     const validIds = new Set(items.map((item) => item.id))
@@ -695,6 +706,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     setLocationReadout(null)
   }, [renderLayers])
+
+  function showVolume(itemId: string): void {
+    setRemovedBaseId(null)
+    setSelectedId(itemId)
+  }
 
   function toggleOverlayLayer(itemId: string): void {
     setOverlayIds((current) => {
@@ -937,11 +953,22 @@ export function App(): JSX.Element {
   // Agent calls that reload the viewer wait here for the next one.
   const viewerRef = useRef<unknown>(null)
   const viewerWaitersRef = useRef<Array<() => void>>([])
+  const viewerGoneWaitersRef = useRef<Array<() => void>>([])
   const handleViewer = useCallback((nv: unknown) => {
     viewerRef.current = nv
-    if (!nv) return
-    for (const resolve of viewerWaitersRef.current.splice(0)) resolve()
+    const waiters = nv ? viewerWaitersRef : viewerGoneWaitersRef
+    for (const resolve of waiters.current.splice(0)) resolve()
   }, [])
+  /** Runs `change`, then waits (up to 5 s) for the viewer it ends to go. */
+  async function untilViewerGone(change: () => Promise<void>): Promise<void> {
+    if (!viewerRef.current) return change()
+    const gone = new Promise<void>((resolve) => {
+      viewerGoneWaitersRef.current.push(resolve)
+      setTimeout(resolve, 5_000)
+    })
+    await change()
+    await gone
+  }
   /** Runs `change`, then waits (up to 30 s) for the viewer it causes to load. */
   async function untilNextViewer(change: () => Promise<void>): Promise<void> {
     const loaded = new Promise<void>((resolve) => {
@@ -974,7 +1001,7 @@ export function App(): JSX.Element {
           label: item.label,
           shape: item.shape,
           spacing: item.spacing,
-          shown: item.id === selected?.id,
+          shown: item.id === shownBase?.id,
         })),
       }),
       selectVolume: async (id) => {
@@ -983,8 +1010,8 @@ export function App(): JSX.Element {
             `No volume ${id} in this dataset; dataset lists them.`,
           )
         }
-        if (id === selected?.id) return
-        await untilNextViewer(async () => setSelectedId(id))
+        if (id === shownBase?.id) return
+        await untilNextViewer(async () => showVolume(id))
       },
       addOverlay: async (path) => {
         if (items.length === 0) {
@@ -1003,23 +1030,19 @@ export function App(): JSX.Element {
             `No volume ${index} is shown; there are ${renderLayers.length}.`,
           )
         }
-        // The dataset's base volume can't be unloaded, only hidden; overlays
-        // and the atlas leave the stack, which reloads the viewer.
-        const base = layers.find((layer) => layer.item.id === selected?.id)
-        if (base) setLayerHidden(base.item.id, true)
-        const removed = layers.filter((layer) => layer !== base)
-        if (removed.length > 0) {
-          await untilNextViewer(async () => {
-            for (const layer of removed) {
-              if (layer.isAtlas) changeAtlasLayer('')
-              else toggleOverlayLayer(layer.item.id)
-            }
-          })
+        // Overlays and the atlas are drawn over the base, so they go with it.
+        const removesBase = layers.some((layer) => layer.kind === 'base')
+        const removed = removesBase ? renderLayers : layers
+        const takeOff = async () => {
+          for (const layer of removed) {
+            if (layer.kind === 'base') setRemovedBaseId(layer.item.id)
+            else if (layer.isAtlas) changeAtlasLayer('')
+            else toggleOverlayLayer(layer.item.id)
+          }
         }
-        return {
-          removed: removed.map((layer) => layer.item.label),
-          hidden: base ? base.item.label : null,
-        }
+        // An empty stack makes no viewer to wait for, only the old one to go.
+        await (removesBase ? untilViewerGone : untilNextViewer)(takeOff)
+        return { removed: removed.map((layer) => layer.item.label) }
       },
       addMeshes: async (paths) => {
         const added = await Promise.all(
@@ -1061,12 +1084,13 @@ export function App(): JSX.Element {
   }
 
   // A bundle must be re-verified and its view replayed, not opened as a plain
-  // directory.
-  /** False when a dataset failed to open; bundle imports report their own errors. */
+  // directory. A NiiVue document opens the same way.
+  /** False when the dataset or bundle failed to open; the status line says why. */
   async function openRecentEntry(path: string): Promise<boolean> {
-    if (!isBundlePath(path)) return openRecentDataset(path)
-    await importBundleFromPath(path)
-    return true
+    if (!isBundlePath(path) && !isDocumentPath(path)) {
+      return openRecentDataset(path)
+    }
+    return importBundleFromPath(path)
   }
 
   // Like VS Code reopening its last folder: once startup finds nothing to open
@@ -1092,15 +1116,16 @@ export function App(): JSX.Element {
   }, [isStartupResolved])
 
   /** Re-open a bundle straight from recents, skipping the file dialog. */
-  async function importBundleFromPath(path: string): Promise<void> {
-    if (isImportingBundleRef.current || isOpeningDataset) return
+  async function importBundleFromPath(path: string): Promise<boolean> {
+    if (isImportingBundleRef.current || isOpeningDataset) return false
 
     isImportingBundleRef.current = true
     setIsImportingBundle(true)
     try {
-      await runBundleImport(path)
+      return await runBundleImport(path)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
+      return false
     } finally {
       isImportingBundleRef.current = false
       setIsImportingBundle(false)
@@ -1108,12 +1133,13 @@ export function App(): JSX.Element {
   }
 
   // Verify a `.nvbundle`, open its extracted volumes as the working dataset, and
-  // replay the recorded view. Throws; callers own the importing flag.
-  async function runBundleImport(path: string): Promise<void> {
+  // replay the recorded view. Throws; callers own the importing flag. False
+  // when nothing opened, with the reason in the status line.
+  async function runBundleImport(path: string): Promise<boolean> {
     const bundle = await readBundle(path)
     if (bundle.manifest?.nvbundle == null) {
       setStatus('This file is not a NeuroVue bundle.', 'error')
-      return
+      return false
     }
 
     // Load the bundle's copied volumes as the working dataset (the data/ dir
@@ -1121,14 +1147,16 @@ export function App(): JSX.Element {
     // record the bundle itself in recents — `dataDir` is a temp extraction.
     // A failed open already put its error in the status line; stop here so the
     // previous dataset isn't reported as "imported" over it.
-    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) return
+    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) {
+      return false
+    }
     const nextManifest = await refreshDesktopManifestData()
     const loadedIds = new Set(
       (nextManifest?.items ?? []).map((item) => item.id),
     )
     if (loadedIds.size === 0) {
       // openRecentDataset already surfaced the failure via setStatus.
-      return
+      return false
     }
 
     // Map each recorded (original-dataset) id → its freshly-registered id.
@@ -1185,10 +1213,12 @@ export function App(): JSX.Element {
       failures.length > 0
         ? ` ⚠ ${failures.length} file(s) failed the integrity check`
         : ''
+    const source = isDocumentPath(path) ? 'document' : 'bundle'
     setStatus(
-      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from bundle.${integrity}`,
+      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from ${source}.${integrity}`,
       failures.length > 0 ? 'error' : 'success',
     )
+    return true
   }
 
   useEffect(() => {
@@ -1647,7 +1677,7 @@ export function App(): JSX.Element {
                   selectedRoles={selectedRoles}
                   onClearFilters={clearFilters}
                   onQueryChange={setQuery}
-                  onSelect={(item) => setSelectedId(item.id)}
+                  onSelect={(item) => showVolume(item.id)}
                   onToggleDtype={toggleDtype}
                   onToggleFormat={toggleFormat}
                   onToggleImageType={toggleImageType}
@@ -1674,7 +1704,7 @@ export function App(): JSX.Element {
                   selected={selected}
                   zoom={desktopZoom}
                   onZoom={setDesktopZoom}
-                  onSelect={(item) => setSelectedId(item.id)}
+                  onSelect={(item) => showVolume(item.id)}
                 />
               </section>
 
@@ -1846,7 +1876,7 @@ export function App(): JSX.Element {
                       layerExtents={layerExtents}
                       resolvedWindows={resolvedWindows}
                       overlayIds={overlayIds}
-                      selected={selected}
+                      selected={shownBase}
                       onAtlasChange={changeAtlasLayer}
                       onLayerColormapChange={changeLayerColormap}
                       onLayerHiddenChange={setLayerHidden}

@@ -16,7 +16,10 @@ following a script ([prompt.md](prompt.md)). The person watches it happen:
 5. It goes back to A, explodes the template into bricks in the render,
    labels the motor peak and dims the other bricks, takes a screenshot,
    closes them up again, and spins the render one full turn over ten seconds.
-6. It makes A the tab later calls go to.
+6. It saves A's scene as a NiiVue document in `~/Downloads`, empties the
+   window, and opens the document again: the template and the overlay come
+   back with the same colormap and threshold.
+7. It makes A the tab later calls go to.
 
 Each switch is a `focus_window` call, so the window comes to the front as
 Codex starts working in it. Every call names its `tab`.

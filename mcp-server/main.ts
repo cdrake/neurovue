@@ -162,7 +162,7 @@ const options = {
     'NeuroVue is a desktop neuroimaging viewer. Each of its windows is one tab here, with its own ' +
     'dataset; list_tabs names them, and every tool takes `tab` to pick one. To show data from ' +
     'this computer, give its absolute path: open_path opens a dataset (a BIDS or other folder, ' +
-    'a NIfTI volume or a .nvbundle), add_overlay_path lays a volume over it, and load_surfaces ' +
+    'a NIfTI volume, a .nvbundle or a saved .nvd document), add_overlay_path lays a volume over it, and load_surfaces ' +
     'and load_tracts add meshes. dataset lists the volumes and select_volume switches between ' +
     `them. Paths must be inside ${
       ROOTS.length ? ROOTS.join(', ') : 'the folders the person allows'

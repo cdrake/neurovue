@@ -55,7 +55,10 @@ unattended.
 **14. Save the results**
 > "Save a picture of window B called tracts view, then save window A's whole scene as a document called motor demo."
 
-**15. Wrap up**
+**15. Open it again**
+> "In window A, remove all the volumes, then open the motor demo document from my Downloads folder."
+
+**16. Wrap up**
 > "Bring window A to the front and give me a one paragraph summary of what each window shows."
 
 ## Tips
@@ -78,5 +81,8 @@ unattended.
 - Dimming works through labels: the bricks holding a label stay solid and
   the rest fade. To dim a whole side, ask for a label on just the bricks you
   want to keep, such as "label the motor peak and dim everything else".
+- Step 15 opens the newest save. If "motor demo" was saved before, the new
+  one is "motor demo (1).nvd"; say that name, or clear old copies out of
+  Downloads before the demo.
 - The 3D render draws the template as a solid brain, which hides any surface
   or tracts inside it. That is why step 6 hides the template in window B.

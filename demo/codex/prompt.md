@@ -55,7 +55,14 @@ show.
    - spin the render one full turn with `animate`: azimuth 360 past the
      current one, `angles` "literal" (or it takes the short way, and doesn't
      move), `duration_ms` 10000, `easing` "linear"
-7. `use_tab` with A, so A answers later calls.
+7. Save A's scene and open it again:
+   - `save` the whole scene as a document, with `filename` set to
+     `{{DOCUMENT}}`'s file name; it lands in the Downloads folder
+   - empty the window with `remove_volume` and `all`
+   - `open_path` with `{{DOCUMENT}}`, which brings back the template and the
+     overlay with its colormap and threshold
+   - `screenshot`
+8. `use_tab` with A, so A answers later calls.
 
 If a call fails, read the advice it returns, fix that one step and go on. Don't
 start over. Finish with a short summary: what each window shows, and where the

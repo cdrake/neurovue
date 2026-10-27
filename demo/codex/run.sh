@@ -52,7 +52,11 @@ fi
 # app still confines every file path to the allowed folders.
 config+=(-c "mcp_servers.$server.default_tools_approval_mode=\"approve\"")
 
-prompt=$(sed -e "s|{{SERVER}}|$server|g" -e "s|{{DATA}}|$data|g" "$here/prompt.md")
+# save puts the document in Downloads, adding " (1)" to a name already there;
+# a name of its own keeps the path the prompt gives right.
+document="$HOME/Downloads/codex-demo-$(date +%Y%m%d-%H%M%S).nvd"
+prompt=$(sed -e "s|{{SERVER}}|$server|g" -e "s|{{DATA}}|$data|g" \
+  -e "s|{{DOCUMENT}}|$document|g" "$here/prompt.md")
 
 # codex exec appends piped stdin to the prompt and waits for it to close, so
 # give it none: run from a script or CI it would otherwise hang.
