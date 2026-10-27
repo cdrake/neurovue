@@ -1,4 +1,4 @@
-import { listen } from '@tauri-apps/api/event'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useEffect, useRef } from 'react'
 
 /** Actions the desktop menus can send (see `neurovue_menu` in lib.rs). */
@@ -32,10 +32,15 @@ export function useNativeMenu(handlers: NativeMenuHandlers): void {
     let cancelled = false
     let unlisten: (() => void) | null = null
 
-    void listen<string>('neurovue-menu', (event) => {
-      const handler = handlersRef.current[event.payload as NativeMenuAction]
-      if (handler) void handler()
-    })
+    // This window's own: the host sends a menu click to the window in front,
+    // and the global `listen` would hear clicks meant for the others too.
+    void Promise.resolve()
+      .then(() =>
+        getCurrentWebviewWindow().listen<string>('neurovue-menu', (event) => {
+          const handler = handlersRef.current[event.payload as NativeMenuAction]
+          if (handler) void handler()
+        }),
+      )
       .then((nextUnlisten) => {
         if (cancelled) nextUnlisten()
         else unlisten = nextUnlisten

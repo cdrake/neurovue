@@ -105,6 +105,51 @@ The Tauri host starts a local server and the viewer asks the host for its URL.
 In browser-only Vite development, the app falls back to
 `http://127.0.0.1:8087`, which is the current OSD/IIIF reference server.
 
+## AI agents (MCP)
+
+With View → Allow AI Agents on, NeuroVue runs an [MCP](https://modelcontextprotocol.io)
+server at `http://127.0.0.1:4242/mcp` (set `NEUROVUE_MCP_PORT` to move it). It
+is off by default: while it runs, any program on this machine can drive
+NeuroVue and open files through it. The choice persists across launches.
+
+Connect a client to it, for example Claude Code:
+
+```sh
+claude mcp add --transport http neurovue http://127.0.0.1:4242/mcp
+```
+
+The server is `mcp-server/main.ts`: the NiiVue tools from
+[`@niivue/nv-mcp`](https://www.npmjs.com/package/@niivue/nv-mcp), which the
+NiiVue repo maintains, plus NeuroVue's own:
+
+| Tool | Does |
+| --- | --- |
+| `open_path` | Opens a dataset folder, NIfTI volume or `.nvbundle` |
+| `add_overlay_path` | Lays a NIfTI volume over the open dataset |
+| `load_surfaces`, `load_tracts` | Add surface meshes or tracts (`.trk`, `.tck`, `.trx`) |
+| `dataset`, `select_volume` | List the dataset's volumes and switch between them |
+| `open_window` | Opens another window and returns its tab id |
+
+Agents open files by path, with no file picker, but only inside the allowed
+data roots: the home folder unless `roots` in `mcp.json` (next to the on/off
+setting, in `~/Library/Application Support/org.neurovue.app/` on macOS) lists
+others, e.g. `{"enabled": true, "roots": ["/Volumes/data"]}`. The app resolves
+each path through symlinks and refuses anything outside a root. It reads
+`roots` on every call; toggle Allow AI Agents to update the folders the server
+names to agents.
+
+NeuroVue's tools are [NeuroFlow](https://github.com/niivue/neuroflow-spec)
+tool documents in `mcp-server/tools/`; the server takes each tool's name,
+title, annotations, description and input types from its document, following
+the spec's MCP binding (RFC 0009) and agent usage (RFC 0011) rules, so every
+path input carries its `x-neuroflow-type` and a known failure comes back with
+its remedy. The documents pass neuroflow-spec's validator.
+
+Each NeuroVue window connects to the server as one tab with its own dataset, so
+an agent can open several windows and drive each by its tab id. `tauri dev` and
+`tauri build` compile the server with `bun build --compile` into the
+`neurovue-mcp` sidecar; `bun run build-mcp-server --force` rebuilds it.
+
 ## Reference Contract
 
 NeuroVue starts with the same core endpoints used by the OSD desktop:

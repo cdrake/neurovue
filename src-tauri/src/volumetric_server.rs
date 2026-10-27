@@ -41,6 +41,7 @@ pub struct ServerHandle {
     pyramid_locks: PyramidLocks,
     warm_generation: Arc<AtomicU64>,
     warm_progress: Arc<Mutex<WarmProgress>>,
+    shutdown: Arc<tokio::sync::Notify>,
 }
 
 type VolumeStore = Arc<Mutex<Vec<VolumeEntry>>>;
@@ -303,7 +304,30 @@ struct RawPath {
     sig: String,
 }
 
+/// The launch window's server: opens whatever discovery finds (env vars,
+/// NeuroFlow's session, developer checkouts).
 pub fn spawn_default() -> ServerHandle {
+    spawn(discover_volumes())
+}
+
+/// A server with no dataset, for a window opened after launch: it must not
+/// reopen the dataset the launch window was given.
+pub fn spawn_empty() -> ServerHandle {
+    spawn(VolumeDiscovery {
+        root: None,
+        volumes: Vec::new(),
+        stats: DiscoveryStats::default(),
+    })
+}
+
+/// Stops the server's listener and its runtime once the window it serves is
+/// gone. Requests already running finish first.
+pub fn shutdown(server: &ServerHandle) {
+    server.warm_generation.fetch_add(1, Ordering::SeqCst);
+    server.shutdown.notify_one();
+}
+
+fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind NeuroVue local server");
     let addr = listener
         .local_addr()
@@ -313,7 +337,6 @@ pub fn spawn_default() -> ServerHandle {
         .expect("set NeuroVue listener nonblocking");
 
     let base_url = format!("http://{}", addr);
-    let discovery = discover_volumes();
     let volume_count = discovery.volumes.len();
     let warm_volumes = discovery.volumes.clone();
     let warm_root = discovery.root.clone();
@@ -325,6 +348,7 @@ pub fn spawn_default() -> ServerHandle {
     let pyramid_locks: PyramidLocks = Arc::new(Mutex::new(HashMap::new()));
     let warm_generation = Arc::new(AtomicU64::new(0));
     let warm_progress = Arc::new(Mutex::new(WarmProgress::default()));
+    let shutdown = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
         base_url: base_url.clone(),
         volumes: volumes.clone(),
@@ -348,6 +372,7 @@ pub fn spawn_default() -> ServerHandle {
         my_gen,
     );
 
+    let stop = shutdown.clone();
     std::thread::spawn(move || {
         let runtime = Builder::new_multi_thread()
             .enable_all()
@@ -360,7 +385,11 @@ pub fn spawn_default() -> ServerHandle {
                 tokio::net::TcpListener::from_std(listener).expect("adopt NeuroVue listener");
             let app = build_router(state, addr.port());
 
-            if let Err(error) = axum::serve(listener, app).await {
+            let stopped = async move { stop.notified().await };
+            if let Err(error) = axum::serve(listener, app)
+                .with_graceful_shutdown(stopped)
+                .await
+            {
                 eprintln!("NeuroVue local server stopped: {error}");
             }
         });
@@ -378,6 +407,7 @@ pub fn spawn_default() -> ServerHandle {
         pyramid_locks,
         warm_generation,
         warm_progress,
+        shutdown,
     }
 }
 

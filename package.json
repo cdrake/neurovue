@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5175 --strictPort",
     "ensure-niimath": "node scripts/ensure-niimath.cjs",
+    "build-mcp-server": "node scripts/build-mcp-server.cjs",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p mcp-server",
     "lint": "biome check .",
     "format": "biome format --write .",
     "preview": "vite preview --host 127.0.0.1 --port 4174",
@@ -17,8 +18,9 @@
     "tauri:build:mac": "tauri build --target universal-apple-darwin"
   },
   "dependencies": {
-    "@niivue/niivue": "^1.0.0-rc.37",
-    "@niivue/uikit": "^1.0.0-rc.25",
+    "@niivue/niivue": "^1.0.0-rc.39",
+    "@niivue/nv-mcp": "1.0.0-rc.16",
+    "@niivue/uikit": "^1.0.0-rc.27",
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@xterm/addon-fit": "^0.11.0",
@@ -26,11 +28,13 @@
     "lucide-react": "^0.468.0",
     "nifti-reader-js": "^0.8.0",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
     "@tauri-apps/cli": "~2.11.0",
+    "@types/bun": "^1.4.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4.3.1",

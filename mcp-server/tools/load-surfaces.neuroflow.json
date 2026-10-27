@@ -1,0 +1,98 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/load-surfaces",
+  "version": "1.0.0",
+  "description": "Adds surface meshes from this computer to the meshes a NeuroVue window shows, over its volumes or on their own: GIfTI, MZ3, OBJ, STL, PLY, VTK, FreeSurfer surfaces and the other formats NiiVue reads.",
+  "inputs": {
+    "paths": {
+      "type": "core:array<neuro:surface>",
+      "description": "Absolute paths to surface files inside an allowed data root."
+    }
+  },
+  "outputs": {
+    "added": {
+      "type": "core:json",
+      "description": "The names of the meshes added."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "load_surfaces",
+      "title": "Load surfaces from disk",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Show cortical or other surfaces from disk, with or without a volume."
+      ],
+      "avoidWhen": [
+        {
+          "when": "The files are streamlines (.trk, .tck, .trx).",
+          "instead": "org.neurovue/load-tracts"
+        },
+        {
+          "when": "The file is a NIfTI volume.",
+          "instead": "org.neurovue/add-overlay-path"
+        }
+      ],
+      "preconditions": [
+        "Each path is inside a folder agents may open: by default the person's home folder."
+      ],
+      "effects": [
+        "Adds to the meshes shown each time it is called; list_meshes reports them once they load."
+      ],
+      "examples": [
+        {
+          "title": "Show both pial surfaces",
+          "inputs": {
+            "paths": [
+              "<subject_dir>/surf/lh.pial",
+              "<subject_dir>/surf/rh.pial"
+            ]
+          }
+        }
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "is not a mesh NeuroVue can open"
+          },
+          "meaning": "The file's extension is not one NeuroVue reads as a mesh or tract.",
+          "remedy": "Volumes go through open_path or add_overlay_path; convert other formats to GIfTI, MZ3, TRK or TCK first.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "outside the folders agents may open"
+          },
+          "meaning": "The path resolves, after following symlinks, outside the folders NeuroVue lets agents open.",
+          "remedy": "Ask the person to add the folder to \"roots\" in NeuroVue's mcp.json, or to open the file themselves. Retrying with the same path will not help.",
+          "retry": "never"
+        },
+        {
+          "match": {
+            "contains": "is not an absolute path"
+          },
+          "meaning": "The path is relative; NeuroVue does not know which folder it is relative to.",
+          "remedy": "Pass the absolute path.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "Couldn't open"
+          },
+          "meaning": "Nothing exists at that path, or NeuroVue may not read it.",
+          "remedy": "Check the path; on macOS the person may need to give NeuroVue access to the folder.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}
