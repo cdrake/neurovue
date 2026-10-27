@@ -438,6 +438,10 @@ export function NiivueStage({
   // display-only re-applies (which run on a possibly-reordered `layers`) still
   // target the correct volume. `volumeIndexOfLayer` is the single lookup.
   const loadedLayerIdsRef = useRef<string[]>([])
+  // A loaded viewer not yet passed to onViewer. The display effect passes it
+  // once the layers' windows are applied, so an agent never sees a stat
+  // overlay before its threshold.
+  const unannouncedViewerRef = useRef<NiiVueLike | null>(null)
   // Mesh ids in NiiVue's mesh order, and the queue mesh updates run through so
   // a quick add-then-recolor can't interleave with the add.
   const loadedMeshIdsRef = useRef<string[]>([])
@@ -632,7 +636,10 @@ export function NiivueStage({
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
-        if (!cancelled) onViewer?.(nv)
+        if (!cancelled) {
+          if (nv.setVolume) unannouncedViewerRef.current = nv
+          else onViewer?.(nv)
+        }
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
@@ -663,6 +670,7 @@ export function NiivueStage({
         if (sliceTypeListener) {
           localNv.removeEventListener?.('sliceTypeChange', sliceTypeListener)
         }
+        unannouncedViewerRef.current = null
         onViewer?.(null)
         localNv.destroy?.()
         nvRef.current = null
@@ -729,8 +737,13 @@ export function NiivueStage({
         // No volume loaded yet (or backend lacks setVolume); the attach effect
         // already loads with current display options, so this is safe to ignore.
       })
+      .finally(() => {
+        if (unannouncedViewerRef.current !== nv) return
+        unannouncedViewerRef.current = null
+        onViewer?.(nv)
+      })
     onResolvedWindows?.(resolved)
-  }, [layers, loadedVersion, onResolvedWindows])
+  }, [layers, loadedVersion, onResolvedWindows, onViewer])
 
   // Report each layer's world-space bounding box once loaded, so the panel can
   // flag overlays that don't share the base's space.
