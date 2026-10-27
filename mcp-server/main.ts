@@ -141,6 +141,10 @@ const neurovue: Extension = {
         )
       },
     )
+
+    register(server, DOCUMENTS.focusWindow, {}, ({ tab }) =>
+      context.answer('neurovue.focus_window', {}, { tab }),
+    )
   },
 }
 
@@ -166,7 +170,8 @@ const options = {
     'load_volume, add_overlay and load_mesh only reach the URLs NeuroVue itself serves, not the ' +
     'internet or the disk, and what they add is dropped when NeuroVue reloads the viewer (on ' +
     'select_volume, open_path or add_overlay_path). To compare datasets side by side, call ' +
-    'open_window and drive each window by its tab id. set_instances is unrelated to windows: it ' +
+    'open_window and drive each window by its tab id; focus_window brings one to the front so ' +
+    'the person sees it, and screenshot needs that. set_instances is unrelated to windows: it ' +
     'draws copies of a volume inside one viewer.',
 }
 

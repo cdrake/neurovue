@@ -1,0 +1,41 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/focus-window",
+  "version": "1.0.0",
+  "description": "Brings a NeuroVue window to the front, restoring it if minimized, so the person sees the tab being driven.",
+  "inputs": {},
+  "outputs": {
+    "focused": {
+      "type": "core:string",
+      "description": "The title of the window brought forward."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "focus_window",
+      "title": "Bring a NeuroVue window to the front",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Show the person the window you are about to change or have just changed.",
+        "Before screenshot, which refuses a hidden or covered window."
+      ],
+      "avoidWhen": [
+        {
+          "when": "Later calls should go to another window without showing it; pass tab, or call use_tab."
+        }
+      ],
+      "effects": [
+        "Raises the window over other windows and gives it keyboard focus."
+      ]
+    }
+  }
+}

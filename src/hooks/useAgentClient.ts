@@ -166,6 +166,11 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
       await invoke('open_viewer_window', { tab: id, title })
       return { id }
     },
+    'neurovue.focus_window': async () => {
+      const focused = await invoke<string>('focus_window')
+      await untilVisible()
+      return { focused }
+    },
   }
 }
 
@@ -180,6 +185,23 @@ function agentPath(
 ): Promise<string> {
   return invoke<string>('agent_resolve_path', {
     path: stringParam(params, key),
+  })
+}
+
+/**
+ * Resolves once the page is visible, or after `ms`. A window brought forward
+ * becomes visible a moment later, and screenshot refuses a hidden page.
+ */
+function untilVisible(ms = 2000): Promise<void> {
+  if (document.visibilityState === 'visible') return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    document.addEventListener('visibilitychange', done)
   })
 }
 

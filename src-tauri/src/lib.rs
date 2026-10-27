@@ -618,7 +618,8 @@ pub fn run() {
             terminal::inspect_python_interpreter,
             mcp::mcp_status,
             mcp::agent_resolve_path,
-            mcp::open_viewer_window
+            mcp::open_viewer_window,
+            mcp::focus_window
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![

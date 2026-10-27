@@ -299,6 +299,18 @@ pub(crate) async fn open_viewer_window(
         .map_err(|error| format!("open_viewer_window: {error}"))
 }
 
+/// Brings the calling window to the front, restored if minimized, so the
+/// person sees the tab an agent drives; returns its title.
+#[tauri::command]
+pub(crate) fn focus_window(window: tauri::WebviewWindow) -> Result<String, String> {
+    let _ = window.unminimize();
+    window
+        .show()
+        .and_then(|()| window.set_focus())
+        .map_err(|error| format!("focus_window: {error}"))?;
+    Ok(window.title().unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_in_roots;
