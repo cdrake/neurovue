@@ -1,0 +1,101 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/add-overlay-path",
+  "version": "1.0.0",
+  "description": "Adds a NIfTI volume from this computer over every volume of the open dataset: a statistical map, a mask or segmentation, or an atlas, which shows with its labels when it has a label sidecar.",
+  "inputs": {
+    "path": {
+      "type": "neuro:volume",
+      "description": "Absolute path to a NIfTI volume (.nii, .nii.gz) inside an allowed data root."
+    }
+  },
+  "outputs": {
+    "overlay": {
+      "type": "core:json",
+      "description": "The overlay's volume id and label."
+    },
+    "dataset": {
+      "type": "core:json",
+      "description": "The dataset now open: its name, root folder, and each volume's id, label, shape and spacing, with the one shown marked."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "add_overlay_path",
+      "title": "Overlay a volume from disk",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Show a statistical map, mask or atlas from disk over the dataset the window shows."
+      ],
+      "avoidWhen": [
+        {
+          "when": "Nothing is open yet, or the volume should replace what is shown.",
+          "instead": "org.neurovue/open-path"
+        }
+      ],
+      "preconditions": [
+        "A dataset is open in the window.",
+        "The path is inside a folder agents may open: by default the person's home folder."
+      ],
+      "effects": [
+        "Reloads the viewer with the overlay; the overlay stays across select_volume, unlike one added with add_overlay."
+      ],
+      "duration": {
+        "typicalSeconds": 1,
+        "maxSeconds": 30,
+        "basis": "A 2 mm MNI statistical map on an Apple-silicon laptop."
+      },
+      "examples": [
+        {
+          "title": "Overlay a z-statistic map",
+          "inputs": {
+            "path": "<derivatives_dir>/zstat1.nii.gz"
+          }
+        }
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "No dataset is open"
+          },
+          "meaning": "The window has nothing to overlay.",
+          "remedy": "Call open_path first.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "outside the folders agents may open"
+          },
+          "meaning": "The path resolves, after following symlinks, outside the folders NeuroVue lets agents open.",
+          "remedy": "Ask the person to add the folder to \"roots\" in NeuroVue's mcp.json, or to open the file themselves. Retrying with the same path will not help.",
+          "retry": "never"
+        },
+        {
+          "match": {
+            "contains": "is not an absolute path"
+          },
+          "meaning": "The path is relative; NeuroVue does not know which folder it is relative to.",
+          "remedy": "Pass the absolute path.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "Couldn't open"
+          },
+          "meaning": "Nothing exists at that path, or NeuroVue may not read it.",
+          "remedy": "Check the path; on macOS the person may need to give NeuroVue access to the folder.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

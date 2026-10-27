@@ -29,6 +29,8 @@ export interface DatasetManifestState {
   /** The launch-time server/manifest lookup has finished (even if it failed). */
   isStartupResolved: boolean
   items: DesktopItem[]
+  /** The status as last set, ahead of the render that shows it. */
+  latestStatus: () => { text: string; tone: StatusTone }
   manifest: DesktopManifest | null
   selected: DesktopItem | null
   selectedId: string | null
@@ -89,12 +91,17 @@ export function useDatasetManifest({
     text: string
     tone: StatusTone
   }>({ text: 'Starting NeuroVue.', tone: 'info' })
+  // The status as last set, readable before the render that shows it: an
+  // agent's open_path reports the error the moment opening fails.
+  const latestStatusRef = useRef(statusLine)
   const setStatus = useCallback(
     (text: string, tone: StatusTone = 'info'): void => {
+      latestStatusRef.current = { text, tone }
       setStatusLine({ text, tone })
     },
     [],
   )
+  const latestStatus = useCallback(() => latestStatusRef.current, [])
   // Routine refreshes (the manifest poll, re-reads after an action) must not
   // wipe an error or success the user hasn't acted on yet; the next real
   // action replaces it.
@@ -409,6 +416,7 @@ export function useDatasetManifest({
     isOpeningDataset,
     isStartupResolved,
     items,
+    latestStatus,
     manifest,
     samplePath,
     selected,

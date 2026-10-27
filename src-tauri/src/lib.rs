@@ -1,6 +1,8 @@
 // niimath (a native sidecar) and the integrated terminal (a PTY/shell) both
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
 #[cfg(desktop)]
+mod mcp;
+#[cfg(desktop)]
 mod niimath;
 mod share;
 #[cfg(desktop)]
@@ -8,13 +10,15 @@ mod terminal;
 mod volumetric_server;
 
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::Manager;
 // The app menu bar is a desktop-only concept; iOS/Android have no `tauri::menu`.
 #[cfg(desktop)]
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(desktop)]
-use tauri::Emitter;
+use tauri::{Emitter, EventTarget};
 
 // File and View menu item ids. Each click is forwarded to the frontend as a
 // `neurovue-menu` event whose payload is the id minus its `file-` or `view-`
@@ -54,9 +58,41 @@ struct NeuroVueServerInfo {
     sample_path: Option<String>,
 }
 
+/// The label of the window NeuroVue opens at launch.
+const MAIN_WINDOW: &str = "main";
+
 pub(crate) struct NeuroVueState {
-    pub(crate) server: volumetric_server::ServerHandle,
+    /// Each window's dataset server, by window label: windows opened after
+    /// launch show datasets of their own.
+    servers: Mutex<HashMap<String, volumetric_server::ServerHandle>>,
     pub(crate) sample_path: Option<PathBuf>,
+}
+
+impl NeuroVueState {
+    /// The dataset server for the window labelled `label`, started empty the
+    /// first time a window other than the launch window asks.
+    pub(crate) fn server(&self, label: &str) -> volumetric_server::ServerHandle {
+        let mut servers = self
+            .servers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        servers
+            .entry(label.to_string())
+            .or_insert_with(volumetric_server::spawn_empty)
+            .clone()
+    }
+
+    /// Stops the server of a window that has closed.
+    fn close(&self, label: &str) {
+        let removed = self
+            .servers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(label);
+        if let Some(server) = removed {
+            volumetric_server::shutdown(&server);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -108,19 +144,23 @@ fn neurovue_runtime_capabilities() -> RuntimeCapabilities {
 }
 
 #[tauri::command]
-fn neurovue_server_info(state: tauri::State<'_, NeuroVueState>) -> NeuroVueServerInfo {
-    let bids = volumetric_server::bids_dataset_info(&state.server);
+fn neurovue_server_info(
+    window: tauri::Window,
+    state: tauri::State<'_, NeuroVueState>,
+) -> NeuroVueServerInfo {
+    let server = state.server(window.label());
+    let bids = volumetric_server::bids_dataset_info(&server);
     NeuroVueServerInfo {
-        url: state.server.url.clone(),
-        port: state.server.port,
-        volume_count: volumetric_server::volume_count(&state.server),
-        dataset_root: volumetric_server::dataset_root(&state.server)
+        url: server.url.clone(),
+        port: server.port,
+        volume_count: volumetric_server::volume_count(&server),
+        dataset_root: volumetric_server::dataset_root(&server)
             .map(|path| path.display().to_string()),
         cache_root: volumetric_server::cache_root().display().to_string(),
         bids_name: bids.as_ref().and_then(|info| info.name.clone()),
         bids_version: bids.as_ref().and_then(|info| info.bids_version.clone()),
         bids_dataset_doi: bids.as_ref().and_then(|info| info.dataset_doi.clone()),
-        warm_progress: volumetric_server::warm_progress(&state.server),
+        warm_progress: volumetric_server::warm_progress(&server),
         sample_path: state
             .sample_path
             .as_ref()
@@ -130,11 +170,12 @@ fn neurovue_server_info(state: tauri::State<'_, NeuroVueState>) -> NeuroVueServe
 
 #[tauri::command]
 async fn open_dataset_path(
+    window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
     path: String,
 ) -> Result<DatasetOpenResult, String> {
     let path = normalize_local_path(&path);
-    let server = state.server.clone();
+    let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || open_dataset_at_path(&server, Path::new(&path)))
         .await
         .map_err(|error| format!("open_dataset_path: join error: {error}"))?
@@ -143,7 +184,7 @@ async fn open_dataset_path(
 /// The iOS document picker hands back a `file://` URL (Tauri copies the picked
 /// file into the app's Inbox first), so convert it to a plain, percent-decoded
 /// filesystem path. Desktop paths have no scheme, so this is a no-op there.
-fn normalize_local_path(raw: &str) -> String {
+pub(crate) fn normalize_local_path(raw: &str) -> String {
     let without_scheme = raw.strip_prefix("file://").unwrap_or(raw);
     percent_decode(without_scheme)
 }
@@ -170,11 +211,12 @@ fn percent_decode(input: &str) -> String {
 
 #[tauri::command]
 async fn add_overlay_volume_path(
+    window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
     path: String,
 ) -> Result<OverlayAddResult, String> {
     let path = normalize_local_path(&path);
-    let server = state.server.clone();
+    let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
         let registered = volumetric_server::register_overlay_volume(&server, Path::new(&path))?;
         Ok(OverlayAddResult {
@@ -190,13 +232,14 @@ async fn add_overlay_volume_path(
 
 #[tauri::command]
 async fn export_dataset_bundle(
+    window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
     dest_path: String,
     volume_ids: Vec<String>,
     view: serde_json::Value,
     created_at: String,
 ) -> Result<ExportBundleResult, String> {
-    let server = state.server.clone();
+    let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
         let result = volumetric_server::export_bundle(
             &server,
@@ -218,13 +261,14 @@ async fn export_dataset_bundle(
 #[tauri::command]
 async fn share_view_via_airdrop(
     app: tauri::AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
     volume_ids: Vec<String>,
     view: serde_json::Value,
     created_at: String,
     name: String,
 ) -> Result<ExportBundleResult, String> {
-    let server = state.server.clone();
+    let server = state.server(window.label());
     // Stage the bundle under the app cache off the main thread (a share picks no
     // destination, unlike Save). Reuse an already-staged bundle whose inputs are
     // unchanged so re-sharing the same dataset is instant instead of re-zipping.
@@ -299,7 +343,7 @@ async fn read_bundle_manifest(path: String) -> Result<serde_json::Value, String>
 const MESH_EXTENSIONS: &[&str] = &[
     "asc", "byu", "dfs", "geo", "gii", "ico", "mz3", "nv", "obj", "off", "ply", "srf", "stl",
     "vtk", "wrl", "x3d", "cbor", "white", "pial", "inflated", "sphere", "orig", "smoothwm",
-    "qsphere",
+    "qsphere", "trk", "tck", "trx",
 ];
 
 /// The raw bytes of a surface mesh. Meshes skip the volume server: the viewer
@@ -447,17 +491,30 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         Some("CmdOrCtrl+Alt+V"),
     )?;
+    let allow_agents = CheckMenuItem::with_id(
+        handle,
+        mcp::MENU_ALLOW_AGENTS,
+        "Allow AI Agents",
+        true,
+        // Checked in setup: the saved choice lives in the config dir, which
+        // isn't resolvable while the menu is built.
+        false,
+        None::<&str>,
+    )?;
     let existing_view = menu.items()?.into_iter().find_map(|item| {
         item.as_submenu()
             .filter(|submenu| submenu.text().is_ok_and(|text| text == "View"))
             .cloned()
     });
     match existing_view {
-        Some(view_menu) => {
-            view_menu.prepend_items(&[&express_view, &PredefinedMenuItem::separator(handle)?])?
-        }
+        Some(view_menu) => view_menu.prepend_items(&[
+            &express_view,
+            &allow_agents,
+            &PredefinedMenuItem::separator(handle)?,
+        ])?,
         None => {
-            let view_menu = Submenu::with_items(handle, "View", true, &[&express_view])?;
+            let view_menu =
+                Submenu::with_items(handle, "View", true, &[&express_view, &allow_agents])?;
             menu.append(&view_menu)?;
         }
     }
@@ -468,6 +525,13 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.try_state::<NeuroVueState>() {
+                    state.close(window.label());
+                }
+            }
+        })
         .setup(|app| {
             // The bundled MNI152 is not opened at launch: the app starts on the
             // Welcome screen (or reopens the last dataset), which offers it as a
@@ -491,9 +555,14 @@ pub fn run() {
                 ),
             }
             app.manage(NeuroVueState {
-                server: volumetric_server::spawn_default(),
+                servers: Mutex::new(HashMap::from([(
+                    MAIN_WINDOW.to_string(),
+                    volumetric_server::spawn_default(),
+                )])),
                 sample_path,
             });
+            #[cfg(desktop)]
+            mcp::start_if_enabled(app.handle());
             Ok(())
         });
 
@@ -502,11 +571,25 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.menu(neurovue_menu).on_menu_event(|app, event| {
         let id = event.id().as_ref();
+        if id == mcp::MENU_ALLOW_AGENTS {
+            let checked = mcp::allow_agents_item(app).and_then(|item| item.is_checked().ok());
+            if let Some(enabled) = checked {
+                mcp::set_enabled(app, enabled);
+            }
+            return;
+        }
         if let Some(action) = id
             .strip_prefix("file-")
             .or_else(|| id.strip_prefix("view-"))
         {
-            let _ = app.emit(MENU_EVENT, action);
+            // To the window in front only: each window has its own dataset.
+            let focused = app
+                .webview_windows()
+                .into_values()
+                .find(|window| window.is_focused().unwrap_or(false));
+            let label =
+                focused.map_or(MAIN_WINDOW.to_string(), |window| window.label().to_string());
+            let _ = app.emit_to(EventTarget::webview_window(label), MENU_EVENT, action);
         }
     });
 
@@ -515,6 +598,7 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder
         .manage(terminal::TerminalState::default())
+        .manage(mcp::McpState::default())
         .invoke_handler(tauri::generate_handler![
             neurovue_runtime_capabilities,
             neurovue_server_info,
@@ -531,7 +615,10 @@ pub fn run() {
             terminal::terminal_resize,
             terminal::terminal_kill,
             terminal::discover_python_interpreters,
-            terminal::inspect_python_interpreter
+            terminal::inspect_python_interpreter,
+            mcp::mcp_status,
+            mcp::agent_resolve_path,
+            mcp::open_viewer_window
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -545,7 +632,14 @@ pub fn run() {
         share_view_via_airdrop
     ]);
 
-    builder
-        .run(tauri::generate_context!())
-        .expect("error while running NeuroVue");
+    let app = builder
+        .build(tauri::generate_context!())
+        .expect("error while building NeuroVue");
+    app.run(|_app, _event| {
+        // Don't leave the agent server holding its port after we quit.
+        #[cfg(desktop)]
+        if let tauri::RunEvent::Exit = _event {
+            mcp::stop(_app);
+        }
+    });
 }

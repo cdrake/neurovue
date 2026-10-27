@@ -1,4 +1,5 @@
 import type { NiiVueLocation } from '@niivue/niivue'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   AlertTriangle,
   Boxes,
@@ -100,10 +101,12 @@ import type {
   ClipPlane,
   DesktopItem,
   JsonValue,
+  OverlayAddResult,
   VolumeMetadata,
   WarmProgress,
 } from './domain/desktop'
 import {
+  addOverlayVolumeByPath,
   defaultClipPlanes,
   fetchVolumeMetadata,
   isBundledSampleDataset,
@@ -117,6 +120,7 @@ import {
   meshColorFromHex,
   meshColorHex,
   openMeshFiles,
+  readMeshLayer,
 } from './domain/meshes'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
@@ -131,6 +135,7 @@ import {
   volumeSubject,
   volumeSummary,
 } from './domain/volumeFacets'
+import { useAgentClient } from './hooks/useAgentClient'
 import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
 import { useNativeMenu } from './hooks/useNativeMenu'
@@ -237,6 +242,18 @@ function isPhoneViewport(): boolean {
 // Below this window width the dataset panel folds to its rail (see App).
 const AUTO_COLLAPSE_WIDTH = 1100
 
+// A window an agent opened with open_window (see src-tauri/src/mcp.rs). It
+// starts empty rather than reopening the last dataset, which the launch
+// window shows already.
+const isViewerWindow = (() => {
+  try {
+    return getCurrentWebviewWindow().label.startsWith('viewer-')
+  } catch {
+    // Not under Tauri (browser-only development).
+    return false
+  }
+})()
+
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
   const backend = useMemo<Backend>(preferredBackend, [])
@@ -257,6 +274,7 @@ export function App(): JSX.Element {
     isOpeningDataset,
     isStartupResolved,
     items,
+    latestStatus,
     manifest,
     openLocalDataset,
     openLocalVolumeFile,
@@ -715,35 +733,39 @@ export function App(): JSX.Element {
         setStatus('Overlay load cancelled.')
         return
       }
-
-      const nextManifest = await refreshDesktopManifestData()
-      const overlayItem =
-        nextManifest?.items.find((item) => item.id === result.id) ?? null
-      const isAtlas = overlayItem
-        ? await volumeHasAtlasLabelSidecar(overlayItem)
-        : false
-      if (isAtlas) {
-        setAtlasId(result.id)
-        setLayerHidden(result.id, false)
-        setOverlayIds((current) => {
-          if (!current.has(result.id)) return current
-          const next = new Set(current)
-          next.delete(result.id)
-          return next
-        })
-        setStatus(`Atlas ${result.label} added with label sidecar.`, 'success')
-      } else {
-        setOverlayIds((current) => {
-          const next = new Set(current)
-          next.add(result.id)
-          return next
-        })
-        setStatus(`Overlay ${result.label} added to every volume.`, 'success')
-      }
+      await placeOverlay(result)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsOpeningOverlay(false)
+    }
+  }
+
+  /** Shows an overlay the host just registered: as the atlas when it has a label sidecar. */
+  async function placeOverlay(result: OverlayAddResult): Promise<void> {
+    const nextManifest = await refreshDesktopManifestData()
+    const overlayItem =
+      nextManifest?.items.find((item) => item.id === result.id) ?? null
+    const isAtlas = overlayItem
+      ? await volumeHasAtlasLabelSidecar(overlayItem)
+      : false
+    if (isAtlas) {
+      setAtlasId(result.id)
+      setLayerHidden(result.id, false)
+      setOverlayIds((current) => {
+        if (!current.has(result.id)) return current
+        const next = new Set(current)
+        next.delete(result.id)
+        return next
+      })
+      setStatus(`Atlas ${result.label} added with label sidecar.`, 'success')
+    } else {
+      setOverlayIds((current) => {
+        const next = new Set(current)
+        next.add(result.id)
+        return next
+      })
+      setStatus(`Overlay ${result.label} added to every volume.`, 'success')
     }
   }
 
@@ -758,20 +780,24 @@ export function App(): JSX.Element {
         setStatus('Mesh load cancelled.')
         return
       }
-      // A mesh on its own is a 3D object; slices of nothing would be blank.
-      if (items.length === 0) setViewMode('render')
-      setMeshes((current) => [...current, ...added])
-      setStatus(
-        added.length === 1
-          ? `Mesh ${added[0].name} added.`
-          : `${added.length} meshes added.`,
-        'success',
-      )
+      showMeshes(added)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsOpeningMesh(false)
     }
+  }
+
+  function showMeshes(added: MeshLayer[]): void {
+    // A mesh on its own is a 3D object; slices of nothing would be blank.
+    if (items.length === 0) setViewMode('render')
+    setMeshes((current) => [...current, ...added])
+    setStatus(
+      added.length === 1
+        ? `Mesh ${added[0].name} added.`
+        : `${added.length} meshes added.`,
+      'success',
+    )
   }
 
   function updateMesh(id: string, patch: Partial<MeshLayer>): void {
@@ -907,6 +933,85 @@ export function App(): JSX.Element {
         : setStatus('AirDrop is not available on this Mac.'),
   })
 
+  // The live NiiVue instance for agent tools, set once its volumes load.
+  // Agent calls that reload the viewer wait here for the next one.
+  const viewerRef = useRef<unknown>(null)
+  const viewerWaitersRef = useRef<Array<() => void>>([])
+  const handleViewer = useCallback((nv: unknown) => {
+    viewerRef.current = nv
+    if (!nv) return
+    for (const resolve of viewerWaitersRef.current.splice(0)) resolve()
+  }, [])
+  /** Runs `change`, then waits (up to 30 s) for the viewer it causes to load. */
+  async function untilNextViewer(change: () => Promise<void>): Promise<void> {
+    const loaded = new Promise<void>((resolve) => {
+      viewerWaitersRef.current.push(resolve)
+      setTimeout(resolve, 30_000)
+    })
+    await change()
+    await loaded
+  }
+  const agent = useAgentClient({
+    viewer: () => viewerRef.current,
+    title: () => (datasetName ? `NeuroVue: ${datasetName}` : 'NeuroVue'),
+    actions: {
+      openPath: (path) =>
+        untilNextViewer(async () => {
+          if (!(await openRecentEntry(path))) {
+            const last = latestStatus()
+            throw new Error(
+              last.tone === 'error'
+                ? last.text
+                : `Couldn't open ${path}: another dataset is still opening.`,
+            )
+          }
+        }),
+      dataset: () => ({
+        name: datasetName || null,
+        root: datasetRoot ?? null,
+        volumes: items.map((item) => ({
+          id: item.id,
+          label: item.label,
+          shape: item.shape,
+          spacing: item.spacing,
+          shown: item.id === selected?.id,
+        })),
+      }),
+      selectVolume: async (id) => {
+        if (!items.some((item) => item.id === id)) {
+          throw new Error(
+            `No volume ${id} in this dataset; dataset lists them.`,
+          )
+        }
+        if (id === selected?.id) return
+        await untilNextViewer(async () => setSelectedId(id))
+      },
+      addOverlay: async (path) => {
+        if (items.length === 0) {
+          throw new Error(
+            'No dataset is open to overlay; call open_path first.',
+          )
+        }
+        const result = await addOverlayVolumeByPath(path)
+        await untilNextViewer(() => placeOverlay(result))
+        return { id: result.id, label: result.label }
+      },
+      addMeshes: async (paths) => {
+        const added = await Promise.all(
+          paths.map((path, index) =>
+            readMeshLayer(path, meshes.length + index),
+          ),
+        )
+        showMeshes(added)
+        return added.map((mesh) => mesh.name)
+      },
+    },
+  })
+  const agentError = agent.status?.error
+  useEffect(() => {
+    if (agentError) setStatus(agentError, 'error')
+  }, [agentError, setStatus])
+
   // Hold the importing flag across the file dialog too, so the button stays
   // disabled while the picker is open.
   async function handleImportBundle(): Promise<void> {
@@ -948,7 +1053,7 @@ export function App(): JSX.Element {
     if (!isStartupResolved || reopenAttemptedRef.current) return
     reopenAttemptedRef.current = true
     const last = recentDatasets[0]
-    if (!reopenLast || !last || items.length > 0) return
+    if (!reopenLast || !last || items.length > 0 || isViewerWindow) return
     setReopeningPath(last)
     void openRecentEntry(last)
       .then((opened) => {
@@ -1631,6 +1736,7 @@ export function App(): JSX.Element {
                   onResolvedWindows={handleResolvedWindows}
                   onViewModeChange={setViewMode}
                   onRenderStatus={setRenderStatus}
+                  onViewer={handleViewer}
                   renderWheelMode={renderWheelMode}
                   shading={shading}
                   viewMode={viewMode}

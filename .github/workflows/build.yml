@@ -51,7 +51,6 @@ jobs:
             bundle: |
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/rpm/*.rpm
-              src-tauri/target/release/bundle/appimage/*.AppImage
           - name: Windows
             os: windows-latest
             args: ''

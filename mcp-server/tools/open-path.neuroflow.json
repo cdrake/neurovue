@@ -1,0 +1,93 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/open-path",
+  "version": "1.0.0",
+  "description": "Opens a dataset from this computer in a NeuroVue window, replacing the one it shows: a BIDS or other folder of NIfTI volumes, a single NIfTI volume (.nii, .nii.gz), or a .nvbundle.",
+  "inputs": {
+    "path": {
+      "type": "neuro:bids-dataset",
+      "description": "Absolute path to a dataset folder, a NIfTI volume, or a .nvbundle, inside an allowed data root."
+    }
+  },
+  "outputs": {
+    "dataset": {
+      "type": "core:json",
+      "description": "The dataset now open: its name, root folder, and each volume's id, label, shape and spacing, with the one shown marked."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "open_path",
+      "title": "Open a dataset from disk",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Show data that is on this computer, by its path, without asking the person to pick it.",
+        "Switch a window to another dataset."
+      ],
+      "avoidWhen": [
+        {
+          "when": "The window already shows a dataset and you want one more volume over it.",
+          "instead": "org.neurovue/add-overlay-path"
+        },
+        {
+          "when": "The file is a surface or a tract.",
+          "instead": "org.neurovue/load-surfaces"
+        }
+      ],
+      "preconditions": [
+        "The path is inside a folder agents may open: by default the person's home folder."
+      ],
+      "effects": [
+        "Replaces the window's dataset and reloads the viewer: overlays, meshes, crosshair and plane start over."
+      ],
+      "duration": {
+        "typicalSeconds": 2,
+        "maxSeconds": 60,
+        "basis": "A BIDS dataset of 20 runs on an Apple-silicon laptop; large 4D files take longer."
+      },
+      "examples": [
+        {
+          "title": "Open a BIDS dataset",
+          "inputs": {
+            "path": "<bids_dir>"
+          }
+        }
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "outside the folders agents may open"
+          },
+          "meaning": "The path resolves, after following symlinks, outside the folders NeuroVue lets agents open.",
+          "remedy": "Ask the person to add the folder to \"roots\" in NeuroVue's mcp.json, or to open the file themselves. Retrying with the same path will not help.",
+          "retry": "never"
+        },
+        {
+          "match": {
+            "contains": "is not an absolute path"
+          },
+          "meaning": "The path is relative; NeuroVue does not know which folder it is relative to.",
+          "remedy": "Pass the absolute path.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "Couldn't open"
+          },
+          "meaning": "Nothing exists at that path, or NeuroVue may not read it.",
+          "remedy": "Check the path; on macOS the person may need to give NeuroVue access to the folder.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

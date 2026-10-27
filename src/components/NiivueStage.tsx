@@ -75,6 +75,8 @@ interface NiivueStageProps {
   // the host can keep it as a diagnostic tooltip. Only a load failure is shown
   // on the stage itself.
   onRenderStatus?: (status: string) => void
+  /** The NiiVue instance once its volumes have loaded, and null when it goes. */
+  onViewer?: (nv: unknown) => void
 }
 
 export interface NiivueRenderLayer {
@@ -411,6 +413,7 @@ export function NiivueStage({
   onLayerExtents,
   onViewModeChange,
   onRenderStatus,
+  onViewer,
 }: NiivueStageProps): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -606,6 +609,7 @@ export function NiivueStage({
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
+        if (!cancelled) onViewer?.(nv)
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
@@ -632,6 +636,7 @@ export function NiivueStage({
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
         }
+        onViewer?.(null)
         localNv.destroy?.()
         nvRef.current = null
         loadedLayerIdsRef.current = []

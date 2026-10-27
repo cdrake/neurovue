@@ -53,10 +53,11 @@ pub(crate) fn validate_niimath_mask_path(path: String) -> Result<String, String>
 
 #[tauri::command]
 pub(crate) async fn run_niimath_task(
+    window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
     request: NiimathTaskRequest,
 ) -> Result<NiimathTaskResult, String> {
-    let server = state.server.clone();
+    let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || run_niimath_task_blocking(server, request))
         .await
         .map_err(|error| format!("run_niimath_task: join error: {error}"))?
@@ -274,7 +275,7 @@ fn nifti_json_sidecar_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}.json"))
 }
 
-fn sidecar_binary(name: &str) -> Result<PathBuf, String> {
+pub(crate) fn sidecar_binary(name: &str) -> Result<PathBuf, String> {
     for dir in runtime_binary_dirs()? {
         for candidate in sidecar_name_candidates(name) {
             let path = dir.join(&candidate);

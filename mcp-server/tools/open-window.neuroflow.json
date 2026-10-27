@@ -1,0 +1,55 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/open-window",
+  "version": "1.0.0",
+  "description": "Opens a new, empty NeuroVue window and returns its tab id, which the other tools take as tab to drive it.",
+  "inputs": {
+    "title": {
+      "type": "core:string",
+      "description": "The window's title.",
+      "optional": true
+    }
+  },
+  "outputs": {
+    "id": {
+      "type": "core:string",
+      "description": "The new window's tab id."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "open_window",
+      "title": "Open a NeuroVue window",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": ["Compare datasets side by side, one per window."],
+      "avoidWhen": [
+        {
+          "when": "One window should show another dataset.",
+          "instead": "org.neurovue/open-path"
+        }
+      ],
+      "effects": [
+        "Opens a window on the person's screen; it stays open until they close it."
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "has not connected yet"
+          },
+          "meaning": "The window opened but has not reached the agent server yet.",
+          "remedy": "Call list_tabs in a few seconds and use the new tab once it is listed.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

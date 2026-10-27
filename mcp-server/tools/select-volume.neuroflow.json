@@ -1,0 +1,54 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/select-volume",
+  "version": "1.0.0",
+  "description": "Shows another volume of the open dataset, by the id the dataset tool lists.",
+  "inputs": {
+    "id": {
+      "type": "core:string",
+      "description": "A volume id from the dataset tool."
+    }
+  },
+  "outputs": {
+    "dataset": {
+      "type": "core:json",
+      "description": "The dataset now open: its name, root folder, and each volume's id, label, shape and spacing, with the one shown marked."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "select_volume",
+      "title": "Show another volume",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": ["Step through the runs or modalities of the open dataset."],
+      "avoidWhen": [
+        {
+          "when": "The volume is not part of the open dataset.",
+          "instead": "org.neurovue/open-path"
+        }
+      ],
+      "effects": [
+        "Reloads the viewer: overlays added by an agent, the crosshair and the plane start over."
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "No volume"
+          },
+          "meaning": "The id is not one of the open dataset's volumes.",
+          "remedy": "Call dataset and use one of the ids it lists.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

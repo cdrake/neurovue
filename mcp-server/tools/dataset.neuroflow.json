@@ -1,0 +1,33 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/dataset",
+  "version": "1.0.0",
+  "description": "Reports the dataset a NeuroVue window has open: its name, root folder, and every volume with its id, label, shape and spacing, marking the one shown.",
+  "inputs": {},
+  "outputs": {
+    "dataset": {
+      "type": "core:json",
+      "description": "The dataset now open: its name, root folder, and each volume's id, label, shape and spacing, with the one shown marked."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "dataset",
+      "title": "Describe the open dataset",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Learn the volume ids that select_volume takes.",
+        "Check which dataset and volume a window shows before changing it."
+      ]
+    }
+  }
+}

@@ -17,7 +17,10 @@ export interface MeshLayer {
   visible: boolean
 }
 
-/** Mirrors `MESH_EXTENSIONS` in lib.rs; FreeSurfer surfaces end in their type. */
+/**
+ * Mirrors `MESH_EXTENSIONS` in lib.rs; FreeSurfer surfaces end in their type.
+ * NiiVue reads tracts (trk, tck, trx) as meshes too.
+ */
 export const MESH_EXTENSIONS = [
   'asc',
   'byu',
@@ -43,6 +46,9 @@ export const MESH_EXTENSIONS = [
   'orig',
   'smoothwm',
   'qsphere',
+  'trk',
+  'tck',
+  'trx',
 ]
 
 // Surfice-style defaults: the first mesh is bone white, later ones take
@@ -94,7 +100,7 @@ export async function openMeshFiles(
     directory: false,
     multiple: true,
     title: 'Open surface mesh',
-    filters: [{ name: 'Surface meshes', extensions: MESH_EXTENSIONS }],
+    filters: [{ name: 'Meshes and tracts', extensions: MESH_EXTENSIONS }],
   })
   if (!selected) return null
   const paths = Array.isArray(selected) ? selected : [selected]
