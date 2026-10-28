@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    io::Read,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -325,7 +324,7 @@ fn unused_path(dir: &FsPath, name: &str) -> PathBuf {
 
 fn random_token() -> std::io::Result<String> {
     let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
