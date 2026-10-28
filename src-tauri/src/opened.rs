@@ -6,8 +6,13 @@
 // A file can arrive before the page has loaded, when it is what launched the
 // app, so paths wait here until the page takes them; the event only tells a
 // page that is already running to look.
+//
+// iOS purges the Inbox (it lives in tmp), so on iOS `keep` moves each arrival
+// into Documents/Received first, where it stays until the person deletes it.
+// Recents can then reopen it after a relaunch.
 
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tauri::{Emitter, EventTarget, Manager};
 
 /// Emitted to the launch window when files arrive.
@@ -22,7 +27,7 @@ pub(crate) fn receive(app: &tauri::AppHandle, urls: Vec<tauri::Url>) {
     let paths = urls
         .iter()
         .filter_map(|url| url.to_file_path().ok())
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|path| keep(&path.to_string_lossy()))
         .collect();
     receive_paths(app, paths);
 }
@@ -53,4 +58,44 @@ pub(crate) fn take_opened_files(state: tauri::State<'_, OpenedFiles>) -> Vec<Str
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     )
+}
+
+/// Where `keep` moves arrivals. Set only on iOS, so `keep` does nothing elsewhere.
+static RECEIVED_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn init_received_dir(dir: PathBuf) {
+    let _ = RECEIVED_DIR.set(dir);
+}
+
+/// `path`, or where it now lives if it was in the OS temp dir (the iOS Inbox)
+/// and could be moved into the received dir. A failed move keeps the original,
+/// so the file still opens this time.
+pub(crate) fn keep(path: &str) -> String {
+    let Some(dir) = RECEIVED_DIR.get() else {
+        return path.to_string();
+    };
+    match move_out_of_temp(Path::new(path), dir) {
+        Some(kept) => kept.to_string_lossy().into_owned(),
+        None => path.to_string(),
+    }
+}
+
+fn move_out_of_temp(path: &Path, dir: &Path) -> Option<PathBuf> {
+    let path = path.canonicalize().ok()?;
+    let temp = std::env::temp_dir().canonicalize().ok()?;
+    if !path.is_file() || !path.starts_with(&temp) {
+        return None;
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    let dest = crate::receive::unused_path(dir, path.file_name()?.to_str()?);
+    std::fs::rename(&path, &dest).ok()?;
+    Some(dest)
+}
+
+/// A file the page picked (the iOS picker copies it into the Inbox), kept like
+/// a handed-over one so recents can reopen it.
+#[tauri::command]
+pub(crate) fn keep_picked_file(path: String) -> String {
+    keep(&crate::normalize_local_path(&path))
 }

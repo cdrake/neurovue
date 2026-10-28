@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { keepPickedFile } from './openedFiles'
 
 export type Backend = 'webgl2' | 'webgpu'
 
@@ -186,6 +187,8 @@ export interface DatasetOpenResult {
   port: number
   volumeCount: number
   datasetRoot: string
+  /** Set when a single volume was opened; datasetRoot is then its folder. */
+  openedFile?: string | null
   cacheRoot: string
   bidsName?: string | null
   bidsVersion?: string | null
@@ -324,7 +327,7 @@ export async function openVolumeFile(): Promise<DatasetOpenResult | null> {
   // A single file opens as a single-volume dataset (open_dataset_root accepts a
   // NIfTI file). This is the mobile-friendly path — iOS has no folder concept in
   // the document picker the way desktop dataset folders assume.
-  return openDatasetByPath(selected)
+  return openDatasetByPath(await keepPickedFile(selected))
 }
 
 export async function openOverlayVolume(): Promise<OverlayAddResult | null> {

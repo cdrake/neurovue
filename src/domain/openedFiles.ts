@@ -18,6 +18,17 @@ export async function takeOpenedFile(): Promise<string | null> {
   }
 }
 
+/** Where a picked file now lives. The iOS picker copies it into the Inbox,
+ *  which iOS purges, so the host moves it into Documents/Received; elsewhere
+ *  the path comes back unchanged. */
+export async function keepPickedFile(path: string): Promise<string> {
+  try {
+    return await invoke<string>('keep_picked_file', { path })
+  } catch {
+    return path
+  }
+}
+
 /** Calls `onArrival` whenever files arrive while the page is running; returns
  *  the function that stops listening. */
 export function onFilesOpened(onArrival: () => void): () => void {

@@ -310,7 +310,7 @@ fn split_extension(name: &str) -> Option<(&str, &str)> {
 }
 
 /// `dir/name`, or `dir/stem-2.ext` and so on if that's taken.
-fn unused_path(dir: &FsPath, name: &str) -> PathBuf {
+pub(crate) fn unused_path(dir: &FsPath, name: &str) -> PathBuf {
     let path = dir.join(name);
     if !path.exists() {
         return path;

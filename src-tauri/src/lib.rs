@@ -107,6 +107,9 @@ struct DatasetOpenResult {
     port: u16,
     volume_count: usize,
     dataset_root: String,
+    /// The file opened, when that was a single volume: its dataset root is the
+    /// parent folder, which may hold other files.
+    opened_file: Option<String>,
     cache_root: String,
     bids_name: Option<String>,
     bids_version: Option<String>,
@@ -547,12 +550,17 @@ fn open_dataset_at_path(
         .display()
         .to_string();
     let bids = volumetric_server::bids_dataset_info(server);
+    let opened_file = root
+        .is_file()
+        .then(|| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+        .map(|path| path.display().to_string());
 
     Ok(DatasetOpenResult {
         url: server.url.clone(),
         port: server.port,
         volume_count,
         dataset_root,
+        opened_file,
         cache_root: volumetric_server::cache_root().display().to_string(),
         bids_name: bids.as_ref().and_then(|info| info.name.clone()),
         bids_version: bids.as_ref().and_then(|info| info.bids_version.clone()),
@@ -722,6 +730,12 @@ pub fn run() {
                     "NeuroVue: no app data dir ({error}); keeping user work in the temp cache"
                 ),
             }
+            // Files handed over on iOS arrive in the purged Inbox; keep them
+            // where the person can find them and recents can reopen them.
+            #[cfg(target_os = "ios")]
+            if let Ok(dir) = app.path().document_dir() {
+                opened::init_received_dir(dir.join("Received"));
+            }
             app.manage(NeuroVueState {
                 servers: Mutex::new(HashMap::from([(
                     MAIN_WINDOW.to_string(),
@@ -786,6 +800,7 @@ pub fn run() {
             read_document_manifest,
             share_view_via_airdrop,
             opened::take_opened_files,
+            opened::keep_picked_file,
             receive::answer_send_offer,
             list_send_targets,
             send_view_to_device,
@@ -816,6 +831,7 @@ pub fn run() {
         read_document_manifest,
         share_view_via_airdrop,
         opened::take_opened_files,
+        opened::keep_picked_file,
         receive::answer_send_offer,
         list_send_targets,
         send_view_to_device,
