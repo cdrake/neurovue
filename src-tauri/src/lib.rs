@@ -644,6 +644,7 @@ pub fn run() {
         read_mesh_file,
         export_dataset_bundle,
         read_bundle_manifest,
+        read_document_manifest,
         share_view_via_airdrop,
         opened::take_opened_files
     ]);
