@@ -1,0 +1,32 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/list-devices",
+  "version": "1.0.0",
+  "description": "Lists the other devices on the local network running NeuroVue (an iPad, another Mac) that send_to_device can send to.",
+  "inputs": {},
+  "outputs": {
+    "devices": {
+      "type": "core:json",
+      "description": "Each device's name, as send_to_device takes it."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "list_devices",
+      "title": "List devices to send to",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": ["Find the name of the iPad to send a volume to."],
+      "duration": { "typicalSeconds": 2 },
+      "effects": ["None; it only looks on the network."]
+    }
+  }
+}

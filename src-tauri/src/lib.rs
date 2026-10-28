@@ -8,7 +8,6 @@ mod mcp;
 mod niimath;
 mod opened;
 mod receive;
-#[cfg(desktop)]
 mod send;
 mod share;
 #[cfg(desktop)]
@@ -299,17 +298,31 @@ fn stage_share_bundle(
     Ok((result, dest))
 }
 
-/// Devices on the network that can take a Send to iPad.
-#[cfg(desktop)]
+/// Devices on the network that can take a Send to iPad (or, from an iPad, a
+/// drawing sent back).
+/// Listens for sends and advertises the port (see receive.rs, bonjour.rs).
+fn start_receiving(app: &tauri::AppHandle) {
+    match receive::start(app) {
+        Ok(port) => {
+            eprintln!("NeuroVue: receiving sends on port {port}");
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let Err(error) = bonjour::advertise(port) {
+                eprintln!("NeuroVue: {error}");
+            }
+        }
+        Err(error) => eprintln!("NeuroVue: can't receive sends ({error})"),
+    }
+}
+
 #[tauri::command]
 async fn list_send_targets() -> Result<Vec<send::SendTarget>, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     return tauri::async_runtime::spawn_blocking(|| {
         bonjour::browse(std::time::Duration::from_millis(1500))
     })
     .await
     .map_err(|error| format!("list_send_targets: join error: {error}"))?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     Ok(Vec::new())
 }
 
@@ -317,7 +330,6 @@ async fn list_send_targets() -> Result<Vec<send::SendTarget>, String> {
 /// returning once the person there has accepted it and it has arrived.
 /// `on_offered` hears once staging (slow for a big dataset) is done and the
 /// person there is being asked.
-#[cfg(desktop)]
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn send_view_to_device(
@@ -347,6 +359,84 @@ async fn send_view_to_device(
     })
     .await
     .map_err(|error| format!("send_view_to_device: join error: {error}"))?
+}
+
+/// Sends a drawing back to the device its volume came from, as a drawing
+/// bundle (volumetric_server::export_drawing_bundle). The raw body is a
+/// little-endian u32 length, that many bytes of JSON `{ target, base,
+/// createdAt }`, then the drawing's NIfTI bytes: a drawing is megabytes, too
+/// big to pass as a JSON array of numbers.
+#[tauri::command]
+async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("send_drawing_to_device: expected the drawing's bytes".to_string());
+    };
+    let (length, rest) = body
+        .split_first_chunk::<4>()
+        .ok_or("send_drawing_to_device: empty body")?;
+    let length = u32::from_le_bytes(*length) as usize;
+    if rest.len() < length {
+        return Err("send_drawing_to_device: truncated body".to_string());
+    }
+    let (meta, drawing) = rest.split_at(length);
+    let meta: serde_json::Value =
+        serde_json::from_slice(meta).map_err(|error| format!("send_drawing_to_device: {error}"))?;
+    let target: send::SendTarget = serde_json::from_value(meta["target"].clone())
+        .map_err(|error| format!("send_drawing_to_device: target: {error}"))?;
+    let base = meta["base"].clone();
+    let created_at = meta["createdAt"].as_str().unwrap_or_default().to_string();
+    let drawing = drawing.to_vec();
+    tauri::async_runtime::spawn_blocking(move || {
+        let label = base["label"].as_str().unwrap_or("volume");
+        let name: String = format!("Drawing on {label}")
+            .chars()
+            .map(|c| {
+                if matches!(c, '/' | '\\' | ':') {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let dest = volumetric_server::cache_root()
+            .join("drawings")
+            .join(format!("{name}.nvbundle"));
+        volumetric_server::export_drawing_bundle(&dest, &drawing, &base, &created_at)?;
+        let addresses = target.addresses();
+        if addresses.is_empty() {
+            return Err(format!("Couldn't find {} on the network.", target.name));
+        }
+        let sent = send::send_file(&addresses, &target.name, &dest, &send::device_name());
+        let _ = std::fs::remove_file(&dest);
+        sent
+    })
+    .await
+    .map_err(|error| format!("send_drawing_to_device: join error: {error}"))?
+}
+
+/// Lays a received drawing over the volume it was drawn on (see
+/// volumetric_server::attach_drawing) and returns the new volume's id.
+#[tauri::command]
+async fn attach_drawing(
+    window: tauri::Window,
+    state: tauri::State<'_, NeuroVueState>,
+    drawing_path: String,
+    base_id: String,
+    base_sha256: String,
+    base_label: String,
+) -> Result<String, String> {
+    let server = state.server(window.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        volumetric_server::attach_drawing(
+            &server,
+            Path::new(&drawing_path),
+            &base_id,
+            &base_sha256,
+            &base_label,
+        )
+    })
+    .await
+    .map_err(|error| format!("attach_drawing: join error: {error}"))?
 }
 
 #[tauri::command]
@@ -640,19 +730,13 @@ pub fn run() {
             });
             #[cfg(desktop)]
             mcp::start_if_enabled(app.handle());
-            // The iPad listens for Send to iPad from a Mac. A Mac only does
-            // when asked, to test sending without an iPad.
-            if cfg!(target_os = "ios") || std::env::var_os("NEUROVUE_RECEIVE").is_some() {
-                match receive::start(app.handle()) {
-                    Ok(port) => {
-                        eprintln!("NeuroVue: receiving sends on port {port}");
-                        #[cfg(any(target_os = "macos", target_os = "ios"))]
-                        if let Err(error) = bonjour::advertise(port) {
-                            eprintln!("NeuroVue: {error}");
-                        }
-                    }
-                    Err(error) => eprintln!("NeuroVue: can't receive sends ({error})"),
-                }
+            // The iPad listens for Send to iPad from a Mac, and the Mac for
+            // drawings sent back. Elsewhere nothing advertises the port, so
+            // only listen when asked.
+            if cfg!(any(target_os = "ios", target_os = "macos"))
+                || std::env::var_os("NEUROVUE_RECEIVE").is_some()
+            {
+                start_receiving(app.handle());
             }
             Ok(())
         });
@@ -704,6 +788,8 @@ pub fn run() {
             receive::answer_send_offer,
             list_send_targets,
             send_view_to_device,
+            send_drawing_to_device,
+            attach_drawing,
             niimath::validate_niimath_mask_path,
             niimath::run_niimath_task,
             terminal::terminal_start,
@@ -729,7 +815,11 @@ pub fn run() {
         read_document_manifest,
         share_view_via_airdrop,
         opened::take_opened_files,
-        receive::answer_send_offer
+        receive::answer_send_offer,
+        list_send_targets,
+        send_view_to_device,
+        send_drawing_to_device,
+        attach_drawing
     ]);
 
     let app = builder
@@ -741,6 +831,25 @@ pub fn run() {
         tauri::RunEvent::Exit => mcp::stop(_app),
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
+        // A suspended iOS app can lose its listening socket and its Bonjour
+        // registration, so the iPad would no longer show up to send to.
+        // With scenes, coming back is a window gaining focus (RunEvent::Resumed
+        // is something else, and WindowEvent::Resumed never comes).
+        #[cfg(target_os = "ios")]
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Focused(true),
+            ..
+        } => {
+            let app = _app.clone();
+            std::thread::spawn(move || match receive::live_port(&app) {
+                Some(port) => {
+                    if let Err(error) = bonjour::advertise(port) {
+                        eprintln!("NeuroVue: {error}");
+                    }
+                }
+                None => start_receiving(&app),
+            });
+        }
         _ => {}
     });
 }

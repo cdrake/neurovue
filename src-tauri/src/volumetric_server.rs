@@ -1020,6 +1020,105 @@ pub fn export_bundle(
     })
 }
 
+/// A drawing made on another device (the iPad's draw tool), as a bundle of one
+/// label map that names the volume it was drawn on: `base` is that volume's
+/// `{ id, sha256, label }` from the bundle it arrived in, so the Mac that sent
+/// it can find the original and lay the drawing over it.
+pub fn export_drawing_bundle(
+    dest: &FsPath,
+    drawing: &[u8],
+    base: &Value,
+    created_at: &str,
+) -> Result<(), String> {
+    let base_id = base["id"].as_str().unwrap_or_default();
+    let base_label = base["label"].as_str().unwrap_or("the volume");
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("export_drawing_bundle: {}: {error}", parent.display()))?;
+    }
+    let zip_file = File::create(dest)
+        .map_err(|error| format!("export_drawing_bundle: {}: {error}", dest.display()))?;
+    let mut zip = ZipWriter::new(zip_file);
+    // Unlike a volume, an uncompressed label map is mostly zeros.
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let data = "data/drawing.nii";
+    let manifest = json!({
+        "nvbundle": "1",
+        "kind": "drawing",
+        "createdAt": created_at,
+        "tool": { "name": "NeuroVue", "version": env!("CARGO_PKG_VERSION") },
+        "base": base,
+        "volumes": [{
+            "id": "drawing",
+            "role": "drawing",
+            "label": format!("Drawing on {base_label}"),
+            "data": data,
+            "sha256": format!("{:x}", Sha256::digest(drawing)),
+            "bytes": drawing.len(),
+            "derivedFrom": base_id,
+            "derivation": "drawing",
+        }],
+    });
+    let manifest_text = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("export_drawing_bundle: manifest: {error}"))?;
+    for (name, bytes) in [(data, drawing), ("manifest.json", manifest_text.as_bytes())] {
+        zip.start_file(name, options)
+            .and_then(|()| zip.write_all(bytes).map_err(Into::into))
+            .map_err(|error| format!("export_drawing_bundle: {name}: {error}"))?;
+    }
+    zip.finish()
+        .map_err(|error| format!("export_drawing_bundle: {}: {error}", dest.display()))?;
+    Ok(())
+}
+
+/// Lays a returned drawing (`drawing`, a NIfTI label map from a drawing
+/// bundle) over the volume it was drawn on, as a volume derived from it. The
+/// base must be the very file sent: same id in this dataset, same bytes.
+/// Returns the new volume's id; the error is a sentence for the status line.
+pub fn attach_drawing(
+    handle: &ServerHandle,
+    drawing: &FsPath,
+    base_id: &str,
+    base_sha256: &str,
+    base_label: &str,
+) -> Result<String, String> {
+    let source = lock_recover(&handle.volumes)
+        .iter()
+        .find(|volume| volume.id == base_id)
+        .and_then(|volume| volume.source_path.clone())
+        .ok_or_else(|| {
+            format!("Open the dataset with {base_label} to add the drawing made on it.")
+        })?;
+    let actual = sha256_file(&source)
+        .map_err(|error| format!("attach_drawing: {}: {error}", source.display()))?;
+    if actual != base_sha256 {
+        return Err(format!(
+            "The drawing was made on a different copy of {base_label}, so it isn't added."
+        ));
+    }
+
+    // Kept with other user work, since the received bundle is a temp extraction.
+    let dir = data_root().join("drawings");
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("attach_drawing: {}: {error}", dir.display()))?;
+    let stem = strip_nifti_file_suffix(
+        source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("volume"),
+    );
+    let dest = (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{stem}_drawing.nii")),
+            n => dir.join(format!("{stem}_drawing_{n}.nii")),
+        })
+        .find(|path| !path.exists())
+        .expect("an unused name");
+    fs::copy(drawing, &dest)
+        .map_err(|error| format!("attach_drawing: {}: {error}", dest.display()))?;
+    register_derived_volume(handle, &source, &dest, "drawing")
+}
+
 /// Stream `source` into the bundle zip under a unique `data/<name>` entry,
 /// hashing as it goes. Returns the entry path, byte count, and SHA-256 — so the
 /// file is read exactly once for both the archive and its integrity hash.

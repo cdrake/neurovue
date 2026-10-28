@@ -1,4 +1,5 @@
-// The Mac's half of Send to iPad: offer a staged file to a receiver found by
+// The sending half of Send to iPad (a Mac sending a dataset, or an iPad
+// sending a drawing back): offer a staged file to a receiver found by
 // bonjour.rs, wait while the person there accepts or declines, then upload
 // it. The protocol is receive.rs's; the two requests are plain HTTP/1.1 on a
 // TcpStream, which is all a local transfer needs.
@@ -140,8 +141,11 @@ fn request(
     Ok((status, response[split + 4..].to_vec()))
 }
 
-/// This Mac's name, as the receiver's prompt shows it.
+/// This device's name, as the receiver's prompt shows it. iOS only tells
+/// apps the model, so an iPad is "iPad".
 pub(crate) fn device_name() -> String {
+    #[cfg(target_os = "ios")]
+    return "iPad".to_string();
     #[cfg(target_os = "macos")]
     if let Ok(output) = std::process::Command::new("scutil")
         .args(["--get", "ComputerName"])
@@ -152,5 +156,6 @@ pub(crate) fn device_name() -> String {
             return name;
         }
     }
+    #[cfg(not(target_os = "ios"))]
     "A Mac".to_string()
 }

@@ -69,6 +69,8 @@ pub(crate) struct Receiver {
     pending: Mutex<Option<Pending>>,
     /// Accepted offers, by upload token, until their upload starts.
     uploads: Mutex<HashMap<String, Upload>>,
+    /// The port listening now, and what stops it when `start` replaces it.
+    listening: Mutex<Option<(u16, tokio::sync::oneshot::Sender<()>)>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -78,17 +80,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Starts listening on the network and returns the port, for advertising.
+/// Called again, it replaces the server listening before (see `live_port`).
 pub(crate) fn start(app: &tauri::AppHandle) -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind(("0.0.0.0", 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
-    let receiver = Arc::new(Receiver {
-        app: app.clone(),
-        inbox: crate::volumetric_server::data_root().join("received"),
-        pending: Mutex::new(None),
-        uploads: Mutex::new(HashMap::new()),
-    });
-    app.manage(receiver.clone());
+    let receiver = match app.try_state::<Arc<Receiver>>() {
+        Some(receiver) => receiver.inner().clone(),
+        None => {
+            let receiver = Arc::new(Receiver {
+                app: app.clone(),
+                inbox: crate::volumetric_server::data_root().join("received"),
+                pending: Mutex::new(None),
+                uploads: Mutex::new(HashMap::new()),
+                listening: Mutex::new(None),
+            });
+            app.manage(receiver.clone());
+            receiver
+        }
+    };
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    if let Some((_, previous)) = lock(&receiver.listening).replace((port, stop)) {
+        let _ = previous.send(());
+    }
 
     let router = Router::new()
         .route("/offer", post(offer))
@@ -103,12 +117,27 @@ pub(crate) fn start(app: &tauri::AppHandle) -> std::io::Result<u16> {
         runtime.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener)
                 .expect("adopt NeuroVue receive listener");
-            if let Err(error) = axum::serve(listener, router).await {
+            let serve = axum::serve(listener, router).with_graceful_shutdown(async {
+                let _ = stopped.await;
+            });
+            if let Err(error) = serve.await {
                 eprintln!("NeuroVue receive server stopped: {error}");
             }
         });
     });
     Ok(port)
+}
+
+/// The port this device receives on, if it still answers: iOS can take a
+/// suspended app's listening socket.
+#[cfg(target_os = "ios")]
+pub(crate) fn live_port(app: &tauri::AppHandle) -> Option<u16> {
+    let receiver = app.try_state::<Arc<Receiver>>()?;
+    let port = lock(&receiver.listening).as_ref()?.0;
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500))
+        .ok()
+        .map(|_| port)
 }
 
 /// The page's answer to the offer it was shown.

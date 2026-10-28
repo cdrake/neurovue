@@ -1915,6 +1915,53 @@ button {
   opacity: 0.38;
 }
 
+/* Beside the two measure buttons (2 × 30px + gap + borders). */
+.nv-draw-tools {
+  left: 86px;
+}
+
+/* Pen colors and sizes, a row below the tools while drawing. */
+.nv-draw-palette {
+  top: 90px;
+}
+
+.nv-draw-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.nv-draw-size {
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.nv-measure-tools button.is-active .nv-draw-swatch {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 0 0 3px var(--amber);
+}
+
+/* The measure tools are hidden in the 3D render. */
+.nv-draw-tools.is-alone {
+  left: 14px;
+}
+
+.nv-measure-tools button.nv-draw-clear,
+.nv-measure-tools button.nv-draw-send {
+  width: auto;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.nv-measure-tools button.nv-draw-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--amber);
+}
+
 .nv-render-status {
   position: absolute;
   left: 14px;

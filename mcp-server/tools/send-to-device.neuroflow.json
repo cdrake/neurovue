@@ -1,0 +1,71 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/send-to-device",
+  "version": "1.0.0",
+  "description": "Sends the volume shown (with the overlays over it), or the whole dataset, to NeuroVue on another device on the local network, typically an iPad to draw on. The person there is asked to accept; this returns once they have and it has arrived, or once they decline.",
+  "inputs": {
+    "device": {
+      "type": "core:string",
+      "description": "The device's name, from list_devices. May be left out when only one device is on the network.",
+      "optional": true
+    },
+    "whole_dataset": {
+      "type": "core:boolean",
+      "description": "Send every volume of the dataset instead of the one shown.",
+      "optional": true
+    }
+  },
+  "outputs": {
+    "sent": {
+      "type": "core:json",
+      "description": "The device, and how many volumes and bytes it received."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "send_to_device",
+      "title": "Send to an iPad",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Hand a volume to the person's iPad so they can draw on it; the drawing comes back to this window as an overlay when they send it."
+      ],
+      "preconditions": [
+        "A dataset is open; to send a particular volume, call select_volume first.",
+        "NeuroVue is open on the device, on the same network."
+      ],
+      "effects": [
+        "The device asks its person to accept; nothing is sent without that."
+      ],
+      "duration": { "typicalSeconds": 15, "maxSeconds": 150 },
+      "failures": [
+        {
+          "match": { "contains": "declined" },
+          "meaning": "The person on the device said no.",
+          "remedy": "Ask the person before sending again.",
+          "retry": "never"
+        },
+        {
+          "match": { "contains": "No one answered" },
+          "meaning": "Nobody tapped Accept on the device in time.",
+          "remedy": "Ask the person to keep the device at hand, then send again.",
+          "retry": "after-fix"
+        },
+        {
+          "match": { "contains": "No device" },
+          "meaning": "No device by that name is on the network.",
+          "remedy": "Call list_devices and use one of the names it gives; ask the person to open NeuroVue on the device if none is listed.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

@@ -179,6 +179,58 @@ const neurovue: Extension = {
     register(server, DOCUMENTS.focusWindow, {}, ({ tab }) =>
       context.answer('neurovue.focus_window', {}, { tab }),
     )
+
+    register(server, DOCUMENTS.listDevices, {}, ({ tab }) =>
+      context.answer('neurovue.list_devices', {}, { tab }),
+    )
+
+    register(
+      server,
+      DOCUMENTS.sendToDevice,
+      { device: z.string().min(1), whole_dataset: z.boolean() },
+      async ({ tab, device, whole_dataset }) => {
+        // The page answers within seconds, but the send waits for the person
+        // on the device to accept, so the page starts it and this asks the
+        // same tab how it went until it's done.
+        let sender = tab
+        const started = await context.answer(
+          'neurovue.send_to_device',
+          { device, whole_dataset },
+          {
+            tab,
+            lead: (_result, answered) => {
+              sender = answered.id
+              return undefined
+            },
+          },
+        )
+        if (started.isError) return started
+        const until = Date.now() + 150_000
+        while (Date.now() < until) {
+          await Bun.sleep(1000)
+          let done = false
+          const status = await context.answer(
+            'neurovue.send_status',
+            {},
+            {
+              tab: sender,
+              lead: (result) => {
+                const { state, device: name } = result as {
+                  state: string
+                  device: string
+                }
+                done = state !== 'sending'
+                return done ? `Sent to ${name}.` : undefined
+              },
+            },
+          )
+          if (status.isError || done) return status
+        }
+        return context.failure(
+          new Error('No one answered on the device; the send gave up.'),
+        )
+      },
+    )
   },
 }
 
@@ -207,7 +259,9 @@ const options = {
     'internet or the disk, and what they add is dropped when NeuroVue reloads the viewer (on ' +
     'select_volume, open_path or add_overlay_path). To compare datasets side by side, call ' +
     'open_window and drive each window by its tab id; focus_window brings one to the front so ' +
-    'the person sees it, and screenshot needs that. set_instances is unrelated to windows: it ' +
+    'the person sees it, and screenshot needs that. send_to_device hands the volume shown to ' +
+    "NeuroVue on the person's iPad (list_devices names the devices) so they can draw on it; " +
+    'the drawing comes back to this window as an overlay. set_instances is unrelated to windows: it ' +
     'draws copies of a volume inside one viewer.',
 }
 

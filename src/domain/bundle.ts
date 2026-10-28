@@ -226,6 +226,43 @@ export async function sendViewToDevice(params: {
   })
 }
 
+/**
+ * Sends a drawing (NIfTI bytes) back to `target`, tagged with the volume it
+ * was drawn on, and resolves once it has been accepted there. The bytes go as
+ * a raw body behind a length-prefixed JSON header (see the Rust command).
+ */
+export async function sendDrawingToDevice(params: {
+  target: SendTarget
+  base: DrawingBase
+  drawing: Uint8Array
+}): Promise<void> {
+  const meta = new TextEncoder().encode(
+    JSON.stringify({
+      target: params.target,
+      base: params.base,
+      createdAt: new Date().toISOString(),
+    }),
+  )
+  const body = new Uint8Array(4 + meta.length + params.drawing.length)
+  new DataView(body.buffer).setUint32(0, meta.length, true)
+  body.set(meta, 4)
+  body.set(params.drawing, 4 + meta.length)
+  await invoke('send_drawing_to_device', body)
+}
+
+/** Lays a received drawing over its base volume; returns the new volume id. */
+export async function attachDrawing(params: {
+  drawingPath: string
+  base: DrawingBase
+}): Promise<string> {
+  return invoke<string>('attach_drawing', {
+    drawingPath: params.drawingPath,
+    baseId: params.base.id,
+    baseSha256: params.base.sha256,
+    baseLabel: params.base.label,
+  })
+}
+
 /** Human-readable byte size for status messages ("1.4 GB", "820 MB"). */
 export function formatBundleBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
@@ -268,8 +305,19 @@ export interface BundleManifestVolume {
   sha256?: string
 }
 
+/** The volume a drawing was made on, as its bundle recorded it. */
+export interface DrawingBase {
+  id: string
+  sha256: string
+  label: string
+}
+
 export interface BundleManifest {
   nvbundle?: string
+  /** "drawing" for a drawing sent back from an iPad; a dataset otherwise. */
+  kind?: string
+  /** A drawing's base volume (kind "drawing" only). */
+  base?: DrawingBase
   source?: {
     datasetName?: string | null
     datasetDoi?: string | null

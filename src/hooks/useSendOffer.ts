@@ -16,12 +16,17 @@ export interface SendOffer {
 const OFFER_EVENT = 'neurovue-send-offered'
 const OFFER_CLOSED_EVENT = 'neurovue-send-offer-closed'
 
-/** The offer waiting for an answer, if any, and how to answer it. */
+/**
+ * The offer waiting for an answer, if any, and how to answer it. `lastFrom`
+ * is who sent the last accepted file, where a drawing goes back to.
+ */
 export function useSendOffer(enabled: boolean): {
   offer: SendOffer | null
   answer: (accept: boolean) => void
+  lastFrom: string | null
 } {
   const [offer, setOffer] = useState<SendOffer | null>(null)
+  const [lastFrom, setLastFrom] = useState<string | null>(null)
 
   useEffect(() => {
     if (!enabled) return
@@ -52,10 +57,11 @@ export function useSendOffer(enabled: boolean): {
     (accept: boolean) => {
       if (!offer) return
       setOffer(null)
+      if (accept) setLastFrom(offer.from)
       void invoke('answer_send_offer', { id: offer.id, accept }).catch(() => {})
     },
     [offer],
   )
 
-  return { offer, answer }
+  return { offer, answer, lastFrom }
 }
