@@ -119,6 +119,14 @@ const neurovue: Extension = {
 
     register(
       server,
+      DOCUMENTS.setWindowMode,
+      { mode: z.enum(['express', 'dataset']) },
+      ({ tab, mode }) =>
+        context.answer('neurovue.set_window_mode', { mode }, { tab }),
+    )
+
+    register(
+      server,
       DOCUMENTS.addOverlayPath,
       { path: z.string().min(1) },
       ({ tab, path }) =>
@@ -190,8 +198,9 @@ const options = {
     'this computer, give its absolute path: open_path opens a dataset (a BIDS or other folder, ' +
     'a NIfTI volume, a .nvbundle or a saved .nvd document), add_overlay_path lays a volume over it, and load_surfaces ' +
     'and load_tracts add meshes. dataset lists the volumes and select_volume switches between ' +
-    'them; filter_dataset narrows the dataset pane to some of them, and zoom_dataset zooms its ' +
-    `thumbnails. Paths must be inside ${
+    'them; filter_dataset narrows the dataset pane to some of them, zoom_dataset zooms its ' +
+    'thumbnails, and set_window_mode switches between that dataset view and Express, the ' +
+    `viewer alone. Paths must be inside ${
       ROOTS.length ? ROOTS.join(', ') : 'the folders the person allows'
     }. ` +
     'load_volume, add_overlay and load_mesh only reach the URLs NeuroVue itself serves, not the ' +

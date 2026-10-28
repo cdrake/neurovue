@@ -25,6 +25,8 @@ export interface NeuroVueAgentActions {
     zoom?: number
     volume?: string
   }): Promise<{ zoom: number }>
+  /** Shows the viewer alone (Express) or beside the dataset pane. */
+  setWindowMode(mode: 'express' | 'dataset'): Promise<{ mode: string }>
   /** Adds a volume over every volume of the dataset; resolves once it shows. */
   addOverlay(path: string): Promise<{ id: string; label: string }>
   /** Adds surfaces or tracts to the meshes shown and returns their names. */
@@ -208,6 +210,13 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
         zoom: typeof params.zoom === 'number' ? params.zoom : undefined,
         volume: typeof params.volume === 'string' ? params.volume : undefined,
       }),
+    'neurovue.set_window_mode': async (params) => {
+      const mode = stringParam(params, 'mode')
+      if (mode !== 'express' && mode !== 'dataset') {
+        throw new Error(`mode must be "express" or "dataset", not "${mode}".`)
+      }
+      return actions().setWindowMode(mode)
+    },
     'neurovue.select_volume': async (params) => {
       await actions().selectVolume(stringParam(params, 'id'))
       return actions().dataset()

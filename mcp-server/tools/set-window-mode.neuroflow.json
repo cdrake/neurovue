@@ -1,0 +1,47 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/set-window-mode",
+  "version": "1.0.0",
+  "description": "Switches a NeuroVue window between Express, which gives the window to the viewer, and the dataset view, which adds the dataset pane of thumbnails and the filter sidebar beside it.",
+  "inputs": {
+    "mode": {
+      "type": "core:string",
+      "description": "\"express\" for the viewer alone, or \"dataset\" for the viewer with the dataset pane and filters."
+    }
+  },
+  "outputs": {
+    "mode": {
+      "type": "core:string",
+      "description": "The window's mode now."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "set_window_mode",
+      "title": "Switch between Express and the dataset view",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Give the viewer the whole window once you have picked a volume, before showing or screenshotting it.",
+        "Show the person the dataset's volumes and filters."
+      ],
+      "avoidWhen": [
+        {
+          "when": "You are about to filter or zoom the dataset pane; filter_dataset and zoom_dataset switch to the dataset view themselves."
+        }
+      ],
+      "effects": [
+        "Changes the window's layout only: the dataset, the filter and the viewer's layers stay as they are.",
+        "The person's own choice of mode, remembered between launches, is left alone."
+      ]
+    }
+  }
+}

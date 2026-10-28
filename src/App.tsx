@@ -1084,6 +1084,13 @@ export function App(): JSX.Element {
         }
         return { zoom: next }
       },
+      setWindowMode: async (mode) => {
+        if (mode === 'dataset') showDatasetPane()
+        else setUiMode('express')
+        // Let the viewer resize before a screenshot.
+        await nextFrames(3)
+        return { mode }
+      },
       selectVolume: async (id) => {
         if (!items.some((item) => item.id === id)) {
           throw new Error(

@@ -16,6 +16,7 @@ import loadTracts from './tools/load-tracts.neuroflow.json'
 import openPath from './tools/open-path.neuroflow.json'
 import openWindow from './tools/open-window.neuroflow.json'
 import selectVolume from './tools/select-volume.neuroflow.json'
+import setWindowMode from './tools/set-window-mode.neuroflow.json'
 import zoomDataset from './tools/zoom-dataset.neuroflow.json'
 
 interface Failure {
@@ -55,6 +56,7 @@ export const DOCUMENTS = {
   selectVolume,
   filterDataset,
   zoomDataset,
+  setWindowMode,
   addOverlayPath,
   loadSurfaces,
   loadTracts,

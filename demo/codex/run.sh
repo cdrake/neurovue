@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex drives three NeuroVue windows over MCP: it loads data into each,
+# Codex drives two NeuroVue windows over MCP: it loads data into each,
 # switches between them, and takes a screenshot of each. See README.md.
 #
 #   demo/codex/run.sh                  # uses Codex's configured model
@@ -11,7 +11,7 @@ url="http://127.0.0.1:${NEUROVUE_MCP_PORT:-4242}/mcp"
 data="${NEUROVUE_DEMO_DIR:-$HOME/NeuroVue-demo}"
 images=https://raw.githubusercontent.com/niivue/niivue/main/packages/niivue/demos/images
 more=https://raw.githubusercontent.com/niivue/niivue-demo-images/main
-files=(mni152.nii.gz spmMotor.nii.gz BrainMesh_ICBM152.lh.mz3 dpsv.trx)
+files=(spmMotor.nii.gz BrainMesh_ICBM152.lh.mz3 dpsv.trx)
 
 if ! command -v codex >/dev/null; then
   echo "Install the Codex CLI first: https://github.com/openai/codex" >&2
@@ -36,7 +36,8 @@ for file in "${files[@]}"; do
 done
 
 # A small BIDS dataset to filter and browse, from NiiVue's demo images under
-# BIDS names, so each volume gets an image type and a subject.
+# BIDS names, so each volume gets an image type and a subject. sub-02's T1w is
+# the MNI152 template, the space the map, surface and tracts are in.
 bids=(
   "sub-01/anat/sub-01_T1w.nii.gz $more/chris_t1.nii.gz"
   "sub-01/anat/sub-01_T2w.nii.gz $more/chris_t2.nii.gz"

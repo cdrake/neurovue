@@ -45,7 +45,7 @@
         "Learn which image types and roles a dataset has."
       ],
       "effects": [
-        "Switches the window out of Express to the full view, so its dataset pane shows; the viewer is not reloaded."
+        "Switches the window out of Express to the dataset view, so its dataset pane shows; set_window_mode with express switches it back. The viewer is not reloaded."
       ],
       "failures": [
         {

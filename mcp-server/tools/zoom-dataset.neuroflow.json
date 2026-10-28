@@ -44,7 +44,7 @@
         }
       ],
       "effects": [
-        "Switches the window out of Express to the full view, so its dataset pane shows."
+        "Switches the window out of Express to the dataset view, so its dataset pane shows; set_window_mode with express switches it back."
       ],
       "failures": [
         {
