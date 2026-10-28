@@ -133,6 +133,7 @@ NiiVue repo maintains, plus NeuroVue's own:
 | `dataset`, `select_volume` | List the dataset's volumes and switch between them |
 | `open_window` | Opens another window and returns its tab id |
 | `focus_window` | Brings a window to the front, which `screenshot` needs |
+| `list_devices`, `send_to_device` | Find NeuroVue on an iPad on the same network and send it the volume shown (or the dataset) to draw on; the person there accepts each send |
 
 Agents open files by path, with no file picker, but only inside the allowed
 data roots: the home folder unless `roots` in `mcp.json` (next to the on/off
