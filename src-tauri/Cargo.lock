@@ -1990,6 +1990,7 @@ dependencies = [
  "ciborium",
  "flate2",
  "futures-util",
+ "getrandom 0.3.4",
  "libc",
  "objc2",
  "objc2-app-kit",
