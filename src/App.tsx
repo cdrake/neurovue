@@ -123,6 +123,7 @@ import {
   openMeshFiles,
   readMeshLayer,
 } from './domain/meshes'
+import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
   loadRememberedUiMode,
@@ -1184,23 +1185,46 @@ export function App(): JSX.Element {
   // (a dataset named by env or NeuroFlow wins), reopen the most recent one. A
   // failure (moved, deleted) lands on Welcome with the error in the status line
   // and keeps the entry, in case the drive is just unmounted.
+  // A file handed over by another app (AirDrop, Open in) beats both: it is what
+  // the person just asked for.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once, when startup resolves; later recents/pref changes must not trigger a reopen.
   useEffect(() => {
     if (!isStartupResolved || reopenAttemptedRef.current) return
     reopenAttemptedRef.current = true
-    const last = recentDatasets[0]
-    if (!reopenLast || !last || items.length > 0 || isViewerWindow) return
-    setReopeningPath(last)
-    void openRecentEntry(last)
-      .then((opened) => {
-        if (opened) return
-        setStatus(
-          `Couldn't reopen ${recentDatasetLabel(last)}. It may have been moved, or be on a drive that isn't connected.`,
-          'error',
-        )
-      })
-      .finally(() => setReopeningPath(null))
+    if (isViewerWindow) return
+    void takeOpenedFile().then((received) => {
+      if (received) {
+        void openRecentEntry(received)
+        return
+      }
+      const last = recentDatasets[0]
+      if (!reopenLast || !last || items.length > 0) return
+      setReopeningPath(last)
+      void openRecentEntry(last)
+        .then((opened) => {
+          if (opened) return
+          setStatus(
+            `Couldn't reopen ${recentDatasetLabel(last)}. It may have been moved, or be on a drive that isn't connected.`,
+            'error',
+          )
+        })
+        .finally(() => setReopeningPath(null))
+    })
   }, [isStartupResolved])
+
+  // Files that arrive once the page is up. Until startup has looked, they wait
+  // for the effect above, which takes them first.
+  const openRecentEntryRef = useRef(openRecentEntry)
+  openRecentEntryRef.current = openRecentEntry
+  useEffect(() => {
+    if (isViewerWindow) return
+    return onFilesOpened(() => {
+      if (!reopenAttemptedRef.current) return
+      void takeOpenedFile().then((received) => {
+        if (received) void openRecentEntryRef.current(received)
+      })
+    })
+  }, [])
 
   /** Re-open a bundle straight from recents, skipping the file dialog. */
   async function importBundleFromPath(path: string): Promise<boolean> {

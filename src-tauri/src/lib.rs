@@ -4,6 +4,7 @@
 mod mcp;
 #[cfg(desktop)]
 mod niimath;
+mod opened;
 mod share;
 #[cfg(desktop)]
 mod terminal;
@@ -535,6 +536,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(opened::OpenedFiles::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<NeuroVueState>() {
@@ -619,6 +621,7 @@ pub fn run() {
             read_bundle_manifest,
             read_document_manifest,
             share_view_via_airdrop,
+            opened::take_opened_files,
             niimath::validate_niimath_mask_path,
             niimath::run_niimath_task,
             terminal::terminal_start,
@@ -641,17 +644,20 @@ pub fn run() {
         read_mesh_file,
         export_dataset_bundle,
         read_bundle_manifest,
-        share_view_via_airdrop
+        read_document_manifest,
+        share_view_via_airdrop,
+        opened::take_opened_files
     ]);
 
     let app = builder
         .build(tauri::generate_context!())
         .expect("error while building NeuroVue");
-    app.run(|_app, _event| {
+    app.run(|_app, event| match event {
         // Don't leave the agent server holding its port after we quit.
         #[cfg(desktop)]
-        if let tauri::RunEvent::Exit = _event {
-            mcp::stop(_app);
-        }
+        tauri::RunEvent::Exit => mcp::stop(_app),
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
+        _ => {}
     });
 }
