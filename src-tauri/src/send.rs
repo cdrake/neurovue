@@ -153,9 +153,20 @@ pub(crate) fn device_name() -> String {
     {
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if output.status.success() && !name.is_empty() {
-            return name;
+            return dev_suffixed(name);
         }
     }
     #[cfg(not(target_os = "ios"))]
-    "A Mac".to_string()
+    dev_suffixed("A Mac".to_string())
+}
+
+/// A dev build beside the installed app on the same Mac needs a name of its
+/// own, or a drawing sent back by name could reach the wrong one.
+#[cfg(not(target_os = "ios"))]
+fn dev_suffixed(name: String) -> String {
+    if cfg!(debug_assertions) {
+        format!("{name} (dev)")
+    } else {
+        name
+    }
 }

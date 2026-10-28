@@ -27,6 +27,12 @@ following a script ([prompt.md](prompt.md)). The person watches it happen:
 Each switch is a `focus_window` call, so the window comes to the front as
 Codex starts working in it. Every call names its `tab`.
 
+A second act, `run.sh --ipad` ([prompt-ipad.md](prompt-ipad.md)), hands
+sub-01's T1w from window A to NeuroVue on an iPad with `send_to_device`. The
+person taps Accept there, draws on it with the Apple Pencil and sends the
+drawing back; it lands in window A as an overlay. Keep NeuroVue in the
+foreground on the iPad, on the same network as the Mac.
+
 To run it live by voice in the Codex desktop app instead, read
 [voice-script.md](voice-script.md) aloud.
 
@@ -60,7 +66,7 @@ The script:
 
 | Variable | Default |
 | --- | --- |
-| `NEUROVUE_MCP_PORT` | `4242` |
+| `NEUROVUE_MCP_PORT` | `4242`; use `4243` to drive a dev build |
 | `NEUROVUE_DEMO_DIR` | `~/NeuroVue-demo` |
 
 A run takes about three minutes and uses your OpenAI quota. Each screenshot

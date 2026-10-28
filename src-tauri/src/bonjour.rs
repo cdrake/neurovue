@@ -139,6 +139,12 @@ pub(crate) fn advertise(port: u16) -> Result<(), String> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Withdrawn first, or the new one would be renamed "Name (2)".
     advertised.take();
+    // On a Mac, the name it sends under, so a drawing sent back finds it; on
+    // iOS, the device's own name (null), which the app can't read.
+    #[cfg(target_os = "ios")]
+    let name: Option<CString> = None;
+    #[cfg(not(target_os = "ios"))]
+    let name = CString::new(crate::send::device_name()).ok();
     let mut sd_ref: DnsServiceRef = std::ptr::null_mut();
     // SAFETY: valid out-pointer and C strings; a null name means the device
     // name, and a null callback means we don't ask to hear how it went.
@@ -147,7 +153,7 @@ pub(crate) fn advertise(port: u16) -> Result<(), String> {
             &mut sd_ref,
             0,
             0,
-            std::ptr::null(),
+            name.as_ref().map_or(std::ptr::null(), |name| name.as_ptr()),
             regtype.as_ptr(),
             std::ptr::null(),
             std::ptr::null(),

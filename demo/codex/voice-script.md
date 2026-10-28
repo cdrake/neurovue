@@ -68,6 +68,24 @@ unattended.
 **18. Wrap up**
 > "Bring window A to the front and give me a one paragraph summary of what each window shows."
 
+## Act 2: draw on the iPad
+
+Before the meeting, open NeuroVue on the iPad and keep it in the foreground,
+on the same Wi-Fi as the Mac. A drawing sent back lands in window A, the
+main window, so do this act there.
+
+**19. Find the iPad**
+> "Bring window A to the front, open the bids folder again, and show subject 1's T1. Then list the devices I can send to."
+
+**20. Send it**
+> "Send that T1 to my iPad."
+
+Tap **Accept** on the iPad. Draw on the T1 with the Pencil, then tap the send
+button in the drawing tools. The drawing appears in window A as an overlay.
+
+**21. Look at it**
+> "Take a screenshot of window A and describe the drawing."
+
 ## Tips
 
 - Wait for Codex to say a step is finished before reading the next line. A
@@ -96,3 +114,10 @@ unattended.
   Downloads before the demo.
 - The 3D render draws the T1 as a solid brain, which hides any surface
   or tracts inside it. That is why step 8 hides the T1 in window B.
+- If the iPad isn't listed, bring NeuroVue on the iPad to the front and ask
+  again: iOS stops it listening while it's in the background. On a network
+  that keeps devices apart (many office and hotel Wi-Fi networks do), put the
+  Mac and the iPad on a phone's hotspot instead.
+- Quit any dev build of NeuroVue first. It runs its own agent server on 4243
+  and shows up on the iPad as "(dev)", so it won't take the release app's
+  calls, but two Macs in the iPad's list invite the wrong tap.

@@ -19,7 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuild
 
 pub(crate) const MENU_ALLOW_AGENTS: &str = "mcp-allow-agents";
 const STATUS_EVENT: &str = "neurovue-mcp";
-const DEFAULT_PORT: u16 = 4242;
+// Dev builds take the next port, so one can run beside the installed app.
+const DEFAULT_PORT: u16 = if cfg!(debug_assertions) { 4243 } else { 4242 };
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

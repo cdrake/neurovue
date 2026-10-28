@@ -4,9 +4,15 @@
 #
 #   demo/codex/run.sh                  # uses Codex's configured model
 #   demo/codex/run.sh -m <model>       # anything after is passed to codex exec
+#   demo/codex/run.sh --ipad [...]     # the second act: send a volume to an iPad
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
+script=prompt.md
+if [ "${1:-}" = --ipad ]; then
+  script=prompt-ipad.md
+  shift
+fi
 url="http://127.0.0.1:${NEUROVUE_MCP_PORT:-4242}/mcp"
 data="${NEUROVUE_DEMO_DIR:-$HOME/NeuroVue-demo}"
 images=https://raw.githubusercontent.com/niivue/niivue/main/packages/niivue/demos/images
@@ -81,7 +87,7 @@ config+=(-c "mcp_servers.$server.default_tools_approval_mode=\"approve\"")
 # a name of its own keeps the path the prompt gives right.
 document="$HOME/Downloads/codex-demo-$(date +%Y%m%d-%H%M%S).nvd"
 prompt=$(sed -e "s|{{SERVER}}|$server|g" -e "s|{{DATA}}|$data|g" \
-  -e "s|{{DOCUMENT}}|$document|g" "$here/prompt.md")
+  -e "s|{{DOCUMENT}}|$document|g" "$here/$script")
 
 # codex exec appends piped stdin to the prompt and waits for it to close, so
 # give it none: run from a script or CI it would otherwise hang.

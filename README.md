@@ -111,7 +111,9 @@ In browser-only Vite development, the app falls back to
 ## AI agents (MCP)
 
 With View → Allow AI Agents on, NeuroVue runs an [MCP](https://modelcontextprotocol.io)
-server at `http://127.0.0.1:4242/mcp` (set `NEUROVUE_MCP_PORT` to move it). It
+server at `http://127.0.0.1:4242/mcp`; a dev build (`bun run tauri:dev`) uses
+4243, so it can run beside the installed app, and advertises itself to iPads
+as "<Mac name> (dev)". Set `NEUROVUE_MCP_PORT` to move either. It
 is off by default: while it runs, any program on this machine can drive
 NeuroVue and open files through it. The choice persists across launches.
 
