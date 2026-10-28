@@ -39,6 +39,7 @@ import {
   Share2,
   SlidersHorizontal,
   SquareTerminal,
+  Tablet,
   X,
   ZoomIn,
   ZoomOut,
@@ -93,8 +94,11 @@ import {
   formatBundleBytes,
   isBundlePath,
   isDocumentPath,
+  listSendTargets,
   pickBundle,
   readBundle,
+  type SendTarget,
+  sendViewToDevice,
   shareViewViaAirDrop,
 } from './domain/bundle'
 import type {
@@ -450,6 +454,9 @@ export function App(): JSX.Element {
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false)
   const shareMenuRef = useRef<HTMLDivElement | null>(null)
+  // Devices running NeuroVue nearby, looked for each time the share menu
+  // opens; null while looking.
+  const [sendTargets, setSendTargets] = useState<SendTarget[] | null>(null)
   const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } =
     useTerminalDock()
   // The express view has no dock; the terminal keeps its state for the
@@ -514,6 +521,17 @@ export function App(): JSX.Element {
   useDismissableMenu(isRecentMenuOpen, recentMenuRef, () =>
     setIsRecentMenuOpen(false),
   )
+  useEffect(() => {
+    if (!isShareMenuOpen || !isAirdropAvailable) return
+    let cancelled = false
+    setSendTargets(null)
+    void listSendTargets().then((targets) => {
+      if (!cancelled) setSendTargets(targets)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isShareMenuOpen, isAirdropAvailable])
   useDismissableMenu(isShareMenuOpen, shareMenuRef, () =>
     setIsShareMenuOpen(false),
   )
@@ -901,16 +919,10 @@ export function App(): JSX.Element {
     }
   }
 
-  async function handleShareBundle(): Promise<void> {
-    if (isSharingBundle) return
-    if (!selected || items.length === 0) {
-      setStatus('Open a dataset before sharing.', 'error')
-      return
-    }
-
-    // Share the *whole* dataset — every volume — so the recipient can browse and
-    // pick any of them. The current view is still embedded, so it opens to a
-    // sensible default; the rest show up in the recipient's dataset list.
+  // Share the *whole* dataset — every volume — so the recipient can browse and
+  // pick any of them. The current view is still embedded, so it opens to a
+  // sensible default; the rest show up in the recipient's dataset list.
+  function sharedDataset(selected: DesktopItem) {
     const { view } = composeCurrentBundle(selected)
     const volumeIds = items.map((item) => item.id)
     const shareName =
@@ -918,7 +930,49 @@ export function App(): JSX.Element {
       datasetRoot?.split('/').pop() ||
       selected.label ||
       'neurovue-dataset'
+    return { view, volumeIds, shareName }
+  }
 
+  async function handleSendToDevice(target: SendTarget): Promise<void> {
+    if (isSharingBundle) return
+    if (!selected || items.length === 0) {
+      setStatus('Open a dataset before sending.', 'error')
+      return
+    }
+    const { view, volumeIds, shareName } = sharedDataset(selected)
+    setIsSharingBundle(true)
+    setStatus(
+      `Preparing dataset for ${target.name} (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+    )
+    try {
+      const result = await sendViewToDevice({
+        target,
+        name: shareName,
+        volumeIds,
+        view,
+        onOffered: () =>
+          setStatus(`Waiting for ${target.name} to accept the dataset…`),
+      })
+      setStatus(
+        `Sent ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
+          `(${formatBundleBytes(result.totalBytes)}) to ${target.name}.`,
+        'success',
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setIsSharingBundle(false)
+    }
+  }
+
+  async function handleShareBundle(): Promise<void> {
+    if (isSharingBundle) return
+    if (!selected || items.length === 0) {
+      setStatus('Open a dataset before sharing.', 'error')
+      return
+    }
+
+    const { view, volumeIds, shareName } = sharedDataset(selected)
     setIsSharingBundle(true)
     setStatus(
       `Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
@@ -1631,6 +1685,42 @@ export function App(): JSX.Element {
                       </span>
                     </button>
                   ) : null}
+                  {sendTargets === null ? (
+                    <div className="nv-recent-item nv-share-looking">
+                      <LoaderCircle className="nv-spin" size={14} />
+                      <span className="nv-recent-item-path">
+                        Looking for devices running NeuroVue…
+                      </span>
+                    </div>
+                  ) : (
+                    sendTargets.map((target) => (
+                      <button
+                        aria-label={`Send dataset to ${target.name}`}
+                        className="nv-recent-item nv-recent-open"
+                        disabled={!selected || isSharingBundle}
+                        key={`${target.name}@${target.host}:${target.port}`}
+                        onClick={() => {
+                          setIsShareMenuOpen(false)
+                          void handleSendToDevice(target)
+                        }}
+                        title={`Send the whole dataset straight into NeuroVue on ${target.name}`}
+                        type="button"
+                        role="menuitem"
+                      >
+                        <Tablet size={14} />
+                        <span className="nv-menu-item-text">
+                          <span className="nv-recent-item-name">
+                            Send to {target.name}
+                          </span>
+                          <span className="nv-recent-item-path">
+                            {selected
+                              ? 'Opens in NeuroVue there once accepted'
+                              : 'Open a dataset first'}
+                          </span>
+                        </span>
+                      </button>
+                    ))
+                  )}
                 </div>
               ) : null}
             </div>

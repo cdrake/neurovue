@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { BlockSettings } from './blocks'
 import type { Backend, ClipPlane } from './desktop'
@@ -182,6 +182,47 @@ export async function shareViewViaAirDrop(params: {
     view: params.view,
     createdAt: new Date().toISOString(),
     name: params.name,
+  })
+}
+
+/** A device on the network running NeuroVue that can take a send (see
+ *  src-tauri/src/bonjour.rs). */
+export interface SendTarget {
+  name: string
+  host: string
+  port: number
+}
+
+/** The devices that answer a short network browse; empty where sending
+ *  isn't supported. */
+export async function listSendTargets(): Promise<SendTarget[]> {
+  try {
+    return await invoke<SendTarget[]>('list_send_targets')
+  } catch {
+    return []
+  }
+}
+
+/** Sends the dataset to `target` as a bundle. `onOffered` runs once the
+ *  bundle is staged and the person there is being asked. Resolves once they
+ *  have accepted it and it has arrived; rejects with a status-line sentence
+ *  if they decline or it fails. */
+export async function sendViewToDevice(params: {
+  target: SendTarget
+  name: string
+  volumeIds: string[]
+  view: BundleViewState
+  onOffered: () => void
+}): Promise<ExportBundleResult> {
+  const onOffered = new Channel<null>()
+  onOffered.onmessage = params.onOffered
+  return invoke<ExportBundleResult>('send_view_to_device', {
+    target: params.target,
+    volumeIds: params.volumeIds,
+    view: params.view,
+    createdAt: new Date().toISOString(),
+    name: params.name,
+    onOffered,
   })
 }
 

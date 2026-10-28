@@ -1,11 +1,15 @@
 // niimath (a native sidecar) and the integrated terminal (a PTY/shell) both
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod bonjour;
 #[cfg(desktop)]
 mod mcp;
 #[cfg(desktop)]
 mod niimath;
 mod opened;
 mod receive;
+#[cfg(desktop)]
+mod send;
 mod share;
 #[cfg(desktop)]
 mod terminal;
@@ -260,6 +264,91 @@ async fn export_dataset_bundle(
     .map_err(|error| format!("export_dataset_bundle: join error: {error}"))?
 }
 
+/// Stages the bundle a share sends under the app cache (a share picks no
+/// destination, unlike Save). An already-staged bundle whose inputs are
+/// unchanged is reused, so re-sharing the same dataset is instant instead of
+/// re-zipping. Blocking: run it off the main thread.
+fn stage_share_bundle(
+    server: &volumetric_server::ServerHandle,
+    volume_ids: &[String],
+    view: &serde_json::Value,
+    created_at: &str,
+    name: &str,
+) -> Result<(volumetric_server::BundleExportResult, std::path::PathBuf), String> {
+    let shares_dir = volumetric_server::cache_root().join("shares");
+    let name = sanitize_share_name(name);
+    let dest = shares_dir.join(format!("{name}.nvbundle"));
+    let sig_path = shares_dir.join(format!("{name}.nvbundle.sig"));
+    let key = volumetric_server::share_cache_key(server, volume_ids);
+
+    if dest.is_file() && std::fs::read_to_string(&sig_path).is_ok_and(|sig| sig == key) {
+        let total_bytes = std::fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
+        return Ok((
+            volumetric_server::BundleExportResult {
+                bundle_path: dest.display().to_string(),
+                volume_count: volume_ids.len(),
+                total_bytes,
+            },
+            dest,
+        ));
+    }
+
+    volumetric_server::prune_share_cache(&shares_dir, 4);
+    let result = volumetric_server::export_bundle(server, &dest, volume_ids, view, created_at)?;
+    let _ = std::fs::write(&sig_path, &key); // export_bundle created shares_dir
+    Ok((result, dest))
+}
+
+/// Devices on the network that can take a Send to iPad.
+#[cfg(desktop)]
+#[tauri::command]
+async fn list_send_targets() -> Result<Vec<send::SendTarget>, String> {
+    #[cfg(target_os = "macos")]
+    return tauri::async_runtime::spawn_blocking(|| {
+        bonjour::browse(std::time::Duration::from_millis(1500))
+    })
+    .await
+    .map_err(|error| format!("list_send_targets: join error: {error}"))?;
+    #[cfg(not(target_os = "macos"))]
+    Ok(Vec::new())
+}
+
+/// Stages the dataset as a bundle, like a share, and sends it to `target`,
+/// returning once the person there has accepted it and it has arrived.
+/// `on_offered` hears once staging (slow for a big dataset) is done and the
+/// person there is being asked.
+#[cfg(desktop)]
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn send_view_to_device(
+    window: tauri::Window,
+    state: tauri::State<'_, NeuroVueState>,
+    target: send::SendTarget,
+    volume_ids: Vec<String>,
+    view: serde_json::Value,
+    created_at: String,
+    name: String,
+    on_offered: tauri::ipc::Channel<()>,
+) -> Result<ExportBundleResult, String> {
+    let server = state.server(window.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        let (result, dest) = stage_share_bundle(&server, &volume_ids, &view, &created_at, &name)?;
+        let addresses = target.addresses();
+        if addresses.is_empty() {
+            return Err(format!("Couldn't find {} on the network.", target.name));
+        }
+        let _ = on_offered.send(());
+        send::send_file(&addresses, &target.name, &dest, &send::device_name())?;
+        Ok(ExportBundleResult {
+            bundle_path: result.bundle_path,
+            volume_count: result.volume_count,
+            total_bytes: result.total_bytes,
+        })
+    })
+    .await
+    .map_err(|error| format!("send_view_to_device: join error: {error}"))?
+}
+
 #[tauri::command]
 async fn share_view_via_airdrop(
     app: tauri::AppHandle,
@@ -271,33 +360,8 @@ async fn share_view_via_airdrop(
     name: String,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
-    // Stage the bundle under the app cache off the main thread (a share picks no
-    // destination, unlike Save). Reuse an already-staged bundle whose inputs are
-    // unchanged so re-sharing the same dataset is instant instead of re-zipping.
     let (result, dest) = tauri::async_runtime::spawn_blocking(move || {
-        let shares_dir = volumetric_server::cache_root().join("shares");
-        let name = sanitize_share_name(&name);
-        let dest = shares_dir.join(format!("{name}.nvbundle"));
-        let sig_path = shares_dir.join(format!("{name}.nvbundle.sig"));
-        let key = volumetric_server::share_cache_key(&server, &volume_ids);
-
-        if dest.is_file() && std::fs::read_to_string(&sig_path).is_ok_and(|sig| sig == key) {
-            let total_bytes = std::fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
-            return Ok::<_, String>((
-                volumetric_server::BundleExportResult {
-                    bundle_path: dest.display().to_string(),
-                    volume_count: volume_ids.len(),
-                    total_bytes,
-                },
-                dest,
-            ));
-        }
-
-        volumetric_server::prune_share_cache(&shares_dir, 4);
-        let result =
-            volumetric_server::export_bundle(&server, &dest, &volume_ids, &view, &created_at)?;
-        let _ = std::fs::write(&sig_path, &key); // export_bundle created shares_dir
-        Ok::<_, String>((result, dest))
+        stage_share_bundle(&server, &volume_ids, &view, &created_at, &name)
     })
     .await
     .map_err(|error| format!("share_view_via_airdrop: join error: {error}"))??;
@@ -580,7 +644,13 @@ pub fn run() {
             // when asked, to test sending without an iPad.
             if cfg!(target_os = "ios") || std::env::var_os("NEUROVUE_RECEIVE").is_some() {
                 match receive::start(app.handle()) {
-                    Ok(port) => eprintln!("NeuroVue: receiving sends on port {port}"),
+                    Ok(port) => {
+                        eprintln!("NeuroVue: receiving sends on port {port}");
+                        #[cfg(any(target_os = "macos", target_os = "ios"))]
+                        if let Err(error) = bonjour::advertise(port) {
+                            eprintln!("NeuroVue: {error}");
+                        }
+                    }
                     Err(error) => eprintln!("NeuroVue: can't receive sends ({error})"),
                 }
             }
@@ -632,6 +702,8 @@ pub fn run() {
             share_view_via_airdrop,
             opened::take_opened_files,
             receive::answer_send_offer,
+            list_send_targets,
+            send_view_to_device,
             niimath::validate_niimath_mask_path,
             niimath::run_niimath_task,
             terminal::terminal_start,

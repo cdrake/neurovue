@@ -41,6 +41,8 @@ portable-pty = "0.8"
 # Native share sheet (src/share.rs) — Apple platforms. macOS uses AppKit's
 # NSSharingService; iOS uses UIKit's UIActivityViewController.
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# poll() for Bonjour discovery (src/bonjour.rs).
+libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray"] }
 

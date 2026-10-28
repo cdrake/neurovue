@@ -388,6 +388,14 @@ button {
   min-width: 260px;
 }
 
+/* Not an item: the menu is still looking for devices to send to. */
+.nv-share-looking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
 .nv-recent-divider {
   height: 1px;
   border: 0;

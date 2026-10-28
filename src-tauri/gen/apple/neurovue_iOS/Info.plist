@@ -69,6 +69,12 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_neurovue._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>NeuroVue looks for Macs on your network so they can send you datasets, which you accept here first.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
