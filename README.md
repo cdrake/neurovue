@@ -111,7 +111,9 @@ In browser-only Vite development, the app falls back to
 ## AI agents (MCP)
 
 With View → Allow AI Agents on, NeuroVue runs an [MCP](https://modelcontextprotocol.io)
-server at `http://127.0.0.1:4242/mcp` (set `NEUROVUE_MCP_PORT` to move it). It
+server at `http://127.0.0.1:4242/mcp`; a dev build (`bun run tauri:dev`) uses
+4243, so it can run beside the installed app, and advertises itself to iPads
+as "<Mac name> (dev)". Set `NEUROVUE_MCP_PORT` to move either. It
 is off by default: while it runs, any program on this machine can drive
 NeuroVue and open files through it. The choice persists across launches.
 
@@ -133,6 +135,7 @@ NiiVue repo maintains, plus NeuroVue's own:
 | `dataset`, `select_volume` | List the dataset's volumes and switch between them |
 | `open_window` | Opens another window and returns its tab id |
 | `focus_window` | Brings a window to the front, which `screenshot` needs |
+| `list_devices`, `send_to_device` | Find NeuroVue on an iPad on the same network and send it the volume shown (or the dataset) to draw on; the person there accepts each send |
 
 Agents open files by path, with no file picker, but only inside the allowed
 data roots: the home folder unless `roots` in `mcp.json` (next to the on/off

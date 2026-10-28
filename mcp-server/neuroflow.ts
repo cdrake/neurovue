@@ -11,11 +11,13 @@ import addOverlayPath from './tools/add-overlay-path.neuroflow.json'
 import dataset from './tools/dataset.neuroflow.json'
 import filterDataset from './tools/filter-dataset.neuroflow.json'
 import focusWindow from './tools/focus-window.neuroflow.json'
+import listDevices from './tools/list-devices.neuroflow.json'
 import loadSurfaces from './tools/load-surfaces.neuroflow.json'
 import loadTracts from './tools/load-tracts.neuroflow.json'
 import openPath from './tools/open-path.neuroflow.json'
 import openWindow from './tools/open-window.neuroflow.json'
 import selectVolume from './tools/select-volume.neuroflow.json'
+import sendToDevice from './tools/send-to-device.neuroflow.json'
 import setWindowMode from './tools/set-window-mode.neuroflow.json'
 import zoomDataset from './tools/zoom-dataset.neuroflow.json'
 
@@ -62,6 +64,8 @@ export const DOCUMENTS = {
   loadTracts,
   openWindow,
   focusWindow,
+  listDevices,
+  sendToDevice,
 } satisfies Record<string, ToolDocument>
 
 /** The MCP tool name of each document, by id, for `instead`. */

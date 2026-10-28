@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Pencil double-tap and squeeze events, and haptic feedback."
+permissions = ["allow-feedback", "allow-register-listener", "allow-remove-listener"]

@@ -1989,6 +1989,8 @@ dependencies = [
  "base64 0.22.1",
  "ciborium",
  "flate2",
+ "futures-util",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -2000,6 +2002,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-pencil",
  "tokio",
  "tower",
  "tower-http",
@@ -3521,6 +3524,14 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 1.1.2+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-pencil"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

@@ -39,6 +39,7 @@ import {
   Share2,
   SlidersHorizontal,
   SquareTerminal,
+  Tablet,
   X,
   ZoomIn,
   ZoomOut,
@@ -85,16 +86,24 @@ import {
   MIN_EXPLODE,
 } from './domain/blocks'
 import {
+  attachDrawing,
+  type BundleReadResult,
   type BundleViewState,
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
+  type DrawingBase,
+  type ExportBundleResult,
   exportDatasetBundle,
   formatBundleBytes,
   isBundlePath,
   isDocumentPath,
+  listSendTargets,
   pickBundle,
   readBundle,
+  type SendTarget,
+  sendDrawingToDevice,
+  sendViewToDevice,
   shareViewViaAirDrop,
 } from './domain/bundle'
 import type {
@@ -148,6 +157,7 @@ import {
   recentDatasetLabel,
   useRecentDatasets,
 } from './hooks/useRecentDatasets'
+import { useSendOffer } from './hooks/useSendOffer'
 import { useTerminalDock } from './hooks/useTerminalDock'
 import { filterVolumes, useVolumeFilters } from './hooks/useVolumeFilters'
 import { useVolumeMetadata } from './hooks/useVolumeMetadata'
@@ -268,6 +278,15 @@ const isViewerWindow = (() => {
   }
 })()
 
+/** A send an agent started (send_to_device), as send_status reports it. */
+interface AgentSend {
+  state: 'sending' | 'sent' | 'failed'
+  device: string
+  volumes?: number
+  bytes?: number
+  error?: string
+}
+
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
   const backend = useMemo<Backend>(preferredBackend, [])
@@ -376,7 +395,9 @@ export function App(): JSX.Element {
       : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
   )
   const [uiMode, setUiMode] = useState<UiMode>(() =>
-    loadRememberedUiMode(isAppleMobile() ? 'full' : 'express'),
+    loadRememberedUiMode(
+      isAppleMobile() && isPhoneViewport() ? 'full' : 'express',
+    ),
   )
   const isExpress = uiMode === 'express'
   const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
@@ -449,6 +470,9 @@ export function App(): JSX.Element {
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false)
   const shareMenuRef = useRef<HTMLDivElement | null>(null)
+  // Devices running NeuroVue nearby, looked for each time the share menu
+  // opens; null while looking.
+  const [sendTargets, setSendTargets] = useState<SendTarget[] | null>(null)
   const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } =
     useTerminalDock()
   // The express view has no dock; the terminal keeps its state for the
@@ -513,6 +537,17 @@ export function App(): JSX.Element {
   useDismissableMenu(isRecentMenuOpen, recentMenuRef, () =>
     setIsRecentMenuOpen(false),
   )
+  useEffect(() => {
+    if (!isShareMenuOpen || !isAirdropAvailable) return
+    let cancelled = false
+    setSendTargets(null)
+    void listSendTargets().then((targets) => {
+      if (!cancelled) setSendTargets(targets)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isShareMenuOpen, isAirdropAvailable])
   useDismissableMenu(isShareMenuOpen, shareMenuRef, () =>
     setIsShareMenuOpen(false),
   )
@@ -900,16 +935,10 @@ export function App(): JSX.Element {
     }
   }
 
-  async function handleShareBundle(): Promise<void> {
-    if (isSharingBundle) return
-    if (!selected || items.length === 0) {
-      setStatus('Open a dataset before sharing.', 'error')
-      return
-    }
-
-    // Share the *whole* dataset — every volume — so the recipient can browse and
-    // pick any of them. The current view is still embedded, so it opens to a
-    // sensible default; the rest show up in the recipient's dataset list.
+  // Share the *whole* dataset — every volume — so the recipient can browse and
+  // pick any of them. The current view is still embedded, so it opens to a
+  // sensible default; the rest show up in the recipient's dataset list.
+  function sharedDataset(selected: DesktopItem) {
     const { view } = composeCurrentBundle(selected)
     const volumeIds = items.map((item) => item.id)
     const shareName =
@@ -917,7 +946,78 @@ export function App(): JSX.Element {
       datasetRoot?.split('/').pop() ||
       selected.label ||
       'neurovue-dataset'
+    return { view, volumeIds, shareName }
+  }
 
+  // Sends what's on screen (the selected volume and the layers over it) or,
+  // with `wholeDataset`, every volume, like an AirDrop share. Resolves once
+  // the person there has accepted it and it has arrived; rejects with a
+  // status-line sentence otherwise. The status line follows along.
+  async function sendToDevice(
+    target: SendTarget,
+    wholeDataset: boolean,
+  ): Promise<ExportBundleResult> {
+    if (isSharingBundle) throw new Error('A send is already in progress.')
+    if (!selected || items.length === 0) {
+      throw new Error('Open a dataset before sending.')
+    }
+    // Named after what it holds, so it doesn't evict the other's staged copy.
+    const { view, volumeIds, shareName } = wholeDataset
+      ? sharedDataset(selected)
+      : { ...composeCurrentBundle(selected), shareName: selected.label }
+    setIsSharingBundle(true)
+    setStatus(
+      `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
+        `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+    )
+    try {
+      const result = await sendViewToDevice({
+        target,
+        name: shareName,
+        volumeIds,
+        view,
+        onOffered: () => setStatus(`Waiting for ${target.name} to accept…`),
+      })
+      setStatus(
+        `Sent ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
+          `(${formatBundleBytes(result.totalBytes)}) to ${target.name}.`,
+        'success',
+      )
+      return result
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+      throw error
+    } finally {
+      setIsSharingBundle(false)
+    }
+  }
+
+  async function handleSendToDevice(
+    target: SendTarget,
+    wholeDataset: boolean,
+  ): Promise<void> {
+    if (isSharingBundle) return
+    try {
+      await sendToDevice(target, wholeDataset)
+    } catch (error) {
+      // sendToDevice reported it, unless it refused before starting.
+      if (latestStatus().tone !== 'error') {
+        setStatus(
+          error instanceof Error ? error.message : String(error),
+          'error',
+        )
+      }
+    }
+  }
+
+  async function handleShareBundle(): Promise<void> {
+    if (isSharingBundle) return
+    if (!selected || items.length === 0) {
+      setStatus('Open a dataset before sharing.', 'error')
+      return
+    }
+
+    const { view, volumeIds, shareName } = sharedDataset(selected)
     setIsSharingBundle(true)
     setStatus(
       `Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
@@ -1011,6 +1111,9 @@ export function App(): JSX.Element {
       shown: item.id === shownBase?.id,
     }
   }
+  // The send an agent started, which send_status reports on (the person on
+  // the device takes longer to accept than one agent call may wait).
+  const agentSendRef = useRef<AgentSend | null>(null)
   const agent = useAgentClient({
     viewer: () => viewerRef.current,
     title: () => (datasetName ? `NeuroVue: ${datasetName}` : 'NeuroVue'),
@@ -1110,6 +1213,53 @@ export function App(): JSX.Element {
         const result = await addOverlayVolumeByPath(path)
         await untilNextViewer(() => placeOverlay(result))
         return { id: result.id, label: result.label }
+      },
+      listDevices: async () => ({
+        devices: (await listSendTargets()).map((target) => target.name),
+      }),
+      sendToDevice: async ({ device, wholeDataset }) => {
+        if (agentSendRef.current?.state === 'sending' || isSharingBundle) {
+          throw new Error('A send is already in progress.')
+        }
+        if (!selected || items.length === 0) {
+          throw new Error('No dataset is open to send; call open_path first.')
+        }
+        const targets = await listSendTargets()
+        const names = targets.map((target) => target.name).join(', ')
+        const target = device
+          ? targets.find((candidate) => candidate.name === device)
+          : targets.length === 1
+            ? targets[0]
+            : undefined
+        if (!target) {
+          throw new Error(
+            targets.length === 0
+              ? 'No device is on the network; ask the person to open NeuroVue on it.'
+              : device
+                ? `No device ${device} on the network; these are: ${names}.`
+                : `Several devices are on the network; pass device, one of: ${names}.`,
+          )
+        }
+        const send: AgentSend = { state: 'sending', device: target.name }
+        agentSendRef.current = send
+        sendToDevice(target, wholeDataset).then(
+          (result) => {
+            send.state = 'sent'
+            send.volumes = result.volumeCount
+            send.bytes = result.totalBytes
+          },
+          (error) => {
+            send.state = 'failed'
+            send.error = error instanceof Error ? error.message : String(error)
+          },
+        )
+        return { state: send.state, device: send.device }
+      },
+      sendStatus: () => {
+        const send = agentSendRef.current
+        if (!send) throw new Error('Nothing has been sent from this window.')
+        if (send.state === 'failed') throw new Error(send.error)
+        return { ...send }
       },
       removeVolumes: async (index) => {
         const layers = index === 'all' ? renderLayers : [renderLayers[index]]
@@ -1212,6 +1362,15 @@ export function App(): JSX.Element {
     })
   }, [isStartupResolved])
 
+  // A Mac offering a file over the network waits on the person's answer.
+  const sendOffer = useSendOffer(!isViewerWindow)
+  // Each volume that arrived in a bundle → its entry there, which a drawing
+  // made on it names so the Mac that sent it can find the original.
+  const drawingBasesRef = useRef(new Map<string, DrawingBase>())
+  const drawingBase = selected
+    ? drawingBasesRef.current.get(selected.id)
+    : undefined
+
   // Files that arrive once the page is up. Until startup has looked, they wait
   // for the effect above, which takes them first.
   const openRecentEntryRef = useRef(openRecentEntry)
@@ -1252,6 +1411,9 @@ export function App(): JSX.Element {
       setStatus('This file is not a NeuroVue bundle.', 'error')
       return false
     }
+    // A drawing sent back goes over the volume it was drawn on, in the
+    // dataset already open, rather than replacing it.
+    if (bundle.manifest.kind === 'drawing') return attachReceivedDrawing(bundle)
 
     // Load the bundle's copied volumes as the working dataset (the data/ dir
     // opens like any dataset; each volume's new id is its filename stem), but
@@ -1275,8 +1437,17 @@ export function App(): JSX.Element {
     const newIds = bundleVolumeIds(
       bundle.manifest.volumes.map((volume) => volume.data),
     )
+    drawingBasesRef.current.clear()
     for (const volume of bundle.manifest.volumes) {
-      remap.set(volume.id, newIds.get(volume.data) ?? volume.id)
+      const newId = newIds.get(volume.data) ?? volume.id
+      remap.set(volume.id, newId)
+      if (volume.sha256) {
+        drawingBasesRef.current.set(newId, {
+          id: volume.id,
+          sha256: volume.sha256,
+          label: volume.label ?? volume.id,
+        })
+      }
     }
 
     const view = bundle.manifest.view
@@ -1330,6 +1501,65 @@ export function App(): JSX.Element {
       failures.length > 0 ? 'error' : 'success',
     )
     return true
+  }
+
+  async function attachReceivedDrawing(
+    bundle: BundleReadResult,
+  ): Promise<boolean> {
+    const base = bundle.manifest.base
+    const drawing = bundle.manifest.volumes[0]
+    if (!base || !drawing || !bundle.allVerified) {
+      setStatus("The drawing arrived damaged, so it wasn't added.", 'error')
+      return false
+    }
+    // Checking it's the same file reads the whole base volume.
+    setStatus(`Adding the drawing over ${base.label}…`)
+    const volumeId = await attachDrawing({
+      drawingPath: `${bundle.bundlePath}/${drawing.data}`,
+      base,
+    })
+    await refreshDesktopManifestData()
+    // Opaque, like the pen: the stage colors a drawing by its pens' own
+    // palette (DRAW_LABEL_COLORMAP).
+    setLayerSettings((current) => ({
+      ...current,
+      [volumeId]: {
+        ...current[volumeId],
+        opacity: 1,
+      },
+    }))
+    setOverlayIds((current) => new Set(current).add(volumeId))
+    setSelectedId(base.id)
+    setStatus(`Added the drawing over ${base.label}.`, 'success')
+    return true
+  }
+
+  // Sends the drawing over a volume that arrived from a Mac back to that Mac:
+  // the one that sent the last file accepted here, when it can be found.
+  async function handleSendDrawing(drawing: Uint8Array): Promise<void> {
+    if (!drawingBase || isSharingBundle) return
+    setIsSharingBundle(true)
+    setStatus('Looking for the Mac…')
+    try {
+      const targets = await listSendTargets()
+      const target =
+        targets.find((candidate) => candidate.name === sendOffer.lastFrom) ??
+        targets[0]
+      if (!target) {
+        setStatus(
+          "Couldn't find a Mac running NeuroVue on this network.",
+          'error',
+        )
+        return
+      }
+      setStatus(`Waiting for ${target.name} to accept the drawing…`)
+      await sendDrawingToDevice({ target, base: drawingBase, drawing })
+      setStatus(`Sent the drawing to ${target.name}.`, 'success')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setIsSharingBundle(false)
+    }
   }
 
   useEffect(() => {
@@ -1627,6 +1857,57 @@ export function App(): JSX.Element {
                       </span>
                     </button>
                   ) : null}
+                  {sendTargets === null ? (
+                    <div className="nv-recent-item nv-share-looking">
+                      <LoaderCircle className="nv-spin" size={14} />
+                      <span className="nv-recent-item-path">
+                        Looking for devices running NeuroVue…
+                      </span>
+                    </div>
+                  ) : (
+                    sendTargets.flatMap((target) => {
+                      const key = `${target.name}@${target.host}:${target.port}`
+                      return [false, true].map((wholeDataset) => (
+                        <button
+                          aria-label={
+                            wholeDataset
+                              ? `Send dataset to ${target.name}`
+                              : `Send this view to ${target.name}`
+                          }
+                          className="nv-recent-item nv-recent-open"
+                          disabled={!selected || isSharingBundle}
+                          key={`${key}:${wholeDataset}`}
+                          onClick={() => {
+                            setIsShareMenuOpen(false)
+                            void handleSendToDevice(target, wholeDataset)
+                          }}
+                          title={
+                            wholeDataset
+                              ? `Send every volume straight into NeuroVue on ${target.name}`
+                              : `Send the selected volume and its overlays straight into NeuroVue on ${target.name}`
+                          }
+                          type="button"
+                          role="menuitem"
+                        >
+                          <Tablet size={14} />
+                          <span className="nv-menu-item-text">
+                            <span className="nv-recent-item-name">
+                              {wholeDataset
+                                ? `Send dataset to ${target.name}`
+                                : `Send ${selected?.label ?? 'volume'} to ${target.name}`}
+                            </span>
+                            <span className="nv-recent-item-path">
+                              {!selected
+                                ? 'Open a dataset first'
+                                : wholeDataset
+                                  ? `All ${items.length} volume${items.length === 1 ? '' : 's'}; opens there once accepted`
+                                  : 'This view; opens there once accepted'}
+                            </span>
+                          </span>
+                        </button>
+                      ))
+                    })
+                  )}
                 </div>
               ) : null}
             </div>
@@ -1903,6 +2184,11 @@ export function App(): JSX.Element {
                   onViewModeChange={setViewMode}
                   onRenderStatus={setRenderStatus}
                   onViewer={handleViewer}
+                  onSendDrawing={
+                    drawingBase
+                      ? (drawing) => void handleSendDrawing(drawing)
+                      : undefined
+                  }
                   renderWheelMode={renderWheelMode}
                   shading={shading}
                   viewMode={viewMode}
@@ -2121,6 +2407,36 @@ export function App(): JSX.Element {
             <GripHorizontal size={16} />
           </button>
           <TerminalPanel datasetRoot={datasetRoot} onStatus={setStatus} />
+        </section>
+      ) : null}
+
+      {sendOffer.offer ? (
+        <section
+          aria-label="Incoming file"
+          className="nv-send-offer"
+          role="alertdialog"
+        >
+          <p>
+            <strong>{sendOffer.offer.from}</strong> wants to send{' '}
+            <strong>{sendOffer.offer.name}</strong> (
+            {formatBundleBytes(sendOffer.offer.size)}).
+          </p>
+          <div className="nv-send-offer-actions">
+            <button
+              className="nv-tool-button"
+              onClick={() => sendOffer.answer(false)}
+              type="button"
+            >
+              Decline
+            </button>
+            <button
+              className="nv-tool-button is-primary"
+              onClick={() => sendOffer.answer(true)}
+              type="button"
+            >
+              Accept
+            </button>
+          </div>
         </section>
       ) : null}
 

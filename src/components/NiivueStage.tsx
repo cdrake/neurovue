@@ -4,7 +4,7 @@ import type {
   NiiVueLocation,
   UIKitOverlayRenderer,
 } from '@niivue/niivue'
-import { Eraser, Ruler } from 'lucide-react'
+import { Eraser, Pencil, Ruler, Send, Undo2 } from 'lucide-react'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
@@ -24,6 +24,7 @@ import type {
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
+import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
 import type { RenderShading } from '../domain/shading'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
@@ -78,6 +79,9 @@ interface NiivueStageProps {
   onRenderStatus?: (status: string) => void
   /** The NiiVue instance once its volumes have loaded, and null when it goes. */
   onViewer?: (nv: unknown) => void
+  /** Offers to send the drawing (a NIfTI label map over the base volume) on;
+   *  without it, the draw tools have no Send button. */
+  onSendDrawing?: (drawing: Uint8Array) => void
 }
 
 export interface NiivueRenderLayer {
@@ -187,6 +191,17 @@ interface NiiVueLike {
   clearAnnotations?(): void
   // Returns the unregister function.
   registerOverlayRenderer?(renderer: UIKitOverlayRenderer): () => void
+  // Raster drawing (the draw tool). Pen value 0 erases.
+  drawIsEnabled?: boolean
+  drawPenValue?: number
+  drawPenSize?: number
+  drawPenShape?: number
+  readonly drawingVolume?: unknown
+  createEmptyDrawing?(): void
+  closeDrawing?(): void
+  drawUndo?(): void
+  // An empty filename returns the NIfTI bytes instead of downloading them.
+  saveDrawing?(filename: string): Promise<boolean | Uint8Array>
   azimuth?: number
   elevation?: number
   volumeIllumination?: number
@@ -292,6 +307,53 @@ const VIEW_MODES: Array<{
     sliceType: NIVUE_SLICE_TYPE_RENDER,
   },
 ]
+// NiiVue's drawing palette (its `_draw` colormap): a pen's label value is
+// its color, on the iPad and on the Mac the drawing goes back to.
+const DRAW_COLORS = [
+  { value: 1, name: 'Red', css: '#ff0000' },
+  { value: 2, name: 'Green', css: '#00ff00' },
+  { value: 3, name: 'Blue', css: '#0000ff' },
+  { value: 4, name: 'Yellow', css: '#ffff00' },
+  { value: 5, name: 'Cyan', css: '#00ffff' },
+  { value: 6, name: 'Magenta', css: '#ff00ff' },
+  { value: 7, name: 'White', css: '#ffffff' },
+] as const
+
+// The same palette as a label map, for a drawing sent back to this Mac.
+const DRAW_LABEL_COLORMAP: ColorMap = {
+  R: [0, 255, 0, 0, 255, 0, 255, 255],
+  G: [0, 0, 255, 0, 255, 255, 0, 255],
+  B: [0, 0, 0, 255, 0, 255, 255, 255],
+  A: [0, 255, 255, 255, 255, 255, 255, 255],
+  I: [0, 1, 2, 3, 4, 5, 6, 7],
+  labels: ['', ...DRAW_COLORS.map((color) => color.name)],
+}
+
+// Brush widths in voxels; a pencil varies each with pressure and tilt.
+const DRAW_SIZES = [
+  { size: 1, name: 'Fine', dot: 3 },
+  { size: 3, name: 'Medium', dot: 6 },
+  { size: 7, name: 'Broad', dot: 10 },
+] as const
+
+// PEN_SHAPE.CIRCLE: a round brush, as a pencil makes.
+const PEN_SHAPE_CIRCLE = 1
+
+/**
+ * The brush for one point of a pencil stroke: from a third of `size` at the
+ * lightest touch to twice it pressed hard, and up to twice that again with
+ * the pencil laid on its side (altitude 0; upright is π/2).
+ */
+function pencilBrushSize(size: number, event: PointerEvent): number {
+  const pressure = event.pressure > 0 ? event.pressure : 0.5
+  const altitude =
+    (event as PointerEvent & { altitudeAngle?: number }).altitudeAngle ??
+    Math.PI / 2
+  const tilt = 1 - Math.min(1, Math.max(0, altitude / (Math.PI / 2)))
+  const scaled = size * (0.35 + 1.65 * pressure) * (1 + tilt)
+  return Math.max(1, Math.round(scaled))
+}
+
 // Researchers expect orthogonal slices first; the 3D render is one click away.
 export const DEFAULT_VIEW_MODE: ViewModeId = 'multiplanar'
 const VIEW_MODE_KEY = 'neurovue.viewMode.v1'
@@ -423,6 +485,7 @@ export function NiivueStage({
   onViewModeChange,
   onRenderStatus,
   onViewer,
+  onSendDrawing,
 }: NiivueStageProps): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -473,6 +536,14 @@ export function NiivueStage({
   const [measureUnavailable, setMeasureUnavailable] = useState<string | null>(
     'Loading measure tool.',
   )
+  // Draw tool: a pen (or eraser) on 2D slices, painting a label map over the
+  // base volume. Like measuring, off by default so a tap moves the crosshair.
+  const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | null>(null)
+  // The pen's label value (its color in DRAW_COLORS) and brush size.
+  const [penValue, setPenValue] = useState(1)
+  const [brushSize, setBrushSize] = useState<number>(DRAW_SIZES[1].size)
+  // Whether the current viewer holds a drawing, for Undo/Clear/Send.
+  const [hasDrawing, setHasDrawing] = useState(false)
   const primaryItem = layers[0]?.item ?? item
   // Meshes with no volume still need a viewer; with volumes, adding a mesh
   // goes through the in-place mesh effect instead of a reload.
@@ -795,6 +866,123 @@ export function NiivueStage({
     nv.annotationTool = 'measureLine'
     nv.annotationIsEnabled = isMeasureActive
   }, [isMeasureActive, loadedVersion])
+
+  // Draw mode, once the volumes have loaded: refinement swaps in a finer
+  // volume, and a drawing must match the volume it was started on. A new
+  // viewer (another volume, or a layer added) starts without one.
+  const isDrawActive = drawTool !== null && !isRenderMode && loadedVersion > 0
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion re-applies on a fresh instance.
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv || nv.drawIsEnabled === undefined) return
+    if (isDrawActive && !nv.drawingVolume) nv.createEmptyDrawing?.()
+    nv.drawIsEnabled = isDrawActive
+    if (isDrawActive) {
+      nv.drawPenValue = drawTool === 'eraser' ? 0 : penValue
+      nv.drawPenSize = brushSize
+      nv.drawPenShape = PEN_SHAPE_CIRCLE
+    }
+    setHasDrawing(Boolean(nv.drawingVolume))
+  }, [isDrawActive, drawTool, penValue, brushSize, loadedVersion])
+
+  // Apple Pencil: pressure and tilt set the brush for each point of a stroke
+  // (NiiVue reads the size per move), like pressing harder or shading with
+  // the side of a pencil. Once a pencil is used, a finger moves around the
+  // image instead of drawing, so a resting palm leaves no marks.
+  useEffect(() => {
+    const nv = nvRef.current
+    const stage = stageRef.current
+    if (!isDrawActive || !nv || !stage) return
+    let isPencil = false
+    let isFingerDown = false
+    // Capture on the stage runs before NiiVue's own canvas listeners.
+    function onPointer(event: PointerEvent): void {
+      if (!nv) return
+      if (event.pointerType === 'pen') {
+        isPencil = true
+        nv.drawPenSize = pencilBrushSize(brushSize, event)
+      } else if (event.pointerType === 'touch' && isPencil) {
+        if (event.type === 'pointerdown') isFingerDown = true
+        if (isFingerDown) nv.drawIsEnabled = event.type !== 'pointerdown'
+      }
+    }
+    function onPointerEnd(event: PointerEvent): void {
+      if (!nv) return
+      // A stroke done: a Pencil Pro taps once in the hand.
+      if (
+        event.pointerType === 'pen' &&
+        event.type === 'pointerup' &&
+        stage?.contains(event.target as Node)
+      ) {
+        pencilFeedback('path', { x: event.clientX, y: event.clientY })
+      }
+      if (event.pointerType !== 'touch' || !isFingerDown) return
+      isFingerDown = false
+      nv.drawIsEnabled = true
+    }
+    const options = { capture: true }
+    stage.addEventListener('pointerdown', onPointer, options)
+    stage.addEventListener('pointermove', onPointer, options)
+    window.addEventListener('pointerup', onPointerEnd, options)
+    window.addEventListener('pointercancel', onPointerEnd, options)
+    return () => {
+      stage.removeEventListener('pointerdown', onPointer, options)
+      stage.removeEventListener('pointermove', onPointer, options)
+      window.removeEventListener('pointerup', onPointerEnd, options)
+      window.removeEventListener('pointercancel', onPointerEnd, options)
+    }
+  }, [isDrawActive, brushSize])
+
+  // A double-tap or squeeze of the pencil does what the person chose for it
+  // in Settings: the eraser switch toggles pen and eraser, and a palette
+  // steps to the next pen color, since there's no palette here to show.
+  useEffect(() => {
+    if (!isDrawActive) return
+    return listenToPencil((action, at) => {
+      if (action === 'switchEraser' || action === 'switchPrevious') {
+        setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser'))
+      } else if (
+        action === 'showColorPalette' ||
+        action === 'showInkAttributes' ||
+        action === 'showContextualPalette'
+      ) {
+        setDrawTool('pen')
+        setPenValue((current) => (current % DRAW_COLORS.length) + 1)
+      } else {
+        return
+      }
+      pencilFeedback('alignment', at)
+    })
+  }, [isDrawActive])
+
+  // From the 3D render, drawing starts on one big axial slice.
+  function toggleDrawing(): void {
+    setIsMeasuring(false)
+    if (isRenderMode) {
+      onViewModeChange('axial')
+      setDrawTool('pen')
+      return
+    }
+    setDrawTool((current) => (current ? null : 'pen'))
+  }
+
+  function undoDrawing(): void {
+    nvRef.current?.drawUndo?.()
+  }
+
+  function clearDrawing(): void {
+    const nv = nvRef.current
+    if (!nv) return
+    nv.closeDrawing?.()
+    if (isDrawActive) nv.createEmptyDrawing?.()
+    setHasDrawing(Boolean(nv.drawingVolume))
+    nv.drawScene()
+  }
+
+  async function sendDrawing(): Promise<void> {
+    const drawing = await nvRef.current?.saveDrawing?.('')
+    if (drawing instanceof Uint8Array) onSendDrawing?.(drawing)
+  }
 
   // Escape leaves measure mode, like finishing with any other tool.
   useEffect(() => {
@@ -1173,7 +1361,10 @@ export function NiivueStage({
             aria-pressed={isMeasureActive}
             className={isMeasureActive ? 'is-active' : ''}
             disabled={!primaryItem || measureUnavailable !== null}
-            onClick={() => setIsMeasuring((current) => !current)}
+            onClick={() => {
+              setDrawTool(null)
+              setIsMeasuring((current) => !current)
+            }}
             title={
               measureUnavailable ??
               (isMeasureActive
@@ -1195,6 +1386,116 @@ export function NiivueStage({
           </button>
         </fieldset>
       )}
+      {primaryItem ? (
+        <fieldset
+          className={`nv-measure-tools nv-draw-tools ${isRenderMode ? 'is-alone' : ''}`}
+          aria-label="Draw"
+        >
+          <button
+            aria-label="Draw"
+            aria-pressed={isDrawActive}
+            className={isDrawActive ? 'is-active' : ''}
+            disabled={loadedVersion === 0}
+            onClick={toggleDrawing}
+            title={isDrawActive ? 'Stop drawing' : 'Draw on the slices'}
+            type="button"
+          >
+            <Pencil aria-hidden="true" size={14} />
+          </button>
+          {isDrawActive ? (
+            <>
+              <button
+                aria-label="Erase"
+                aria-pressed={drawTool === 'eraser'}
+                className={drawTool === 'eraser' ? 'is-active' : ''}
+                onClick={() =>
+                  setDrawTool((current) =>
+                    current === 'eraser' ? 'pen' : 'eraser',
+                  )
+                }
+                title="Erase: draw to remove"
+                type="button"
+              >
+                <Eraser aria-hidden="true" size={14} />
+              </button>
+              <button
+                aria-label="Undo"
+                disabled={!hasDrawing}
+                onClick={undoDrawing}
+                title="Undo the last stroke"
+                type="button"
+              >
+                <Undo2 aria-hidden="true" size={14} />
+              </button>
+              <button
+                aria-label="Clear drawing"
+                className="nv-draw-clear"
+                disabled={!hasDrawing}
+                onClick={clearDrawing}
+                title="Clear the drawing"
+                type="button"
+              >
+                Clear
+              </button>
+            </>
+          ) : null}
+          {onSendDrawing && hasDrawing ? (
+            <button
+              aria-label="Send drawing"
+              className="nv-draw-send"
+              onClick={() => void sendDrawing()}
+              title="Send the drawing back to the Mac"
+              type="button"
+            >
+              <Send aria-hidden="true" size={14} />
+              <span>Send</span>
+            </button>
+          ) : null}
+        </fieldset>
+      ) : null}
+      {isDrawActive ? (
+        <fieldset className="nv-measure-tools nv-draw-palette" aria-label="Pen">
+          {DRAW_COLORS.map((color) => (
+            <button
+              aria-label={`${color.name} pen`}
+              aria-pressed={drawTool === 'pen' && penValue === color.value}
+              className={
+                drawTool === 'pen' && penValue === color.value
+                  ? 'is-active'
+                  : ''
+              }
+              key={color.value}
+              onClick={() => {
+                setPenValue(color.value)
+                setDrawTool('pen')
+              }}
+              title={color.name}
+              type="button"
+            >
+              <span
+                className="nv-draw-swatch"
+                style={{ background: color.css }}
+              />
+            </button>
+          ))}
+          {DRAW_SIZES.map((option) => (
+            <button
+              aria-label={`${option.name} brush`}
+              aria-pressed={brushSize === option.size}
+              className={brushSize === option.size ? 'is-active' : ''}
+              key={option.size}
+              onClick={() => setBrushSize(option.size)}
+              title={`${option.name} brush`}
+              type="button"
+            >
+              <span
+                className="nv-draw-size"
+                style={{ width: option.dot, height: option.dot }}
+              />
+            </button>
+          ))}
+        </fieldset>
+      ) : null}
       {showSliceSlider ? (
         <fieldset className="nv-slice-slider" aria-label="Slice position">
           <input
@@ -1684,6 +1985,9 @@ async function resolveAtlasColorMaps(
 ): Promise<Array<ColorMap | null>> {
   return Promise.all(
     layers.map((layer) => {
+      if (layer.item.derivation?.operation === 'drawing') {
+        return Promise.resolve(DRAW_LABEL_COLORMAP)
+      }
       if (!layer.isAtlas) return Promise.resolve(null)
       return atlasColorMapForItem(layer.item).catch(() => null)
     }),

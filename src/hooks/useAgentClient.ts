@@ -37,6 +37,18 @@ export interface NeuroVueAgentActions {
    * empty until a volume is selected or opened.
    */
   removeVolumes(index: number | 'all'): Promise<{ removed: string[] }>
+  /** The devices on the network a send can go to, by name. */
+  listDevices(): Promise<{ devices: string[] }>
+  /**
+   * Starts sending the volume shown (or the whole dataset) to a device and
+   * returns at once; the person there still has to accept it.
+   */
+  sendToDevice(options: {
+    device?: string
+    wholeDataset: boolean
+  }): Promise<{ state: string; device: string }>
+  /** How the send started last is going; throws if it failed. */
+  sendStatus(): Record<string, unknown>
 }
 
 type HostView = NiiVueHost['view']
@@ -227,6 +239,13 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
       await invoke('open_viewer_window', { tab: id, title })
       return { id }
     },
+    'neurovue.list_devices': async () => actions().listDevices(),
+    'neurovue.send_to_device': async (params) =>
+      actions().sendToDevice({
+        device: typeof params.device === 'string' ? params.device : undefined,
+        wholeDataset: params.whole_dataset === true,
+      }),
+    'neurovue.send_status': async () => actions().sendStatus(),
     'neurovue.focus_window': async () => {
       const focused = await invoke<string>('focus_window')
       await untilVisible()

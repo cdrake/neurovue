@@ -102,6 +102,36 @@ button {
   box-shadow: none;
 }
 
+.nv-send-offer {
+  position: fixed;
+  left: 50%;
+  bottom: calc(44px + env(safe-area-inset-bottom));
+  z-index: 20;
+  width: min(420px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  border: 1px solid var(--amber);
+  background: var(--panel-2);
+  box-shadow: 0 12px 40px var(--shadow);
+  padding: 14px 16px;
+  font-size: 13px;
+}
+
+.nv-send-offer p {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.nv-send-offer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.nv-tool-button.is-primary {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
 .nv-status > span:first-child {
   flex: 1 1 28%;
 }
@@ -356,6 +386,14 @@ button {
   right: 0;
   left: auto;
   min-width: 260px;
+}
+
+/* Not an item: the menu is still looking for devices to send to. */
+.nv-share-looking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
 }
 
 .nv-recent-divider {
@@ -1875,6 +1913,53 @@ button {
 .nv-measure-tools button:disabled {
   cursor: default;
   opacity: 0.38;
+}
+
+/* Beside the two measure buttons (2 × 30px + gap + borders). */
+.nv-draw-tools {
+  left: 86px;
+}
+
+/* Pen colors and sizes, a row below the tools while drawing. */
+.nv-draw-palette {
+  top: 90px;
+}
+
+.nv-draw-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.nv-draw-size {
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.nv-measure-tools button.is-active .nv-draw-swatch {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.6),
+    0 0 0 3px var(--amber);
+}
+
+/* The measure tools are hidden in the 3D render. */
+.nv-draw-tools.is-alone {
+  left: 14px;
+}
+
+.nv-measure-tools button.nv-draw-clear,
+.nv-measure-tools button.nv-draw-send {
+  width: auto;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.nv-measure-tools button.nv-draw-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--amber);
 }
 
 .nv-render-status {
