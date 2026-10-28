@@ -1989,6 +1989,7 @@ dependencies = [
  "base64 0.22.1",
  "ciborium",
  "flate2",
+ "futures-util",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

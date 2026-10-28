@@ -148,6 +148,7 @@ import {
   recentDatasetLabel,
   useRecentDatasets,
 } from './hooks/useRecentDatasets'
+import { useSendOffer } from './hooks/useSendOffer'
 import { useTerminalDock } from './hooks/useTerminalDock'
 import { filterVolumes, useVolumeFilters } from './hooks/useVolumeFilters'
 import { useVolumeMetadata } from './hooks/useVolumeMetadata'
@@ -1212,6 +1213,9 @@ export function App(): JSX.Element {
     })
   }, [isStartupResolved])
 
+  // A Mac offering a file over the network waits on the person's answer.
+  const sendOffer = useSendOffer(!isViewerWindow)
+
   // Files that arrive once the page is up. Until startup has looked, they wait
   // for the effect above, which takes them first.
   const openRecentEntryRef = useRef(openRecentEntry)
@@ -2121,6 +2125,36 @@ export function App(): JSX.Element {
             <GripHorizontal size={16} />
           </button>
           <TerminalPanel datasetRoot={datasetRoot} onStatus={setStatus} />
+        </section>
+      ) : null}
+
+      {sendOffer.offer ? (
+        <section
+          aria-label="Incoming file"
+          className="nv-send-offer"
+          role="alertdialog"
+        >
+          <p>
+            <strong>{sendOffer.offer.from}</strong> wants to send{' '}
+            <strong>{sendOffer.offer.name}</strong> (
+            {formatBundleBytes(sendOffer.offer.size)}).
+          </p>
+          <div className="nv-send-offer-actions">
+            <button
+              className="nv-tool-button"
+              onClick={() => sendOffer.answer(false)}
+              type="button"
+            >
+              Decline
+            </button>
+            <button
+              className="nv-tool-button is-primary"
+              onClick={() => sendOffer.answer(true)}
+              type="button"
+            >
+              Accept
+            </button>
+          </div>
         </section>
       ) : null}
 

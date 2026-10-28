@@ -5,6 +5,7 @@ mod mcp;
 #[cfg(desktop)]
 mod niimath;
 mod opened;
+mod receive;
 mod share;
 #[cfg(desktop)]
 mod terminal;
@@ -575,6 +576,14 @@ pub fn run() {
             });
             #[cfg(desktop)]
             mcp::start_if_enabled(app.handle());
+            // The iPad listens for Send to iPad from a Mac. A Mac only does
+            // when asked, to test sending without an iPad.
+            if cfg!(target_os = "ios") || std::env::var_os("NEUROVUE_RECEIVE").is_some() {
+                match receive::start(app.handle()) {
+                    Ok(port) => eprintln!("NeuroVue: receiving sends on port {port}"),
+                    Err(error) => eprintln!("NeuroVue: can't receive sends ({error})"),
+                }
+            }
             Ok(())
         });
 
@@ -622,6 +631,7 @@ pub fn run() {
             read_document_manifest,
             share_view_via_airdrop,
             opened::take_opened_files,
+            receive::answer_send_offer,
             niimath::validate_niimath_mask_path,
             niimath::run_niimath_task,
             terminal::terminal_start,
@@ -646,7 +656,8 @@ pub fn run() {
         read_bundle_manifest,
         read_document_manifest,
         share_view_via_airdrop,
-        opened::take_opened_files
+        opened::take_opened_files,
+        receive::answer_send_offer
     ]);
 
     let app = builder
