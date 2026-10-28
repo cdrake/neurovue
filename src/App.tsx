@@ -381,7 +381,9 @@ export function App(): JSX.Element {
       : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
   )
   const [uiMode, setUiMode] = useState<UiMode>(() =>
-    loadRememberedUiMode(isAppleMobile() ? 'full' : 'express'),
+    loadRememberedUiMode(
+      isAppleMobile() && isPhoneViewport() ? 'full' : 'express',
+    ),
   )
   const isExpress = uiMode === 'express'
   const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
@@ -933,16 +935,25 @@ export function App(): JSX.Element {
     return { view, volumeIds, shareName }
   }
 
-  async function handleSendToDevice(target: SendTarget): Promise<void> {
+  // Sends what's on screen (the selected volume and the layers over it) or,
+  // with `wholeDataset`, every volume, like an AirDrop share.
+  async function handleSendToDevice(
+    target: SendTarget,
+    wholeDataset: boolean,
+  ): Promise<void> {
     if (isSharingBundle) return
     if (!selected || items.length === 0) {
       setStatus('Open a dataset before sending.', 'error')
       return
     }
-    const { view, volumeIds, shareName } = sharedDataset(selected)
+    // Named after what it holds, so it doesn't evict the other's staged copy.
+    const { view, volumeIds, shareName } = wholeDataset
+      ? sharedDataset(selected)
+      : { ...composeCurrentBundle(selected), shareName: selected.label }
     setIsSharingBundle(true)
     setStatus(
-      `Preparing dataset for ${target.name} (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+      `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
+        `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
     )
     try {
       const result = await sendViewToDevice({
@@ -950,8 +961,7 @@ export function App(): JSX.Element {
         name: shareName,
         volumeIds,
         view,
-        onOffered: () =>
-          setStatus(`Waiting for ${target.name} to accept the dataset…`),
+        onOffered: () => setStatus(`Waiting for ${target.name} to accept…`),
       })
       setStatus(
         `Sent ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
@@ -1693,33 +1703,48 @@ export function App(): JSX.Element {
                       </span>
                     </div>
                   ) : (
-                    sendTargets.map((target) => (
-                      <button
-                        aria-label={`Send dataset to ${target.name}`}
-                        className="nv-recent-item nv-recent-open"
-                        disabled={!selected || isSharingBundle}
-                        key={`${target.name}@${target.host}:${target.port}`}
-                        onClick={() => {
-                          setIsShareMenuOpen(false)
-                          void handleSendToDevice(target)
-                        }}
-                        title={`Send the whole dataset straight into NeuroVue on ${target.name}`}
-                        type="button"
-                        role="menuitem"
-                      >
-                        <Tablet size={14} />
-                        <span className="nv-menu-item-text">
-                          <span className="nv-recent-item-name">
-                            Send to {target.name}
+                    sendTargets.flatMap((target) => {
+                      const key = `${target.name}@${target.host}:${target.port}`
+                      return [false, true].map((wholeDataset) => (
+                        <button
+                          aria-label={
+                            wholeDataset
+                              ? `Send dataset to ${target.name}`
+                              : `Send this view to ${target.name}`
+                          }
+                          className="nv-recent-item nv-recent-open"
+                          disabled={!selected || isSharingBundle}
+                          key={`${key}:${wholeDataset}`}
+                          onClick={() => {
+                            setIsShareMenuOpen(false)
+                            void handleSendToDevice(target, wholeDataset)
+                          }}
+                          title={
+                            wholeDataset
+                              ? `Send every volume straight into NeuroVue on ${target.name}`
+                              : `Send the selected volume and its overlays straight into NeuroVue on ${target.name}`
+                          }
+                          type="button"
+                          role="menuitem"
+                        >
+                          <Tablet size={14} />
+                          <span className="nv-menu-item-text">
+                            <span className="nv-recent-item-name">
+                              {wholeDataset
+                                ? `Send dataset to ${target.name}`
+                                : `Send ${selected?.label ?? 'volume'} to ${target.name}`}
+                            </span>
+                            <span className="nv-recent-item-path">
+                              {!selected
+                                ? 'Open a dataset first'
+                                : wholeDataset
+                                  ? `All ${items.length} volume${items.length === 1 ? '' : 's'}; opens there once accepted`
+                                  : 'This view; opens there once accepted'}
+                            </span>
                           </span>
-                          <span className="nv-recent-item-path">
-                            {selected
-                              ? 'Opens in NeuroVue there once accepted'
-                              : 'Open a dataset first'}
-                          </span>
-                        </span>
-                      </button>
-                    ))
+                        </button>
+                      ))
+                    })
                   )}
                 </div>
               ) : null}

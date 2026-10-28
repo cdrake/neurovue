@@ -7,8 +7,9 @@ export type UiMode = 'full' | 'express'
 const UI_MODE_KEY = 'neurovue.uiMode.v1'
 
 /**
- * The layout the user last picked, else `fallback`. The desktop opens on the
- * express viewer; iOS keeps the workbench, which has no layout toggle there.
+ * The layout the user last picked, else `fallback`. The desktop and iPad open
+ * on the express viewer; an iPhone keeps the workbench, which has no layout
+ * toggle there.
  */
 export function loadRememberedUiMode(fallback: UiMode): UiMode {
   try {
