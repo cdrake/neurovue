@@ -2,6 +2,8 @@ import type { Handlers, NiiVueHost } from '@niivue/nv-mcp/browser'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useRef, useState } from 'react'
+import { setPointLabels } from '../domain/pointLabels'
+import type { VolumeFilterValues } from './useVolumeFilters'
 
 /** The agent server's state, as `mcp_status` and the `neurovue-mcp` event report it. */
 export interface AgentServerStatus {
@@ -16,10 +18,25 @@ export interface NeuroVueAgentActions {
   openPath(path: string): Promise<void>
   dataset(): Record<string, unknown>
   selectVolume(id: string): Promise<void>
+  /** Sets the dataset pane's filter and returns the volumes it lists. */
+  filterDataset(filters: VolumeFilterValues): Record<string, unknown>
+  /** Zooms the dataset pane, centering a volume's tile when one is given. */
+  zoomDataset(options: {
+    zoom?: number
+    volume?: string
+  }): Promise<{ zoom: number }>
+  /** Shows the viewer alone (Express) or beside the dataset pane. */
+  setWindowMode(mode: 'express' | 'dataset'): Promise<{ mode: string }>
   /** Adds a volume over every volume of the dataset; resolves once it shows. */
   addOverlay(path: string): Promise<{ id: string; label: string }>
   /** Adds surfaces or tracts to the meshes shown and returns their names. */
   addMeshes(paths: string[]): Promise<string[]>
+  /**
+   * Takes shown volumes (by viewer index, or all) out of the layer stack.
+   * Removing the base volume takes its overlays too and leaves the view
+   * empty until a volume is selected or opened.
+   */
+  removeVolumes(index: number | 'all'): Promise<{ removed: string[] }>
 }
 
 type HostView = NiiVueHost['view']
@@ -88,7 +105,13 @@ export function useAgentClient(options: {
             )
           }
           if (bound?.view !== view) {
-            bound = { view, handlers: coreHandlers({ view: view as HostView }) }
+            bound = {
+              view,
+              handlers: coreHandlers({
+                view: view as HostView,
+                labels: setPointLabels,
+              }),
+            }
           }
           return bound.handlers
         }
@@ -103,6 +126,26 @@ export function useAgentClient(options: {
             ]),
           ),
           ...neuroVueHandlers(() => optionsRef.current.actions),
+          // NeuroVue owns the layer stack: core remove_volume would take the
+          // volume out of NiiVue alone, leaving NeuroVue drawing it.
+          remove_volume: async (params) => {
+            const result = await optionsRef.current.actions.removeVolumes(
+              params.all === true
+                ? 'all'
+                : volumeIndex(params.volume, optionsRef.current.viewer()),
+            )
+            // Read after the removal renders, not from the actions it ran with.
+            return { ...result, dataset: optionsRef.current.actions.dataset() }
+          },
+          // Core load_document fetches a URL into NiiVue alone. A saved
+          // document is a file on this computer, so it opens as a dataset.
+          load_document: async (params) => {
+            const path = documentPath(params.url)
+            await optionsRef.current.actions.openPath(
+              await agentPath({ path }, 'path'),
+            )
+            return optionsRef.current.actions.dataset()
+          },
         }
         const next = new AgentClient(handlers, {
           urls: [`ws://127.0.0.1:${port}/app`],
@@ -156,6 +199,24 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
       return { added: await actions().addMeshes(paths) }
     },
     'neurovue.dataset': async () => actions().dataset(),
+    'neurovue.filter_dataset': async (params) =>
+      actions().filterDataset({
+        query: typeof params.query === 'string' ? params.query : undefined,
+        imageTypes: stringList(params, 'image_types'),
+        roles: stringList(params, 'roles'),
+      }),
+    'neurovue.zoom_dataset': async (params) =>
+      actions().zoomDataset({
+        zoom: typeof params.zoom === 'number' ? params.zoom : undefined,
+        volume: typeof params.volume === 'string' ? params.volume : undefined,
+      }),
+    'neurovue.set_window_mode': async (params) => {
+      const mode = stringParam(params, 'mode')
+      if (mode !== 'express' && mode !== 'dataset') {
+        throw new Error(`mode must be "express" or "dataset", not "${mode}".`)
+      }
+      return actions().setWindowMode(mode)
+    },
     'neurovue.select_volume': async (params) => {
       await actions().selectVolume(stringParam(params, 'id'))
       return actions().dataset()
@@ -165,6 +226,11 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
       const title = typeof params.title === 'string' ? params.title : null
       await invoke('open_viewer_window', { tab: id, title })
       return { id }
+    },
+    'neurovue.focus_window': async () => {
+      const focused = await invoke<string>('focus_window')
+      await untilVisible()
+      return { focused }
     },
   }
 }
@@ -181,6 +247,66 @@ function agentPath(
   return invoke<string>('agent_resolve_path', {
     path: stringParam(params, key),
   })
+}
+
+/**
+ * Resolves once the page is visible, or after `ms`. A window brought forward
+ * becomes visible a moment later, and screenshot refuses a hidden page.
+ */
+function untilVisible(ms = 2000): Promise<void> {
+  if (document.visibilityState === 'visible') return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    document.addEventListener('visibilitychange', done)
+  })
+}
+
+/** The file a load_document `url` names: an absolute path or a file:// URL. */
+function documentPath(url: unknown): string {
+  if (typeof url === 'string' && url.startsWith('/')) return url
+  if (typeof url === 'string' && url.startsWith('file://')) {
+    return decodeURIComponent(new URL(url).pathname)
+  }
+  throw new Error(
+    'NeuroVue opens documents from this computer: pass the absolute path of the .nvd file. ' +
+      'save puts documents in the Downloads folder.',
+  )
+}
+
+/** A volume named by index or name, as the core tools take it. */
+function volumeIndex(volume: unknown, viewer: unknown): number {
+  if (typeof volume === 'number' && Number.isInteger(volume)) return volume
+  const volumes =
+    (viewer as { volumes?: { name?: string }[] } | null)?.volumes ?? []
+  if (typeof volume === 'string') {
+    const index = volumes.findIndex((shown) => shown.name === volume)
+    if (index >= 0) return index
+  }
+  throw new Error(
+    `volume is an index or a name: one of ${volumes
+      .map((shown, index) => `${index} "${shown.name}"`)
+      .join(', ')}.`,
+  )
+}
+
+function stringList(
+  params: Record<string, unknown>,
+  key: string,
+): string[] | undefined {
+  const value = params[key]
+  if (value === undefined) return undefined
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== 'string')
+  ) {
+    throw new Error(`${key} must be a list of strings.`)
+  }
+  return value
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {

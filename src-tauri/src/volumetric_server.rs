@@ -1291,6 +1291,322 @@ fn verify_bundle_entry(
     }));
 }
 
+/// Read a NiiVue document (`.nvd`, JSON, maybe gzipped) as if it were a
+/// bundle. Each volume it embeds (a NIfTI header object plus the raw voxel
+/// bytes) is written out as a `.nii` into a fresh imports dir, and the result
+/// has `read_bundle`'s shape, so the frontend opens it the same way. The
+/// document's own urls point at the server that saved it, long gone, so only
+/// the embedded data is used. Meshes aren't read yet.
+pub fn read_document(path: &FsPath) -> Result<Value, String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("read_document: {}: {error}", path.display()))?;
+    let raw = fs::read(&canonical)
+        .map_err(|error| format!("read_document: read {}: {error}", canonical.display()))?;
+    let text = if raw.starts_with(&[0x1f, 0x8b]) {
+        // Same bomb guard as bundles: a document holds compressed voxels, so a
+        // real one inflates a few times over, not hundreds.
+        let limit = (raw.len() as u64).saturating_mul(50).max(256 * 1024 * 1024);
+        let mut inflated = Vec::new();
+        copy_within_budget(&mut GzDecoder::new(raw.as_slice()), &mut inflated, &mut {
+            limit
+        })
+        .map_err(|error| format!("read_document: inflate {}: {error}", canonical.display()))?;
+        inflated
+    } else {
+        raw
+    };
+    let not_a_document = || {
+        format!(
+            "read_document: {} is not a NiiVue document",
+            canonical.display()
+        )
+    };
+    // NiiVue writes JSON when asked, CBOR otherwise; JSON starts with `{`.
+    let document: Value = if text.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{') {
+        serde_json::from_slice(&text).map_err(|_| not_a_document())?
+    } else {
+        let value: ciborium::Value =
+            ciborium::from_reader(text.as_slice()).map_err(|_| not_a_document())?;
+        cbor_to_document_json(value)
+    };
+    let doc_volumes = document
+        .get("volumes")
+        .and_then(Value::as_array)
+        .filter(|volumes| !volumes.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "read_document: {} has no volumes to open",
+                canonical.display()
+            )
+        })?;
+
+    let imports_dir = data_root().join("imports");
+    let out_root = imports_dir.join(bundle_import_dir_name(&canonical));
+    if out_root.parent() != Some(imports_dir.as_path()) {
+        return Err(format!(
+            "read_document: refusing to write to {}",
+            out_root.display()
+        ));
+    }
+    let data_dir = out_root.join("data");
+    let _ = fs::remove_dir_all(&out_root);
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("read_document: create {}: {error}", data_dir.display()))?;
+
+    let mut manifest_volumes = Vec::new();
+    let mut view_volumes = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    for (index, volume) in doc_volumes.iter().enumerate() {
+        let name = volume.get("name").and_then(Value::as_str).unwrap_or("");
+        let stem = document_volume_stem(name, index);
+        let mut id = stem.clone();
+        let mut copy = 2;
+        while !taken.insert(id.clone()) {
+            id = format!("{stem}-{copy}");
+            copy += 1;
+        }
+        let file_name = format!("{id}.nii");
+        let nifti = document_volume_nifti(volume)
+            .map_err(|error| format!("read_document: volume {name:?}: {error}"))?;
+        fs::write(data_dir.join(&file_name), nifti)
+            .map_err(|error| format!("read_document: write {file_name}: {error}"))?;
+
+        // NiiVue draws volume 0 under the rest, so it is the base.
+        let role = if index == 0 { "base" } else { "overlay" };
+        manifest_volumes.push(json!({
+            "id": id,
+            "role": role,
+            "label": name,
+            "data": format!("data/{file_name}"),
+        }));
+        let mut view = json!({ "id": id, "role": role });
+        for key in ["colormap", "opacity", "calMin", "calMax"] {
+            // A number NiiVue couldn't write as JSON (NaN) comes as an object; skip it.
+            if let Some(value) = volume.get(key).filter(|v| v.is_string() || v.is_number()) {
+                view[key] = value.clone();
+            }
+        }
+        view_volumes.push(view);
+    }
+
+    let label = canonical
+        .file_stem()
+        .map(|name| name.to_string_lossy().into_owned());
+    // The dataset takes its name from here, so the window says "Motor Demo",
+    // not "data".
+    let description = json!({ "Name": label, "BIDSVersion": "1.8.0" });
+    fs::write(
+        data_dir.join("dataset_description.json"),
+        description.to_string(),
+    )
+    .map_err(|error| format!("read_document: write dataset_description.json: {error}"))?;
+    Ok(json!({
+        "manifest": {
+            "nvbundle": "nvd",
+            "source": { "datasetName": label },
+            "volumes": manifest_volumes,
+            "view": {
+                "version": 1,
+                // The document's crosshair is a fraction of NiiVue's resliced
+                // volume, which doesn't map back to millimetres here.
+                "scene": { "crosshairPos": null, "clipPlanes": [] },
+                "volumes": view_volumes,
+                "viewMode": "",
+            },
+        },
+        "bundlePath": out_root.display().to_string(),
+        "dataDir": data_dir.display().to_string(),
+        "verification": [],
+        "allVerified": true,
+    }))
+}
+
+/// A CBOR document as the JSON NiiVue would have written for it: typed arrays
+/// (plain bytes, or RFC 8746 tags 64-87) become `{ $ta, b64 }` and numbers JSON
+/// can't hold become `{ $num }`. Only the raw bytes of a typed array are used
+/// here, so every one is called a Uint8Array.
+fn cbor_to_document_json(value: ciborium::Value) -> Value {
+    use base64::Engine;
+    use ciborium::Value as Cbor;
+    let bytes = |bytes: Vec<u8>| {
+        json!({
+            "$ta": "Uint8Array",
+            "b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    };
+    match value {
+        Cbor::Integer(integer) => {
+            let integer = i128::from(integer);
+            i64::try_from(integer)
+                .map(Value::from)
+                .unwrap_or_else(|_| Value::from(integer as f64))
+        }
+        Cbor::Float(float) if float.is_finite() => Value::from(float),
+        Cbor::Float(float) => {
+            json!({ "$num": if float.is_nan() { "NaN" } else if float > 0.0 { "Infinity" } else { "-Infinity" } })
+        }
+        Cbor::Text(text) => Value::String(text),
+        Cbor::Bool(flag) => Value::Bool(flag),
+        Cbor::Null => Value::Null,
+        Cbor::Bytes(raw) => bytes(raw),
+        Cbor::Tag(64..=87, inner) => match *inner {
+            Cbor::Bytes(raw) => bytes(raw),
+            other => cbor_to_document_json(other),
+        },
+        Cbor::Tag(_, inner) => cbor_to_document_json(*inner),
+        Cbor::Array(items) => Value::Array(items.into_iter().map(cbor_to_document_json).collect()),
+        Cbor::Map(entries) => Value::Object(
+            entries
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    let key = match key {
+                        Cbor::Text(text) => text,
+                        Cbor::Integer(integer) => i128::from(integer).to_string(),
+                        _ => return None,
+                    };
+                    Some((key, cbor_to_document_json(value)))
+                })
+                .collect(),
+        ),
+        _ => Value::Null,
+    }
+}
+
+/// A file stem for a document volume: NiiVue names them like
+/// `Overlay / spmMotor.nii.gz L0`, which comes back as `spmMotor`.
+fn document_volume_stem(name: &str, index: usize) -> String {
+    let name = name.rsplit(" / ").next().unwrap_or(name);
+    let name = match name.rsplit_once(" L") {
+        Some((head, frame)) if !frame.is_empty() && frame.bytes().all(|b| b.is_ascii_digit()) => {
+            head
+        }
+        _ => name,
+    };
+    let name = name.trim_end_matches(".gz").trim_end_matches(".nii");
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = stem.trim_matches('-');
+    if stem.is_empty() {
+        format!("volume-{index}")
+    } else {
+        stem.to_string()
+    }
+}
+
+/// A NIfTI-1 file (header, empty extension, voxels) from a document volume's
+/// `data`: NiiVue's parsed header object and the voxel bytes in file order.
+fn document_volume_nifti(volume: &Value) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let data = volume.get("data").ok_or("it has no embedded data")?;
+    let hdr = data.get("hdr").ok_or("it has no header")?;
+    let b64 = data
+        .pointer("/img/b64")
+        .and_then(Value::as_str)
+        .ok_or("it has no voxels")?;
+    let img = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|error| format!("bad voxel data: {error}"))?;
+
+    let num = |key: &str| hdr.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    let nums = |key: &str| -> Vec<f64> {
+        hdr.get(key)
+            .and_then(Value::as_array)
+            .map(|values| values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+            .unwrap_or_default()
+    };
+    let text = |key: &str| {
+        hdr.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let dims = nums("dims");
+    if dims.len() < 4 {
+        return Err("its header has no dimensions".into());
+    }
+    // Little-endian throughout: NiiVue holds the voxels as native typed arrays,
+    // so a big-endian source was already swapped when it was read.
+    let mut out = vec![0u8; 352];
+    let put_i16 = |out: &mut Vec<u8>, at: usize, value: f64| {
+        out[at..at + 2].copy_from_slice(&(value as i16).to_le_bytes())
+    };
+    let put_f32 = |out: &mut Vec<u8>, at: usize, value: f64| {
+        out[at..at + 4].copy_from_slice(&(value as f32).to_le_bytes())
+    };
+    let put_text = |out: &mut Vec<u8>, at: usize, len: usize, value: &str| {
+        let bytes = value.as_bytes();
+        let n = bytes.len().min(len - 1);
+        out[at..at + n].copy_from_slice(&bytes[..n]);
+    };
+    out[0..4].copy_from_slice(&348i32.to_le_bytes());
+    out[38] = b'r';
+    out[39] = num("dim_info") as u8;
+    for (i, value) in dims.iter().take(8).enumerate() {
+        put_i16(&mut out, 40 + 2 * i, *value);
+    }
+    put_f32(&mut out, 56, num("intent_p1"));
+    put_f32(&mut out, 60, num("intent_p2"));
+    put_f32(&mut out, 64, num("intent_p3"));
+    put_i16(&mut out, 68, num("intent_code"));
+    put_i16(&mut out, 70, num("datatypeCode"));
+    put_i16(&mut out, 72, num("numBitsPerVoxel"));
+    put_i16(&mut out, 74, num("slice_start"));
+    for (i, value) in nums("pixDims").iter().take(8).enumerate() {
+        put_f32(&mut out, 76 + 4 * i, *value);
+    }
+    put_f32(&mut out, 108, 352.0);
+    put_f32(&mut out, 112, num("scl_slope"));
+    put_f32(&mut out, 116, num("scl_inter"));
+    put_i16(&mut out, 120, num("slice_end"));
+    out[122] = num("slice_code") as u8;
+    out[123] = num("xyzt_units") as u8;
+    put_f32(&mut out, 124, num("cal_max"));
+    put_f32(&mut out, 128, num("cal_min"));
+    put_f32(&mut out, 132, num("slice_duration"));
+    put_f32(&mut out, 136, num("toffset"));
+    put_text(&mut out, 148, 80, &text("description"));
+    put_text(&mut out, 228, 24, &text("aux_file"));
+    put_i16(&mut out, 252, num("qform_code"));
+    put_i16(&mut out, 254, num("sform_code"));
+    for (i, key) in [
+        "quatern_b",
+        "quatern_c",
+        "quatern_d",
+        "qoffset_x",
+        "qoffset_y",
+        "qoffset_z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        put_f32(&mut out, 256 + 4 * i, num(key));
+    }
+    if let Some(rows) = hdr.get("affine").and_then(Value::as_array) {
+        for (r, row) in rows.iter().take(3).enumerate() {
+            for (c, value) in row.as_array().into_iter().flatten().take(4).enumerate() {
+                put_f32(
+                    &mut out,
+                    280 + 16 * r + 4 * c,
+                    value.as_f64().unwrap_or(0.0),
+                );
+            }
+        }
+    }
+    put_text(&mut out, 328, 16, &text("intent_name"));
+    out[344..348].copy_from_slice(b"n+1\0");
+    out.extend_from_slice(&img);
+    Ok(out)
+}
+
 async fn api_info(State(state): State<AppState>) -> Json<Value> {
     let volumes = lock_recover(&state.volumes).clone();
     Json(json!({
@@ -3990,6 +4306,82 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn document_volume_stem_strips_niivue_decorations() {
+        assert_eq!(document_volume_stem("mni152.nii.gz L0", 0), "mni152");
+        assert_eq!(
+            document_volume_stem("Overlay / spmMotor.nii.gz L0", 1),
+            "spmMotor"
+        );
+        assert_eq!(document_volume_stem("brain L1x.nii", 0), "brain-L1x");
+        assert_eq!(document_volume_stem(" / ", 3), "volume-3");
+    }
+
+    #[test]
+    fn cbor_documents_read_like_json_ones() {
+        use ciborium::Value as Cbor;
+        let cbor = Cbor::Map(vec![
+            (Cbor::Text("calMin".into()), Cbor::Float(3.0)),
+            (Cbor::Text("calMinNeg".into()), Cbor::Float(f64::NAN)),
+            (
+                Cbor::Text("dims".into()),
+                Cbor::Array(vec![Cbor::Integer(3.into())]),
+            ),
+            (Cbor::Text("img".into()), Cbor::Bytes(vec![1, 2])),
+            (
+                Cbor::Text("lut".into()),
+                Cbor::Tag(85, Box::new(Cbor::Bytes(vec![0, 0, 128, 63]))),
+            ),
+        ]);
+        assert_eq!(
+            cbor_to_document_json(cbor),
+            json!({
+                "calMin": 3.0,
+                "calMinNeg": { "$num": "NaN" },
+                "dims": [3],
+                "img": { "$ta": "Uint8Array", "b64": "AQI=" },
+                "lut": { "$ta": "Uint8Array", "b64": "AACAPw==" },
+            })
+        );
+    }
+
+    #[test]
+    fn document_volume_nifti_writes_a_nifti1_header() {
+        use base64::Engine;
+        let volume = json!({
+            "data": {
+                "hdr": {
+                    "dims": [3, 2, 1, 1, 1, 1, 1, 1],
+                    "pixDims": [1, 2, 2, 2, 0, 0, 0, 0],
+                    "datatypeCode": 2,
+                    "numBitsPerVoxel": 8,
+                    "scl_slope": 1,
+                    "sform_code": 2,
+                    "affine": [[2, 0, 0, -1], [0, 2, 0, -2], [0, 0, 2, -3], [0, 0, 0, 1]],
+                },
+                "img": {
+                    "$ta": "Uint8Array",
+                    "b64": base64::engine::general_purpose::STANDARD.encode([7u8, 9]),
+                },
+            },
+        });
+        let nifti = document_volume_nifti(&volume).unwrap();
+        assert_eq!(nifti.len(), 354);
+        assert_eq!(i32::from_le_bytes(nifti[0..4].try_into().unwrap()), 348);
+        assert_eq!(i16::from_le_bytes(nifti[42..44].try_into().unwrap()), 2);
+        assert_eq!(i16::from_le_bytes(nifti[70..72].try_into().unwrap()), 2);
+        assert_eq!(
+            f32::from_le_bytes(nifti[108..112].try_into().unwrap()),
+            352.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(nifti[292..296].try_into().unwrap()),
+            -1.0
+        );
+        assert_eq!(&nifti[344..348], b"n+1\0");
+        assert_eq!(&nifti[352..], &[7, 9]);
     }
 
     #[cfg(unix)]

@@ -24,6 +24,7 @@ import type {
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
+import { attachPointLabels } from '../domain/pointLabels'
 import type { RenderShading } from '../domain/shading'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
@@ -164,10 +165,18 @@ interface NiiVueLike {
     listener: (event: CustomEvent<NiiVueLocation>) => void,
     options?: boolean | AddEventListenerOptions,
   ): void
+  addEventListener?(
+    type: 'sliceTypeChange',
+    listener: (event: CustomEvent<{ sliceType: number }>) => void,
+  ): void
   removeEventListener?(
     type: 'locationChange',
     listener: (event: CustomEvent<NiiVueLocation>) => void,
     options?: boolean | EventListenerOptions,
+  ): void
+  removeEventListener?(
+    type: 'sliceTypeChange',
+    listener: (event: CustomEvent<{ sliceType: number }>) => void,
   ): void
   // Vector annotations (the measure tool). Shapes are drawn by our uikit
   // overlay from annotationScreenShapes, with isAnnotationDrawn off.
@@ -429,6 +438,10 @@ export function NiivueStage({
   // display-only re-applies (which run on a possibly-reordered `layers`) still
   // target the correct volume. `volumeIndexOfLayer` is the single lookup.
   const loadedLayerIdsRef = useRef<string[]>([])
+  // A loaded viewer not yet passed to onViewer. The display effect passes it
+  // once the layers' windows are applied, so an agent never sees a stat
+  // overlay before its threshold.
+  const unannouncedViewerRef = useRef<NiiVueLike | null>(null)
   // Mesh ids in NiiVue's mesh order, and the queue mesh updates run through so
   // a quick add-then-recolor can't interleave with the add.
   const loadedMeshIdsRef = useRef<string[]>([])
@@ -507,8 +520,12 @@ export function NiivueStage({
     let locationListener:
       | ((event: CustomEvent<NiiVueLocation>) => void)
       | null = null
+    let sliceTypeListener:
+      | ((event: CustomEvent<{ sliceType: number }>) => void)
+      | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
+    let detachPointLabels: (() => void) | null = null
 
     // Draw annotations with uikit once its font is in. Core's own annotation
     // draw stays on until then, and stays as the fallback if the font fails.
@@ -528,6 +545,7 @@ export function NiivueStage({
           unregisterAnnotationLayer = register.call(nv, annotationLayer)
           nv.isAnnotationDrawn = false
           setMeasureUnavailable(null)
+          detachPointLabels = attachPointLabels(nv, font)
           nv.drawScene()
         })
         .catch((error: unknown) => {
@@ -590,6 +608,15 @@ export function NiivueStage({
             onLocationChange?.(event.detail)
           }
           nv.addEventListener('locationChange', locationListener)
+          // An agent's set_view changes NiiVue's layout directly. Follow it,
+          // or the next new viewer (any layer change) brings the old one back.
+          sliceTypeListener = (event) => {
+            const mode = VIEW_MODES.find(
+              (candidate) => candidate.sliceType === event.detail.sliceType,
+            )
+            if (!cancelled && mode) onViewModeChange(mode.id)
+          }
+          nv.addEventListener('sliceTypeChange', sliceTypeListener)
         }
         attachAnnotationLayer(nv)
         const attachedCanvas = activeCanvasFor(nv, canvas)
@@ -609,7 +636,10 @@ export function NiivueStage({
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
-        if (!cancelled) onViewer?.(nv)
+        if (!cancelled) {
+          if (nv.setVolume) unannouncedViewerRef.current = nv
+          else onViewer?.(nv)
+        }
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
@@ -632,10 +662,15 @@ export function NiivueStage({
       // Release the overlay's GPU resources before the instance goes.
       unregisterAnnotationLayer?.()
       annotationLayer?.destroy()
+      detachPointLabels?.()
       if (localNv && nvRef.current === localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
         }
+        if (sliceTypeListener) {
+          localNv.removeEventListener?.('sliceTypeChange', sliceTypeListener)
+        }
+        unannouncedViewerRef.current = null
         onViewer?.(null)
         localNv.destroy?.()
         nvRef.current = null
@@ -702,8 +737,13 @@ export function NiivueStage({
         // No volume loaded yet (or backend lacks setVolume); the attach effect
         // already loads with current display options, so this is safe to ignore.
       })
+      .finally(() => {
+        if (unannouncedViewerRef.current !== nv) return
+        unannouncedViewerRef.current = null
+        onViewer?.(nv)
+      })
     onResolvedWindows?.(resolved)
-  }, [layers, loadedVersion, onResolvedWindows])
+  }, [layers, loadedVersion, onResolvedWindows, onViewer])
 
   // Report each layer's world-space bounding box once loaded, so the panel can
   // flag overlays that don't share the base's space.

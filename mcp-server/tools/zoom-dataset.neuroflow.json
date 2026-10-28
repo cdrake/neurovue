@@ -1,0 +1,69 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/zoom-dataset",
+  "version": "1.0.0",
+  "description": "Zooms the dataset pane of a NeuroVue window, where each volume is a thumbnail, and can center one volume's thumbnail. It does not change the viewer.",
+  "inputs": {
+    "zoom": {
+      "type": "core:number",
+      "description": "The pane's zoom, from 0.5 to 4; 1 fits the thumbnails to the pane.",
+      "optional": true
+    },
+    "volume": {
+      "type": "core:string",
+      "description": "A volume id from the dataset tool, whose thumbnail to center. It must be listed under the current filter.",
+      "optional": true
+    }
+  },
+  "outputs": {
+    "zoom": {
+      "type": "core:number",
+      "description": "The pane's zoom now."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "zoom_dataset",
+      "title": "Zoom the dataset's thumbnails",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Show the person one volume's thumbnail up close before opening it."
+      ],
+      "avoidWhen": [
+        {
+          "when": "You want to zoom the viewer's slices; set_viewport does that."
+        }
+      ],
+      "effects": [
+        "Switches the window out of Express to the dataset view, so its dataset pane shows; set_window_mode with express switches it back."
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "is filtered out"
+          },
+          "meaning": "The volume is in the dataset but the current filter hides it.",
+          "remedy": "Call filter_dataset with a filter that keeps it, or with none.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "No volume"
+          },
+          "meaning": "The id is not one of the open dataset's volumes.",
+          "remedy": "Call dataset and use one of the ids it lists.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

@@ -132,6 +132,7 @@ NiiVue repo maintains, plus NeuroVue's own:
 | `load_surfaces`, `load_tracts` | Add surface meshes or tracts (`.trk`, `.tck`, `.trx`) |
 | `dataset`, `select_volume` | List the dataset's volumes and switch between them |
 | `open_window` | Opens another window and returns its tab id |
+| `focus_window` | Brings a window to the front, which `screenshot` needs |
 
 Agents open files by path, with no file picker, but only inside the allowed
 data roots: the home folder unless `roots` in `mcp.json` (next to the on/off
@@ -152,6 +153,8 @@ Each NeuroVue window connects to the server as one tab with its own dataset, so
 an agent can open several windows and drive each by its tab id. `tauri dev` and
 `tauri build` compile the server with `bun build --compile` into the
 `neurovue-mcp` sidecar; `bun run build-mcp-server --force` rebuilds it.
+[docs/mcp.md](docs/mcp.md) describes how the NiiVue and NeuroVue halves fit
+together, and [demo/codex](demo/codex/README.md) has Codex drive two windows.
 
 ## Reference Contract
 

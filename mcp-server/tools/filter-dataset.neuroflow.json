@@ -1,0 +1,62 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "org.neurovue/filter-dataset",
+  "version": "1.0.0",
+  "description": "Filters the volumes a NeuroVue window lists in its dataset pane, by text and by image type or role, and shows the pane. Each call replaces the filter; a call with no filters lists every volume again.",
+  "inputs": {
+    "query": {
+      "type": "core:string",
+      "description": "Text a volume's name or metadata must contain, such as a subject (\"sub-01\") or a task.",
+      "optional": true
+    },
+    "image_types": {
+      "type": "core:array<core:string>",
+      "description": "Image types to keep, as the dataset tool reports them, such as \"T1w\", \"T2w\" or \"BOLD\".",
+      "optional": true
+    },
+    "roles": {
+      "type": "core:array<core:string>",
+      "description": "Roles to keep: \"Source\", \"Derived\" or \"Overlay\".",
+      "optional": true
+    }
+  },
+  "outputs": {
+    "listed": {
+      "type": "core:json",
+      "description": "The volumes the filter keeps, out of how many, with the image types and roles the dataset has and how many of each."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "filter_dataset",
+      "title": "Filter the dataset's volumes",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Narrow a large dataset to the volumes of one type, subject or task, so the person sees just those.",
+        "Learn which image types and roles a dataset has."
+      ],
+      "effects": [
+        "Switches the window out of Express to the dataset view, so its dataset pane shows; set_window_mode with express switches it back. The viewer is not reloaded."
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "No volume has"
+          },
+          "meaning": "An image type or role is not one the dataset has.",
+          "remedy": "Use one of the values the error lists.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

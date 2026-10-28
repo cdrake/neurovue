@@ -92,6 +92,7 @@ import {
   exportDatasetBundle,
   formatBundleBytes,
   isBundlePath,
+  isDocumentPath,
   pickBundle,
   readBundle,
   shareViewViaAirDrop,
@@ -130,7 +131,10 @@ import {
 } from './domain/uiMode'
 import {
   formatVoxelSpacing,
+  volumeFacetCounts,
   volumeImageTypeDisplay,
+  volumeImageTypeLabel,
+  volumeRoleLabel,
   volumeSession,
   volumeSubject,
   volumeSummary,
@@ -144,7 +148,7 @@ import {
   useRecentDatasets,
 } from './hooks/useRecentDatasets'
 import { useTerminalDock } from './hooks/useTerminalDock'
-import { useVolumeFilters } from './hooks/useVolumeFilters'
+import { filterVolumes, useVolumeFilters } from './hooks/useVolumeFilters'
 import { useVolumeMetadata } from './hooks/useVolumeMetadata'
 
 const MIN_SPLIT = 34
@@ -232,6 +236,15 @@ interface LayerSettings {
 // Phone-width viewport: the workbench collapses to a single full-screen viewer
 // with the dataset/inspector panels as slide-in drawers (see the `max-width:
 // 700px` block in styles.css). iPad (~desktop width) keeps the 3-column layout.
+/** Resolves after `count` animation frames, once React's updates have laid out. */
+function nextFrames(count: number): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (left: number) =>
+      left === 0 ? resolve() : requestAnimationFrame(() => step(left - 1))
+    step(count)
+  })
+}
+
 function isPhoneViewport(): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -350,6 +363,10 @@ export function App(): JSX.Element {
     [],
   )
   const [overlayIds, setOverlayIds] = useState<Set<string>>(() => new Set())
+  // The base volume an agent removed: nothing is shown until a volume is
+  // picked again, rather than falling back to the dataset's first.
+  const [removedBaseId, setRemovedBaseId] = useState<string | null>(null)
+  const shownBase = selected?.id === removedBaseId ? null : selected
   // Phones land on a 2D axial slice (clearer on a small screen); desktop/iPad
   // reopen the view the user last picked, else the multiplanar default.
   const [viewMode, setViewMode] = useState<ViewModeId>(() =>
@@ -512,6 +529,7 @@ export function App(): JSX.Element {
     toggleFormat,
     toggleDtype,
     clearFilters,
+    setFilters,
   } = useVolumeFilters(items)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; dataset-scoped filters reset only when the backing dataset changes.
@@ -521,7 +539,7 @@ export function App(): JSX.Element {
 
   const { metadata, metadataStatus } = useVolumeMetadata(selected)
   const renderLayers = useMemo<NiivueRenderLayer[]>(() => {
-    if (!selected) return []
+    if (!selected || selected.id === removedBaseId) return []
 
     const layers: NiivueRenderLayer[] = [
       {
@@ -601,7 +619,13 @@ export function App(): JSX.Element {
     }
 
     return layers
-  }, [atlasId, items, layerSettings, overlayIds, selected])
+  }, [atlasId, items, layerSettings, overlayIds, removedBaseId, selected])
+
+  // A new dataset, or the same one reopened, shows its base again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: items is the trigger.
+  useEffect(() => {
+    setRemovedBaseId(null)
+  }, [items])
 
   useEffect(() => {
     const validIds = new Set(items.map((item) => item.id))
@@ -695,6 +719,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     setLocationReadout(null)
   }, [renderLayers])
+
+  function showVolume(itemId: string): void {
+    setRemovedBaseId(null)
+    setSelectedId(itemId)
+  }
 
   function toggleOverlayLayer(itemId: string): void {
     setOverlayIds((current) => {
@@ -937,11 +966,22 @@ export function App(): JSX.Element {
   // Agent calls that reload the viewer wait here for the next one.
   const viewerRef = useRef<unknown>(null)
   const viewerWaitersRef = useRef<Array<() => void>>([])
+  const viewerGoneWaitersRef = useRef<Array<() => void>>([])
   const handleViewer = useCallback((nv: unknown) => {
     viewerRef.current = nv
-    if (!nv) return
-    for (const resolve of viewerWaitersRef.current.splice(0)) resolve()
+    const waiters = nv ? viewerWaitersRef : viewerGoneWaitersRef
+    for (const resolve of waiters.current.splice(0)) resolve()
   }, [])
+  /** Runs `change`, then waits (up to 5 s) for the viewer it ends to go. */
+  async function untilViewerGone(change: () => Promise<void>): Promise<void> {
+    if (!viewerRef.current) return change()
+    const gone = new Promise<void>((resolve) => {
+      viewerGoneWaitersRef.current.push(resolve)
+      setTimeout(resolve, 5_000)
+    })
+    await change()
+    await gone
+  }
   /** Runs `change`, then waits (up to 30 s) for the viewer it causes to load. */
   async function untilNextViewer(change: () => Promise<void>): Promise<void> {
     const loaded = new Promise<void>((resolve) => {
@@ -950,6 +990,25 @@ export function App(): JSX.Element {
     })
     await change()
     await loaded
+  }
+  // Express and a maximized viewer hide the dataset pane; an agent browsing
+  // the dataset shows it, so the person sees what it does.
+  function showDatasetPane(): void {
+    setUiMode('full')
+    setIsRenderMaximized(false)
+    setIsFileListCollapsed(false)
+  }
+  /** A volume as agents see it, with the facets filter_dataset takes. */
+  function agentVolume(item: DesktopItem) {
+    return {
+      id: item.id,
+      label: item.label,
+      imageType: volumeImageTypeLabel(item),
+      subject: volumeSubject(item),
+      shape: item.shape,
+      spacing: item.spacing,
+      shown: item.id === shownBase?.id,
+    }
   }
   const agent = useAgentClient({
     viewer: () => viewerRef.current,
@@ -969,22 +1028,77 @@ export function App(): JSX.Element {
       dataset: () => ({
         name: datasetName || null,
         root: datasetRoot ?? null,
-        volumes: items.map((item) => ({
-          id: item.id,
-          label: item.label,
-          shape: item.shape,
-          spacing: item.spacing,
-          shown: item.id === selected?.id,
-        })),
+        volumes: items.map(agentVolume),
       }),
+      filterDataset: (filters) => {
+        if (items.length === 0) {
+          throw new Error('No dataset is open to filter; call open_path first.')
+        }
+        const facets = {
+          imageTypes: volumeFacetCounts(items, volumeImageTypeLabel),
+          roles: volumeFacetCounts(items, volumeRoleLabel),
+        }
+        for (const [key, counts] of Object.entries(facets)) {
+          const unknown = filters[key as keyof typeof facets]?.filter(
+            (value) => !counts.has(value),
+          )
+          if (unknown?.length) {
+            throw new Error(
+              `No volume has ${key === 'roles' ? 'role' : 'image type'} ${unknown.join(', ')}; ` +
+                `this dataset has ${[...counts.keys()].join(', ')}.`,
+            )
+          }
+        }
+        setFilters(filters)
+        showDatasetPane()
+        return {
+          listed: filterVolumes(items, filters).map(agentVolume),
+          of: items.length,
+          imageTypes: Object.fromEntries(facets.imageTypes),
+          roles: Object.fromEntries(facets.roles),
+        }
+      },
+      zoomDataset: async ({ zoom, volume }) => {
+        if (
+          volume !== undefined &&
+          !filteredItems.some((item) => item.id === volume)
+        ) {
+          throw new Error(
+            items.some((item) => item.id === volume)
+              ? `Volume ${volume} is filtered out; change the filter with filter_dataset first.`
+              : `No volume ${volume} in this dataset; dataset lists them.`,
+          )
+        }
+        const next =
+          zoom === undefined
+            ? desktopZoom
+            : Math.min(Math.max(zoom, MIN_DESKTOP_ZOOM), MAX_DESKTOP_ZOOM)
+        showDatasetPane()
+        setDesktopZoom(next)
+        if (volume !== undefined) {
+          // Center the tile once the pane and the new zoom have laid out.
+          await nextFrames(3)
+          document
+            .querySelector(`[data-volume-id="${CSS.escape(volume)}"]`)
+            ?.scrollIntoView({ block: 'center', inline: 'center' })
+        }
+        return { zoom: next }
+      },
+      setWindowMode: async (mode) => {
+        if (mode === 'dataset') showDatasetPane()
+        else setUiMode('express')
+        // Let the viewer resize before a screenshot.
+        await nextFrames(3)
+        return { mode }
+      },
       selectVolume: async (id) => {
         if (!items.some((item) => item.id === id)) {
           throw new Error(
             `No volume ${id} in this dataset; dataset lists them.`,
           )
         }
-        if (id === selected?.id) return
-        await untilNextViewer(async () => setSelectedId(id))
+        if (id === shownBase?.id) return
+        await untilNextViewer(async () => showVolume(id))
       },
       addOverlay: async (path) => {
         if (items.length === 0) {
@@ -995,6 +1109,27 @@ export function App(): JSX.Element {
         const result = await addOverlayVolumeByPath(path)
         await untilNextViewer(() => placeOverlay(result))
         return { id: result.id, label: result.label }
+      },
+      removeVolumes: async (index) => {
+        const layers = index === 'all' ? renderLayers : [renderLayers[index]]
+        if (layers.some((layer) => !layer)) {
+          throw new Error(
+            `No volume ${index} is shown; there are ${renderLayers.length}.`,
+          )
+        }
+        // Overlays and the atlas are drawn over the base, so they go with it.
+        const removesBase = layers.some((layer) => layer.kind === 'base')
+        const removed = removesBase ? renderLayers : layers
+        const takeOff = async () => {
+          for (const layer of removed) {
+            if (layer.kind === 'base') setRemovedBaseId(layer.item.id)
+            else if (layer.isAtlas) changeAtlasLayer('')
+            else toggleOverlayLayer(layer.item.id)
+          }
+        }
+        // An empty stack makes no viewer to wait for, only the old one to go.
+        await (removesBase ? untilViewerGone : untilNextViewer)(takeOff)
+        return { removed: removed.map((layer) => layer.item.label) }
       },
       addMeshes: async (paths) => {
         const added = await Promise.all(
@@ -1036,12 +1171,13 @@ export function App(): JSX.Element {
   }
 
   // A bundle must be re-verified and its view replayed, not opened as a plain
-  // directory.
-  /** False when a dataset failed to open; bundle imports report their own errors. */
+  // directory. A NiiVue document opens the same way.
+  /** False when the dataset or bundle failed to open; the status line says why. */
   async function openRecentEntry(path: string): Promise<boolean> {
-    if (!isBundlePath(path)) return openRecentDataset(path)
-    await importBundleFromPath(path)
-    return true
+    if (!isBundlePath(path) && !isDocumentPath(path)) {
+      return openRecentDataset(path)
+    }
+    return importBundleFromPath(path)
   }
 
   // Like VS Code reopening its last folder: once startup finds nothing to open
@@ -1067,15 +1203,16 @@ export function App(): JSX.Element {
   }, [isStartupResolved])
 
   /** Re-open a bundle straight from recents, skipping the file dialog. */
-  async function importBundleFromPath(path: string): Promise<void> {
-    if (isImportingBundleRef.current || isOpeningDataset) return
+  async function importBundleFromPath(path: string): Promise<boolean> {
+    if (isImportingBundleRef.current || isOpeningDataset) return false
 
     isImportingBundleRef.current = true
     setIsImportingBundle(true)
     try {
-      await runBundleImport(path)
+      return await runBundleImport(path)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
+      return false
     } finally {
       isImportingBundleRef.current = false
       setIsImportingBundle(false)
@@ -1083,12 +1220,13 @@ export function App(): JSX.Element {
   }
 
   // Verify a `.nvbundle`, open its extracted volumes as the working dataset, and
-  // replay the recorded view. Throws; callers own the importing flag.
-  async function runBundleImport(path: string): Promise<void> {
+  // replay the recorded view. Throws; callers own the importing flag. False
+  // when nothing opened, with the reason in the status line.
+  async function runBundleImport(path: string): Promise<boolean> {
     const bundle = await readBundle(path)
     if (bundle.manifest?.nvbundle == null) {
       setStatus('This file is not a NeuroVue bundle.', 'error')
-      return
+      return false
     }
 
     // Load the bundle's copied volumes as the working dataset (the data/ dir
@@ -1096,14 +1234,16 @@ export function App(): JSX.Element {
     // record the bundle itself in recents — `dataDir` is a temp extraction.
     // A failed open already put its error in the status line; stop here so the
     // previous dataset isn't reported as "imported" over it.
-    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) return
+    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) {
+      return false
+    }
     const nextManifest = await refreshDesktopManifestData()
     const loadedIds = new Set(
       (nextManifest?.items ?? []).map((item) => item.id),
     )
     if (loadedIds.size === 0) {
       // openRecentDataset already surfaced the failure via setStatus.
-      return
+      return false
     }
 
     // Map each recorded (original-dataset) id → its freshly-registered id.
@@ -1160,10 +1300,12 @@ export function App(): JSX.Element {
       failures.length > 0
         ? ` ⚠ ${failures.length} file(s) failed the integrity check`
         : ''
+    const source = isDocumentPath(path) ? 'document' : 'bundle'
     setStatus(
-      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from bundle.${integrity}`,
+      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from ${source}.${integrity}`,
       failures.length > 0 ? 'error' : 'success',
     )
+    return true
   }
 
   useEffect(() => {
@@ -1622,7 +1764,7 @@ export function App(): JSX.Element {
                   selectedRoles={selectedRoles}
                   onClearFilters={clearFilters}
                   onQueryChange={setQuery}
-                  onSelect={(item) => setSelectedId(item.id)}
+                  onSelect={(item) => showVolume(item.id)}
                   onToggleDtype={toggleDtype}
                   onToggleFormat={toggleFormat}
                   onToggleImageType={toggleImageType}
@@ -1649,7 +1791,7 @@ export function App(): JSX.Element {
                   selected={selected}
                   zoom={desktopZoom}
                   onZoom={setDesktopZoom}
-                  onSelect={(item) => setSelectedId(item.id)}
+                  onSelect={(item) => showVolume(item.id)}
                 />
               </section>
 
@@ -1821,7 +1963,7 @@ export function App(): JSX.Element {
                       layerExtents={layerExtents}
                       resolvedWindows={resolvedWindows}
                       overlayIds={overlayIds}
-                      selected={selected}
+                      selected={shownBase}
                       onAtlasChange={changeAtlasLayer}
                       onLayerColormapChange={changeLayerColormap}
                       onLayerHiddenChange={setLayerHidden}

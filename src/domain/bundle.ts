@@ -253,20 +253,39 @@ export function isBundlePath(path: string): boolean {
   return path.toLowerCase().endsWith(`.${BUNDLE_EXTENSION}`)
 }
 
-/** Prompt for a `.nvbundle` file to open. Returns null if cancelled. */
+const DOCUMENT_EXTENSION = 'nvd'
+
+/** Whether `path` names a NiiVue document (`.nvd`), which opens like a bundle. */
+export function isDocumentPath(path: string): boolean {
+  return path.toLowerCase().endsWith(`.${DOCUMENT_EXTENSION}`)
+}
+
+/** Prompt for a bundle or NiiVue document to open. Returns null if cancelled. */
 export async function pickBundle(): Promise<string | null> {
   const selected = await open({
     directory: false,
     multiple: false,
     title: 'Open NeuroVue bundle',
-    filters: [{ name: 'NeuroVue bundle', extensions: [BUNDLE_EXTENSION] }],
+    filters: [
+      {
+        name: 'NeuroVue bundle or NiiVue document',
+        extensions: [BUNDLE_EXTENSION, DOCUMENT_EXTENSION],
+      },
+    ],
   })
   return typeof selected === 'string' ? selected : null
 }
 
-/** Read + hash-verify a bundle's manifest (no volumes loaded yet). */
+/**
+ * Read + hash-verify a bundle's manifest (no volumes loaded yet). A NiiVue
+ * document reads as a bundle too: its embedded volumes are written out as
+ * files, with its colormaps, opacities and windows as the view.
+ */
 export async function readBundle(path: string): Promise<BundleReadResult> {
-  return invoke<BundleReadResult>('read_bundle_manifest', { path })
+  const command = isDocumentPath(path)
+    ? 'read_document_manifest'
+    : 'read_bundle_manifest'
+  return invoke<BundleReadResult>(command, { path })
 }
 
 /**

@@ -93,6 +93,40 @@ const neurovue: Extension = {
 
     register(
       server,
+      DOCUMENTS.filterDataset,
+      {
+        query: z.string(),
+        image_types: z.array(z.string().min(1)),
+        roles: z.array(z.string().min(1)),
+      },
+      ({ tab, ...filters }) =>
+        context.answer('neurovue.filter_dataset', filters, {
+          tab,
+          lead: (result) => {
+            const { listed, of } = result as { listed: unknown[]; of: number }
+            return `The dataset pane lists ${listed.length} of ${of} volumes.`
+          },
+        }),
+    )
+
+    register(
+      server,
+      DOCUMENTS.zoomDataset,
+      { zoom: z.number().min(0.5).max(4), volume: z.string().min(1) },
+      ({ tab, ...options }) =>
+        context.answer('neurovue.zoom_dataset', options, { tab }),
+    )
+
+    register(
+      server,
+      DOCUMENTS.setWindowMode,
+      { mode: z.enum(['express', 'dataset']) },
+      ({ tab, mode }) =>
+        context.answer('neurovue.set_window_mode', { mode }, { tab }),
+    )
+
+    register(
+      server,
       DOCUMENTS.addOverlayPath,
       { path: z.string().min(1) },
       ({ tab, path }) =>
@@ -141,6 +175,10 @@ const neurovue: Extension = {
         )
       },
     )
+
+    register(server, DOCUMENTS.focusWindow, {}, ({ tab }) =>
+      context.answer('neurovue.focus_window', {}, { tab }),
+    )
   },
 }
 
@@ -158,15 +196,18 @@ const options = {
     'NeuroVue is a desktop neuroimaging viewer. Each of its windows is one tab here, with its own ' +
     'dataset; list_tabs names them, and every tool takes `tab` to pick one. To show data from ' +
     'this computer, give its absolute path: open_path opens a dataset (a BIDS or other folder, ' +
-    'a NIfTI volume or a .nvbundle), add_overlay_path lays a volume over it, and load_surfaces ' +
+    'a NIfTI volume, a .nvbundle or a saved .nvd document), add_overlay_path lays a volume over it, and load_surfaces ' +
     'and load_tracts add meshes. dataset lists the volumes and select_volume switches between ' +
-    `them. Paths must be inside ${
+    'them; filter_dataset narrows the dataset pane to some of them, zoom_dataset zooms its ' +
+    'thumbnails, and set_window_mode switches between that dataset view and Express, the ' +
+    `viewer alone. Paths must be inside ${
       ROOTS.length ? ROOTS.join(', ') : 'the folders the person allows'
     }. ` +
     'load_volume, add_overlay and load_mesh only reach the URLs NeuroVue itself serves, not the ' +
     'internet or the disk, and what they add is dropped when NeuroVue reloads the viewer (on ' +
     'select_volume, open_path or add_overlay_path). To compare datasets side by side, call ' +
-    'open_window and drive each window by its tab id. set_instances is unrelated to windows: it ' +
+    'open_window and drive each window by its tab id; focus_window brings one to the front so ' +
+    'the person sees it, and screenshot needs that. set_instances is unrelated to windows: it ' +
     'draws copies of a volume inside one viewer.',
 }
 

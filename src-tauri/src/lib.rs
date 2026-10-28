@@ -338,6 +338,16 @@ async fn read_bundle_manifest(path: String) -> Result<serde_json::Value, String>
         .map_err(|error| format!("read_bundle_manifest: join error: {error}"))?
 }
 
+/// Open a NiiVue document (`.nvd`): its embedded volumes become `.nii` files,
+/// returned in `read_bundle_manifest`'s shape.
+#[tauri::command]
+async fn read_document_manifest(path: String) -> Result<serde_json::Value, String> {
+    let path = normalize_local_path(&path);
+    tauri::async_runtime::spawn_blocking(move || volumetric_server::read_document(Path::new(&path)))
+        .await
+        .map_err(|error| format!("read_document_manifest: join error: {error}"))?
+}
+
 /// Surface mesh formats NiiVue reads (its `mesh/readers`), lower-case. FreeSurfer
 /// surfaces are named by their type (`lh.pial`), so those count as extensions.
 const MESH_EXTENSIONS: &[&str] = &[
@@ -607,6 +617,7 @@ pub fn run() {
             read_mesh_file,
             export_dataset_bundle,
             read_bundle_manifest,
+            read_document_manifest,
             share_view_via_airdrop,
             niimath::validate_niimath_mask_path,
             niimath::run_niimath_task,
@@ -618,7 +629,8 @@ pub fn run() {
             terminal::inspect_python_interpreter,
             mcp::mcp_status,
             mcp::agent_resolve_path,
-            mcp::open_viewer_window
+            mcp::open_viewer_window,
+            mcp::focus_window
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
