@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codex drives two NeuroVue windows over MCP: it loads data into each,
+# Codex drives three NeuroVue windows over MCP: it loads data into each,
 # switches between them, and takes a screenshot of each. See README.md.
 #
 #   demo/codex/run.sh                  # uses Codex's configured model
@@ -10,6 +10,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 url="http://127.0.0.1:${NEUROVUE_MCP_PORT:-4242}/mcp"
 data="${NEUROVUE_DEMO_DIR:-$HOME/NeuroVue-demo}"
 images=https://raw.githubusercontent.com/niivue/niivue/main/packages/niivue/demos/images
+more=https://raw.githubusercontent.com/niivue/niivue-demo-images/main
 files=(mni152.nii.gz spmMotor.nii.gz BrainMesh_ICBM152.lh.mz3 dpsv.trx)
 
 if ! command -v codex >/dev/null; then
@@ -33,6 +34,29 @@ for file in "${files[@]}"; do
     curl -fsSL -o "$data/$file" "$images/$file"
   fi
 done
+
+# A small BIDS dataset to filter and browse, from NiiVue's demo images under
+# BIDS names, so each volume gets an image type and a subject.
+bids=(
+  "sub-01/anat/sub-01_T1w.nii.gz $more/chris_t1.nii.gz"
+  "sub-01/anat/sub-01_T2w.nii.gz $more/chris_t2.nii.gz"
+  "sub-01/anat/sub-01_PDw.nii.gz $more/chris_PD.nii.gz"
+  "sub-01/anat/sub-01_angio.nii.gz $more/chris_MRA.nii.gz"
+  "sub-01/func/sub-01_task-pitch_bold.nii.gz $more/fmri_pitch.nii.gz"
+  "sub-02/anat/sub-02_T1w.nii.gz $images/mni152.nii.gz"
+  "sub-02/anat/sub-02_FLAIR.nii.gz $images/FLAIR.nii.gz"
+  "sub-02/perf/sub-02_asl.nii.gz $images/pcasl.nii.gz"
+)
+for entry in "${bids[@]}"; do
+  read -r file source <<<"$entry"
+  if [ ! -s "$data/bids/$file" ]; then
+    echo "Downloading bids/$file"
+    mkdir -p "$(dirname "$data/bids/$file")"
+    curl -fsSL -o "$data/bids/$file" "$source"
+  fi
+done
+printf '{"Name": "NeuroVue demo", "BIDSVersion": "1.10.0"}\n' \
+  >"$data/bids/dataset_description.json"
 
 # Reuse the Codex MCP server already pointed at NeuroVue, if any, so its tools
 # aren't listed twice; otherwise add one for this run only.

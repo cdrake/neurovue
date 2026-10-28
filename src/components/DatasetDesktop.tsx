@@ -270,6 +270,7 @@ export function DatasetDesktop({
           {layoutItems.map((item) => (
             <button
               className={desktopTileClassName(item, selected, derivedSourceId)}
+              data-volume-id={item.id}
               key={item.id}
               onClick={() => onSelect(item)}
               style={worldRectStyle(item.bounds, layoutWorld)}

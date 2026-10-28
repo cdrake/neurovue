@@ -8,6 +8,8 @@ The demo files are in `{{DATA}}`:
 - `spmMotor.nii.gz`: a motor-task statistical map in the same space
 - `BrainMesh_ICBM152.lh.mz3`: a left-hemisphere surface
 - `dpsv.trx`: a tractogram
+- `bids`: a small BIDS dataset of two subjects, with T1w, T2w, PDw, angio,
+  FLAIR, BOLD and ASL volumes
 
 Before each numbered step, say in one short sentence what you are about to
 show.
@@ -62,8 +64,18 @@ show.
    - `open_path` with `{{DOCUMENT}}`, which brings back the template and the
      overlay with its colormap and threshold
    - `screenshot`
-8. `use_tab` with A, so A answers later calls.
+8. Open a third window, C, with `open_window`, titled "Codex demo: dataset".
+   In tab C:
+   - `focus_window`
+   - `open_path` with the `bids` folder
+   - `filter_dataset` with `image_types` ["T1w"], so the dataset pane lists
+     only the T1-weighted volumes
+   - `zoom_dataset` with `zoom` 2.5 and `volume` set to sub-01's T1w id, from
+     what `filter_dataset` returned, so its thumbnail fills the pane
+   - `select_volume` with that id, to show it in the viewer
+   - `set_view` to the multiplanar layout, and `screenshot`
+9. `use_tab` with A, so A answers later calls.
 
 If a call fails, read the advice it returns, fix that one step and go on. Don't
-start over. Finish with a short summary: what each window shows, and where the
+start over. Finish with a short summary: what each of the three windows shows, and where the
 crosshair in A ended up, in MNI millimetres.

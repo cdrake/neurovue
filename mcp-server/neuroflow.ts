@@ -9,12 +9,14 @@ import type { ToolReply } from '@niivue/nv-mcp/server'
 import type { ZodType } from 'zod'
 import addOverlayPath from './tools/add-overlay-path.neuroflow.json'
 import dataset from './tools/dataset.neuroflow.json'
+import filterDataset from './tools/filter-dataset.neuroflow.json'
 import focusWindow from './tools/focus-window.neuroflow.json'
 import loadSurfaces from './tools/load-surfaces.neuroflow.json'
 import loadTracts from './tools/load-tracts.neuroflow.json'
 import openPath from './tools/open-path.neuroflow.json'
 import openWindow from './tools/open-window.neuroflow.json'
 import selectVolume from './tools/select-volume.neuroflow.json'
+import zoomDataset from './tools/zoom-dataset.neuroflow.json'
 
 interface Failure {
   match: { exitCode?: number; contains?: string }
@@ -51,6 +53,8 @@ export const DOCUMENTS = {
   openPath,
   dataset,
   selectVolume,
+  filterDataset,
+  zoomDataset,
   addOverlayPath,
   loadSurfaces,
   loadTracts,

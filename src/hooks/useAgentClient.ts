@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useRef, useState } from 'react'
 import { setPointLabels } from '../domain/pointLabels'
+import type { VolumeFilterValues } from './useVolumeFilters'
 
 /** The agent server's state, as `mcp_status` and the `neurovue-mcp` event report it. */
 export interface AgentServerStatus {
@@ -17,6 +18,13 @@ export interface NeuroVueAgentActions {
   openPath(path: string): Promise<void>
   dataset(): Record<string, unknown>
   selectVolume(id: string): Promise<void>
+  /** Sets the dataset pane's filter and returns the volumes it lists. */
+  filterDataset(filters: VolumeFilterValues): Record<string, unknown>
+  /** Zooms the dataset pane, centering a volume's tile when one is given. */
+  zoomDataset(options: {
+    zoom?: number
+    volume?: string
+  }): Promise<{ zoom: number }>
   /** Adds a volume over every volume of the dataset; resolves once it shows. */
   addOverlay(path: string): Promise<{ id: string; label: string }>
   /** Adds surfaces or tracts to the meshes shown and returns their names. */
@@ -189,6 +197,17 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
       return { added: await actions().addMeshes(paths) }
     },
     'neurovue.dataset': async () => actions().dataset(),
+    'neurovue.filter_dataset': async (params) =>
+      actions().filterDataset({
+        query: typeof params.query === 'string' ? params.query : undefined,
+        imageTypes: stringList(params, 'image_types'),
+        roles: stringList(params, 'roles'),
+      }),
+    'neurovue.zoom_dataset': async (params) =>
+      actions().zoomDataset({
+        zoom: typeof params.zoom === 'number' ? params.zoom : undefined,
+        volume: typeof params.volume === 'string' ? params.volume : undefined,
+      }),
     'neurovue.select_volume': async (params) => {
       await actions().selectVolume(stringParam(params, 'id'))
       return actions().dataset()
@@ -264,6 +283,21 @@ function volumeIndex(volume: unknown, viewer: unknown): number {
       .map((shown, index) => `${index} "${shown.name}"`)
       .join(', ')}.`,
   )
+}
+
+function stringList(
+  params: Record<string, unknown>,
+  key: string,
+): string[] | undefined {
+  const value = params[key]
+  if (value === undefined) return undefined
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== 'string')
+  ) {
+    throw new Error(`${key} must be a list of strings.`)
+  }
+  return value
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {

@@ -19,7 +19,10 @@ following a script ([prompt.md](prompt.md)). The person watches it happen:
 6. It saves A's scene as a NiiVue document in `~/Downloads`, empties the
    window, and opens the document again: the template and the overlay come
    back with the same colormap and threshold.
-7. It makes A the tab later calls go to.
+7. **Window C**: opens a third window, "Codex demo: dataset", with a small
+   BIDS dataset, filters its dataset pane to the T1-weighted volumes, zooms
+   in on sub-01's thumbnail, and shows that volume in the viewer.
+8. It makes A the tab later calls go to.
 
 Each switch is a `focus_window` call, so the window comes to the front as
 Codex starts working in it. Every call names its `tab`.
@@ -43,7 +46,8 @@ The script:
 - stops early if NeuroVue's agent server isn't answering at
   `http://127.0.0.1:4242/mcp`.
 - downloads the four demo files from the NiiVue repo into `~/NeuroVue-demo`,
-  once. Agents can only open files inside the allowed data roots, which is the
+  once, and lays out eight more from NiiVue's demo images as a BIDS dataset
+  in `~/NeuroVue-demo/bids`. Agents can only open files inside the allowed data roots, which is the
   home folder unless `roots` in NeuroVue's `mcp.json` lists others. If you set
   `roots`, put the demo folder inside one of them.
 - reuses the Codex MCP server already pointed at NeuroVue, such as

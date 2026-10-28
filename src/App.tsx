@@ -131,7 +131,10 @@ import {
 } from './domain/uiMode'
 import {
   formatVoxelSpacing,
+  volumeFacetCounts,
   volumeImageTypeDisplay,
+  volumeImageTypeLabel,
+  volumeRoleLabel,
   volumeSession,
   volumeSubject,
   volumeSummary,
@@ -145,7 +148,7 @@ import {
   useRecentDatasets,
 } from './hooks/useRecentDatasets'
 import { useTerminalDock } from './hooks/useTerminalDock'
-import { useVolumeFilters } from './hooks/useVolumeFilters'
+import { filterVolumes, useVolumeFilters } from './hooks/useVolumeFilters'
 import { useVolumeMetadata } from './hooks/useVolumeMetadata'
 
 const MIN_SPLIT = 34
@@ -233,6 +236,15 @@ interface LayerSettings {
 // Phone-width viewport: the workbench collapses to a single full-screen viewer
 // with the dataset/inspector panels as slide-in drawers (see the `max-width:
 // 700px` block in styles.css). iPad (~desktop width) keeps the 3-column layout.
+/** Resolves after `count` animation frames, once React's updates have laid out. */
+function nextFrames(count: number): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (left: number) =>
+      left === 0 ? resolve() : requestAnimationFrame(() => step(left - 1))
+    step(count)
+  })
+}
+
 function isPhoneViewport(): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -517,6 +529,7 @@ export function App(): JSX.Element {
     toggleFormat,
     toggleDtype,
     clearFilters,
+    setFilters,
   } = useVolumeFilters(items)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; dataset-scoped filters reset only when the backing dataset changes.
@@ -978,6 +991,25 @@ export function App(): JSX.Element {
     await change()
     await loaded
   }
+  // Express and a maximized viewer hide the dataset pane; an agent browsing
+  // the dataset shows it, so the person sees what it does.
+  function showDatasetPane(): void {
+    setUiMode('full')
+    setIsRenderMaximized(false)
+    setIsFileListCollapsed(false)
+  }
+  /** A volume as agents see it, with the facets filter_dataset takes. */
+  function agentVolume(item: DesktopItem) {
+    return {
+      id: item.id,
+      label: item.label,
+      imageType: volumeImageTypeLabel(item),
+      subject: volumeSubject(item),
+      shape: item.shape,
+      spacing: item.spacing,
+      shown: item.id === shownBase?.id,
+    }
+  }
   const agent = useAgentClient({
     viewer: () => viewerRef.current,
     title: () => (datasetName ? `NeuroVue: ${datasetName}` : 'NeuroVue'),
@@ -996,14 +1028,62 @@ export function App(): JSX.Element {
       dataset: () => ({
         name: datasetName || null,
         root: datasetRoot ?? null,
-        volumes: items.map((item) => ({
-          id: item.id,
-          label: item.label,
-          shape: item.shape,
-          spacing: item.spacing,
-          shown: item.id === shownBase?.id,
-        })),
+        volumes: items.map(agentVolume),
       }),
+      filterDataset: (filters) => {
+        if (items.length === 0) {
+          throw new Error('No dataset is open to filter; call open_path first.')
+        }
+        const facets = {
+          imageTypes: volumeFacetCounts(items, volumeImageTypeLabel),
+          roles: volumeFacetCounts(items, volumeRoleLabel),
+        }
+        for (const [key, counts] of Object.entries(facets)) {
+          const unknown = filters[key as keyof typeof facets]?.filter(
+            (value) => !counts.has(value),
+          )
+          if (unknown?.length) {
+            throw new Error(
+              `No volume has ${key === 'roles' ? 'role' : 'image type'} ${unknown.join(', ')}; ` +
+                `this dataset has ${[...counts.keys()].join(', ')}.`,
+            )
+          }
+        }
+        setFilters(filters)
+        showDatasetPane()
+        return {
+          listed: filterVolumes(items, filters).map(agentVolume),
+          of: items.length,
+          imageTypes: Object.fromEntries(facets.imageTypes),
+          roles: Object.fromEntries(facets.roles),
+        }
+      },
+      zoomDataset: async ({ zoom, volume }) => {
+        if (
+          volume !== undefined &&
+          !filteredItems.some((item) => item.id === volume)
+        ) {
+          throw new Error(
+            items.some((item) => item.id === volume)
+              ? `Volume ${volume} is filtered out; change the filter with filter_dataset first.`
+              : `No volume ${volume} in this dataset; dataset lists them.`,
+          )
+        }
+        const next =
+          zoom === undefined
+            ? desktopZoom
+            : Math.min(Math.max(zoom, MIN_DESKTOP_ZOOM), MAX_DESKTOP_ZOOM)
+        showDatasetPane()
+        setDesktopZoom(next)
+        if (volume !== undefined) {
+          // Center the tile once the pane and the new zoom have laid out.
+          await nextFrames(3)
+          document
+            .querySelector(`[data-volume-id="${CSS.escape(volume)}"]`)
+            ?.scrollIntoView({ block: 'center', inline: 'center' })
+        }
+        return { zoom: next }
+      },
       selectVolume: async (id) => {
         if (!items.some((item) => item.id === id)) {
           throw new Error(

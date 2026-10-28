@@ -8,8 +8,9 @@ unattended.
 
 - Open NeuroVue and turn on **View > Allow AI Agents**.
 - Start a **new chat** in Codex so it loads the NeuroVue tools.
-- The demo files are in `~/NeuroVue-demo`. If that folder is gone, run
-  `demo/codex/run.sh` once to download them.
+- The demo files are in `~/NeuroVue-demo`, with a small BIDS dataset in its
+  `bids` folder. If either is missing, run `demo/codex/run.sh` once to
+  download them.
 
 ## Script
 
@@ -58,7 +59,16 @@ unattended.
 **15. Open it again**
 > "In window A, remove all the volumes, then open the motor demo document from my Downloads folder."
 
-**16. Wrap up**
+**16. Browse a dataset**
+> "Open a third NeuroVue window called dataset, call it window C, bring it to the front, and open the bids folder in the NeuroVue demo folder."
+
+**17. Filter it**
+> "In window C, filter the dataset to just the T1 weighted volumes."
+
+**18. Zoom in and pick one**
+> "Zoom in on subject 1's T1 thumbnail, then show it in the viewer with all three slice views."
+
+**19. Wrap up**
 > "Bring window A to the front and give me a one paragraph summary of what each window shows."
 
 ## Tips
@@ -81,6 +91,8 @@ unattended.
 - Dimming works through labels: the bricks holding a label stay solid and
   the rest fade. To dim a whole side, ask for a label on just the bricks you
   want to keep, such as "label the motor peak and dim everything else".
+- Filtering and zooming happen in the dataset pane, which Express view hides,
+  so step 17 switches window C to the full view by itself.
 - Step 15 opens the newest save. If "motor demo" was saved before, the new
   one is "motor demo (1).nvd"; say that name, or clear old copies out of
   Downloads before the demo.
