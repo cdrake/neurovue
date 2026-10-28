@@ -1,6 +1,6 @@
 {
   "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
-  "neuroflow": "0.1.0",
+  "neuroflow": "0.1.1",
   "kind": "tool",
   "id": "org.neurovue/load-tracts",
   "version": "1.0.0",
@@ -8,7 +8,8 @@
   "inputs": {
     "paths": {
       "type": "core:array<neuro:tract>",
-      "description": "Absolute paths to tract files inside an allowed data root."
+      "description": "Absolute paths to tract files inside an allowed data root.",
+      "formats": ["trk", "tck", "trx"]
     }
   },
   "outputs": {

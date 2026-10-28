@@ -145,7 +145,7 @@ each path through symlinks and refuses anything outside a root. It reads
 `roots` on every call; toggle Allow AI Agents to update the folders the server
 names to agents.
 
-NeuroVue's tools are [NeuroFlow](https://github.com/niivue/neuroflow-spec)
+NeuroVue's tools are [NeuroFlow](https://github.com/cdrake/neuroflow-spec)
 tool documents in `mcp-server/tools/`; the server takes each tool's name,
 title, annotations, description and input types from its document, following
 the spec's MCP binding (RFC 0009) and agent usage (RFC 0011) rules, so every

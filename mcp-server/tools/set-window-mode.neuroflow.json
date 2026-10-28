@@ -1,6 +1,6 @@
 {
   "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
-  "neuroflow": "0.1.0",
+  "neuroflow": "0.1.1",
   "kind": "tool",
   "id": "org.neurovue/set-window-mode",
   "version": "1.0.0",

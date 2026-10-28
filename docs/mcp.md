@@ -60,7 +60,7 @@ attaching a client.
 - **Tool definitions as NeuroFlow documents**:
   - Each NeuroVue tool is a JSON document in `mcp-server/tools/*.neuroflow.json`.
   - `mcp-server/neuroflow.ts` turns each document into an MCP tool using the
-    [NeuroFlow](https://github.com/niivue/neuroflow-spec) rules (RFC 0009 for
+    [NeuroFlow](https://github.com/cdrake/neuroflow-spec) rules (RFC 0009 for
     the MCP binding, RFC 0011 for agent usage):
     - the name, title and hints come from the `neuroflow/mcp` block;
     - every input carries its `x-neuroflow-type`;
