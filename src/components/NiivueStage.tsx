@@ -4,7 +4,6 @@ import type {
   NiiVueLocation,
   UIKitOverlayRenderer,
 } from '@niivue/niivue'
-import { Eraser, Pencil, Ruler, Send, Undo2 } from 'lucide-react'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
@@ -27,6 +26,11 @@ import type { MeshLayer } from '../domain/meshes'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
 import type { RenderShading } from '../domain/shading'
+import {
+  StageControls,
+  type StageControlsActions,
+  type StageControlsState,
+} from '../domain/stageControls'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
 // The window NiiVue actually applied for a layer, plus the volume's robust
@@ -119,6 +123,8 @@ type ChunkVolumeGridFn = (
 
 interface NiiVueLike {
   canvas?: HTMLCanvasElement
+  // Client (CSS) coordinates to canvas pixels, or null outside the canvas.
+  clientToCanvas?(clientX: number, clientY: number): [number, number] | null
   // Loaded volumes, in the same order as the render layers. robustMin/robustMax
   // are NiiVue's auto window (2nd/98th percentile); globalMax is the true peak;
   // extentsMin/Max are the volume's world-space (mm) bounding box, used to flag
@@ -331,9 +337,9 @@ const DRAW_LABEL_COLORMAP: ColorMap = {
 
 // Brush widths in voxels; a pencil varies each with pressure and tilt.
 const DRAW_SIZES = [
-  { size: 1, name: 'Fine', dot: 3 },
-  { size: 3, name: 'Medium', dot: 6 },
-  { size: 7, name: 'Broad', dot: 10 },
+  { size: 1, name: 'Fine', shortName: 'Fine' },
+  { size: 3, name: 'Medium', shortName: 'Med' },
+  { size: 7, name: 'Broad', shortName: 'Broad' },
 ] as const
 
 // PEN_SHAPE.CIRCLE: a round brush, as a pencil makes.
@@ -515,6 +521,13 @@ export function NiivueStage({
   // Two-finger pinch tracking for render-view zoom (see handlePinch*).
   const pinchPointers = useRef<Map<number, { x: number; y: number }>>(new Map())
   const pinchDistance = useRef<number | null>(null)
+  // The canvas-drawn controls (view mode, tools, sliders) for the current
+  // viewer, and the state they last showed, for one made after it changed.
+  const stageControlsRef = useRef<StageControls | null>(null)
+  const stageControlsInputRef = useRef<{
+    state: StageControlsState
+    actions: StageControlsActions
+  } | null>(null)
   const [status, setStatus] = useState('Waiting for a dataset selection.')
   // True only when the volume failed to load; routine progress stays hidden.
   const [isStatusError, setIsStatusError] = useState(false)
@@ -597,6 +610,8 @@ export function NiivueStage({
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
     let detachPointLabels: (() => void) | null = null
+    let stageControls: StageControls | null = null
+    let detachStageControls: (() => void) | null = null
 
     // Draw annotations with uikit once its font is in. Core's own annotation
     // draw stays on until then, and stays as the fallback if the font fails.
@@ -617,6 +632,22 @@ export function NiivueStage({
           nv.isAnnotationDrawn = false
           setMeasureUnavailable(null)
           detachPointLabels = attachPointLabels(nv, font)
+          // The stage's controls go last, so they draw over everything.
+          const clientToCanvas = nv.clientToCanvas
+          if (clientToCanvas) {
+            stageControls = new StageControls(font)
+            detachStageControls = stageControls.attach(
+              {
+                canvas: nv.canvas ?? null,
+                clientToCanvas: (x, y) => clientToCanvas.call(nv, x, y),
+                drawScene: () => nv.drawScene(),
+              },
+              (renderer) => register.call(nv, renderer),
+            )
+            stageControlsRef.current = stageControls
+            const input = stageControlsInputRef.current
+            if (input) stageControls.update(input.state, input.actions)
+          }
           nv.drawScene()
         })
         .catch((error: unknown) => {
@@ -734,6 +765,11 @@ export function NiivueStage({
       unregisterAnnotationLayer?.()
       annotationLayer?.destroy()
       detachPointLabels?.()
+      detachStageControls?.()
+      stageControls?.destroy()
+      if (stageControlsRef.current === stageControls) {
+        stageControlsRef.current = null
+      }
       if (localNv && nvRef.current === localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
@@ -912,7 +948,8 @@ export function NiivueStage({
       if (
         event.pointerType === 'pen' &&
         event.type === 'pointerup' &&
-        stage?.contains(event.target as Node)
+        stage?.contains(event.target as Node) &&
+        !stageControlsRef.current?.isOverControl(event.clientX, event.clientY)
       ) {
         pencilFeedback('path', { x: event.clientX, y: event.clientY })
       }
@@ -1317,6 +1354,101 @@ export function NiivueStage({
   const sliderClip = activeClip ?? enabledClipPlanes[0] ?? null
   const showClipControl = isRenderMode && enabledClipPlanes.length > 0
 
+  const stageControlsState: StageControlsState = {
+    viewModes: VIEW_MODES.map((mode) => ({
+      id: mode.id,
+      label: mode.shortLabel,
+    })),
+    viewMode,
+    hasVolume: Boolean(primaryItem),
+    measure:
+      isRenderMode || !primaryItem
+        ? null
+        : { active: isMeasureActive, enabled: measureUnavailable === null },
+    draw: primaryItem
+      ? {
+          active: isDrawActive,
+          enabled: loadedVersion > 0,
+          eraser: drawTool === 'eraser',
+          hasDrawing,
+          canSend: Boolean(onSendDrawing) && hasDrawing,
+        }
+      : null,
+    palette: isDrawActive
+      ? {
+          colors: DRAW_COLORS,
+          penValue,
+          sizes: DRAW_SIZES.map((option) => ({
+            size: option.size,
+            name: option.shortName,
+          })),
+          brushSize,
+          eraser: drawTool === 'eraser',
+        }
+      : null,
+    slice: showSliceSlider
+      ? {
+          label: currentViewLabel.replace(/ slice$/, ''),
+          value: sliceValue,
+          max: sliceMax,
+        }
+      : null,
+    clip: showClipControl
+      ? {
+          planes: enabledClipPlanes.map((plane) => ({
+            id: plane.id,
+            label: plane.label,
+          })),
+          activeId: activeClip?.id ?? null,
+          slider: sliderClip
+            ? {
+                id: sliderClip.id,
+                label: sliderClip.label,
+                depth: sliderClip.depth,
+              }
+            : null,
+        }
+      : null,
+  }
+  const stageControlsActions: StageControlsActions = {
+    viewMode: (id) => {
+      const mode = VIEW_MODES.find((candidate) => candidate.id === id)
+      if (mode) changeViewMode(mode.id)
+    },
+    measure: () => {
+      setDrawTool(null)
+      setIsMeasuring((current) => !current)
+    },
+    clearMeasurements,
+    draw: toggleDrawing,
+    erase: () =>
+      setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser')),
+    undo: undoDrawing,
+    clearDrawing,
+    send: () => void sendDrawing(),
+    pen: (value) => {
+      setPenValue(value)
+      setDrawTool('pen')
+    },
+    brush: setBrushSize,
+    slice: pageToSlice,
+    clipPlane: (id) => onClipPlaneActivate?.(id),
+    clipDepth: (id, depth) => {
+      // Dragging the slider makes its plane active, as clicking its chip does.
+      if (!activeClip) onClipPlaneActivate?.(id)
+      onClipPlaneDepthChange(id, depth)
+    },
+  }
+  stageControlsInputRef.current = {
+    state: stageControlsState,
+    actions: stageControlsActions,
+  }
+  // Every render: the controls skip a redraw when nothing they show changed.
+  useEffect(() => {
+    const input = stageControlsInputRef.current
+    if (input) stageControlsRef.current?.update(input.state, input.actions)
+  })
+
   return (
     <div
       className="nv-render-stage"
@@ -1338,223 +1470,6 @@ export function NiivueStage({
             : 'NiiVue viewer — no volume selected'
         }
       />
-      <fieldset className="nv-render-snap-controls" aria-label="View mode">
-        {VIEW_MODES.map((mode) => (
-          <button
-            aria-label={`Show ${mode.label}`}
-            aria-pressed={viewMode === mode.id}
-            className={viewMode === mode.id ? 'is-active' : ''}
-            disabled={!primaryItem}
-            key={mode.id}
-            onClick={() => changeViewMode(mode.id)}
-            title={`Show ${mode.label}`}
-            type="button"
-          >
-            {mode.shortLabel}
-          </button>
-        ))}
-      </fieldset>
-      {isRenderMode ? null : (
-        <fieldset className="nv-measure-tools" aria-label="Measure">
-          <button
-            aria-label="Measure distance"
-            aria-pressed={isMeasureActive}
-            className={isMeasureActive ? 'is-active' : ''}
-            disabled={!primaryItem || measureUnavailable !== null}
-            onClick={() => {
-              setDrawTool(null)
-              setIsMeasuring((current) => !current)
-            }}
-            title={
-              measureUnavailable ??
-              (isMeasureActive
-                ? 'Stop measuring (Esc)'
-                : 'Measure distance: drag across a slice')
-            }
-            type="button"
-          >
-            <Ruler aria-hidden="true" size={14} />
-          </button>
-          <button
-            aria-label="Clear measurements"
-            disabled={!primaryItem || measureUnavailable !== null}
-            onClick={clearMeasurements}
-            title="Clear measurements"
-            type="button"
-          >
-            <Eraser aria-hidden="true" size={14} />
-          </button>
-        </fieldset>
-      )}
-      {primaryItem ? (
-        <fieldset
-          className={`nv-measure-tools nv-draw-tools ${isRenderMode ? 'is-alone' : ''}`}
-          aria-label="Draw"
-        >
-          <button
-            aria-label="Draw"
-            aria-pressed={isDrawActive}
-            className={isDrawActive ? 'is-active' : ''}
-            disabled={loadedVersion === 0}
-            onClick={toggleDrawing}
-            title={isDrawActive ? 'Stop drawing' : 'Draw on the slices'}
-            type="button"
-          >
-            <Pencil aria-hidden="true" size={14} />
-          </button>
-          {isDrawActive ? (
-            <>
-              <button
-                aria-label="Erase"
-                aria-pressed={drawTool === 'eraser'}
-                className={drawTool === 'eraser' ? 'is-active' : ''}
-                onClick={() =>
-                  setDrawTool((current) =>
-                    current === 'eraser' ? 'pen' : 'eraser',
-                  )
-                }
-                title="Erase: draw to remove"
-                type="button"
-              >
-                <Eraser aria-hidden="true" size={14} />
-              </button>
-              <button
-                aria-label="Undo"
-                disabled={!hasDrawing}
-                onClick={undoDrawing}
-                title="Undo the last stroke"
-                type="button"
-              >
-                <Undo2 aria-hidden="true" size={14} />
-              </button>
-              <button
-                aria-label="Clear drawing"
-                className="nv-draw-clear"
-                disabled={!hasDrawing}
-                onClick={clearDrawing}
-                title="Clear the drawing"
-                type="button"
-              >
-                Clear
-              </button>
-            </>
-          ) : null}
-          {onSendDrawing && hasDrawing ? (
-            <button
-              aria-label="Send drawing"
-              className="nv-draw-send"
-              onClick={() => void sendDrawing()}
-              title="Send the drawing back to the Mac"
-              type="button"
-            >
-              <Send aria-hidden="true" size={14} />
-              <span>Send</span>
-            </button>
-          ) : null}
-        </fieldset>
-      ) : null}
-      {isDrawActive ? (
-        <fieldset className="nv-measure-tools nv-draw-palette" aria-label="Pen">
-          {DRAW_COLORS.map((color) => (
-            <button
-              aria-label={`${color.name} pen`}
-              aria-pressed={drawTool === 'pen' && penValue === color.value}
-              className={
-                drawTool === 'pen' && penValue === color.value
-                  ? 'is-active'
-                  : ''
-              }
-              key={color.value}
-              onClick={() => {
-                setPenValue(color.value)
-                setDrawTool('pen')
-              }}
-              title={color.name}
-              type="button"
-            >
-              <span
-                className="nv-draw-swatch"
-                style={{ background: color.css }}
-              />
-            </button>
-          ))}
-          {DRAW_SIZES.map((option) => (
-            <button
-              aria-label={`${option.name} brush`}
-              aria-pressed={brushSize === option.size}
-              className={brushSize === option.size ? 'is-active' : ''}
-              key={option.size}
-              onClick={() => setBrushSize(option.size)}
-              title={`${option.name} brush`}
-              type="button"
-            >
-              <span
-                className="nv-draw-size"
-                style={{ width: option.dot, height: option.dot }}
-              />
-            </button>
-          ))}
-        </fieldset>
-      ) : null}
-      {showSliceSlider ? (
-        <fieldset className="nv-slice-slider" aria-label="Slice position">
-          <input
-            aria-label={`${currentViewLabel} slice`}
-            max={sliceMax}
-            min={0}
-            step={1}
-            type="range"
-            value={sliceValue}
-            onChange={(event) => pageToSlice(Number(event.target.value))}
-          />
-          <span className="nv-slice-slider-value">
-            {sliceValue + 1} / {sliceMax + 1}
-          </span>
-        </fieldset>
-      ) : null}
-      {showClipControl ? (
-        <fieldset className="nv-clip-slider" aria-label="Clip plane">
-          <div className="nv-clip-slider-chips">
-            {enabledClipPlanes.map((plane) => (
-              <button
-                aria-pressed={clipIsActive && plane.id === activeClipPlaneId}
-                className={
-                  clipIsActive && plane.id === activeClipPlaneId
-                    ? 'is-active'
-                    : ''
-                }
-                key={plane.id}
-                onClick={() => onClipPlaneActivate?.(plane.id)}
-                title={`Move the ${plane.label} clip plane`}
-                type="button"
-              >
-                {plane.label}
-              </button>
-            ))}
-          </div>
-          <input
-            aria-label={
-              sliderClip ? `${sliderClip.label} clip depth` : 'Clip depth'
-            }
-            disabled={!sliderClip}
-            max={1}
-            min={-1}
-            step={0.02}
-            type="range"
-            value={sliderClip?.depth ?? 0}
-            onChange={(event) => {
-              if (!sliderClip) return
-              if (!activeClip) onClipPlaneActivate?.(sliderClip.id)
-              onClipPlaneDepthChange(sliderClip.id, Number(event.target.value))
-            }}
-          />
-          {sliderClip ? (
-            <span className="nv-slice-slider-value nv-clip-slider-value">
-              {sliderClip.label} {sliderClip.depth.toFixed(2)}
-            </span>
-          ) : null}
-        </fieldset>
-      ) : null}
       {isStatusError ? (
         <div className="nv-render-status is-error" role="alert">
           {status}
@@ -2224,34 +2139,4 @@ function syncCanvasSize(
 
   if (canvas.width !== width) canvas.width = width
   if (canvas.height !== height) canvas.height = height
-  if (stage) syncOverlayClearance(stage, width, height, density)
-}
-
-// Keep the bottom overlays (slice slider, clip control) clear of NiiVue's
-// colorbar and orientation cube. Neither is exposed by NiiVue, so this mirrors
-// its layout math: colorbarTotalHeight (packages/niivue/src/view/NVColorbar.ts,
-// one row — only the base layer shows a colorbar — default margin 20 and
-// heightRatio 1.2, font from estimateFontSize in NVUILayout.ts) and
-// orientCubePosition (NVUILayout.ts: size 5% of the tile, centred 1.8 sizes in).
-// Inputs are device pixels; the CSS vars are CSS pixels.
-function syncOverlayClearance(
-  stage: HTMLDivElement,
-  width: number,
-  height: number,
-  density: number,
-): void {
-  const fontSize = 13 * Math.max((width * height) / (800 * 600), 1) ** 0.4
-  const colorbar =
-    20 +
-    Math.ceil(1.2 * fontSize) +
-    Math.ceil(0.7 * fontSize + Math.max(1, 0.1 * fontSize))
-  const cubeEdge = 2.8 * 0.05 * Math.min(width, height - colorbar)
-  stage.style.setProperty(
-    '--nv-colorbar-clearance',
-    `${Math.ceil(colorbar / density)}px`,
-  )
-  stage.style.setProperty(
-    '--nv-cube-clearance',
-    `${Math.ceil(Math.max(0, cubeEdge) / density)}px`,
-  )
 }
