@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { BlockSettings } from './blocks'
 import type { Backend, ClipPlane } from './desktop'
+import { keepPickedFile } from './openedFiles'
 
 // A NeuroVue bundle (`.nvbundle`) is a self-describing, transport-agnostic
 // hand-off of one or more volumes plus the view that was set up over them. It
@@ -362,7 +363,7 @@ export async function pickBundle(): Promise<string | null> {
       },
     ],
   })
-  return typeof selected === 'string' ? selected : null
+  return typeof selected === 'string' ? keepPickedFile(selected) : null
 }
 
 /**

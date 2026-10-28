@@ -230,7 +230,12 @@ export function useDatasetManifest({
         manifestLoadedStatus(nextManifest, result.datasetRoot),
         'success',
       )
-      if (remember) promoteRecentRef.current(promoteAs ?? result.datasetRoot)
+      // A single volume is remembered as itself: its folder may hold others
+      // (Received collects every file handed over on iOS).
+      if (remember)
+        promoteRecentRef.current(
+          promoteAs ?? result.openedFile ?? result.datasetRoot,
+        )
     },
     [setStatus],
   )

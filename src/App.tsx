@@ -154,6 +154,8 @@ import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
 import { useNativeMenu } from './hooks/useNativeMenu'
 import {
+  isInContainerTemp,
+  rebaseContainerPath,
   recentDatasetLabel,
   useRecentDatasets,
 } from './hooks/useRecentDatasets'
@@ -295,6 +297,7 @@ export function App(): JSX.Element {
     promoteRecent,
     removeRecent,
     pruneExtractedBundleDirs,
+    rebaseContainerPaths,
     reopenLast,
     setReopenLast,
   } = useRecentDatasets()
@@ -342,6 +345,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (cacheRoot) pruneExtractedBundleDirs(cacheRoot)
   }, [cacheRoot, pruneExtractedBundleDirs])
+  // On iOS, point recents at the current container (it changes on every
+  // update) and drop ones left in its purged tmp.
+  useEffect(() => {
+    if (cacheRoot) rebaseContainerPaths(cacheRoot)
+  }, [cacheRoot, rebaseContainerPaths])
   const [layerSettings, setLayerSettings] = useState<
     Record<string, LayerSettings>
   >({})
@@ -1324,7 +1332,9 @@ export function App(): JSX.Element {
   // A bundle must be re-verified and its view replayed, not opened as a plain
   // directory. A NiiVue document opens the same way.
   /** False when the dataset or bundle failed to open; the status line says why. */
-  async function openRecentEntry(path: string): Promise<boolean> {
+  async function openRecentEntry(stored: string): Promise<boolean> {
+    // The rebasing effect may not have rewritten the list yet at startup.
+    const path = rebaseContainerPath(stored, cacheRoot)
     if (!isBundlePath(path) && !isDocumentPath(path)) {
       return openRecentDataset(path)
     }
@@ -1347,7 +1357,10 @@ export function App(): JSX.Element {
         void openRecentEntry(received)
         return
       }
-      const last = recentDatasets[0]
+      const last = recentDatasets.find(
+        (entry) =>
+          !isInContainerTemp(rebaseContainerPath(entry, cacheRoot), cacheRoot),
+      )
       if (!reopenLast || !last || items.length > 0) return
       setReopeningPath(last)
       void openRecentEntry(last)
