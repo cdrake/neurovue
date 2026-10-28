@@ -26,6 +26,8 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.1"
+# Apple Pencil double-tap, squeeze and haptics on iPad; empty elsewhere.
+tauri-plugin-pencil = { path = "plugins/pencil" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }
 

@@ -24,6 +24,7 @@ import type {
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
+import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
 import type { RenderShading } from '../domain/shading'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
@@ -906,7 +907,16 @@ export function NiivueStage({
       }
     }
     function onPointerEnd(event: PointerEvent): void {
-      if (!nv || event.pointerType !== 'touch' || !isFingerDown) return
+      if (!nv) return
+      // A stroke done: a Pencil Pro taps once in the hand.
+      if (
+        event.pointerType === 'pen' &&
+        event.type === 'pointerup' &&
+        stage?.contains(event.target as Node)
+      ) {
+        pencilFeedback('path', { x: event.clientX, y: event.clientY })
+      }
+      if (event.pointerType !== 'touch' || !isFingerDown) return
       isFingerDown = false
       nv.drawIsEnabled = true
     }
@@ -922,6 +932,28 @@ export function NiivueStage({
       window.removeEventListener('pointercancel', onPointerEnd, options)
     }
   }, [isDrawActive, brushSize])
+
+  // A double-tap or squeeze of the pencil does what the person chose for it
+  // in Settings: the eraser switch toggles pen and eraser, and a palette
+  // steps to the next pen color, since there's no palette here to show.
+  useEffect(() => {
+    if (!isDrawActive) return
+    return listenToPencil((action, at) => {
+      if (action === 'switchEraser' || action === 'switchPrevious') {
+        setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser'))
+      } else if (
+        action === 'showColorPalette' ||
+        action === 'showInkAttributes' ||
+        action === 'showContextualPalette'
+      ) {
+        setDrawTool('pen')
+        setPenValue((current) => (current % DRAW_COLORS.length) + 1)
+      } else {
+        return
+      }
+      pencilFeedback('alignment', at)
+    })
+  }, [isDrawActive])
 
   // From the 3D render, drawing starts on one big axial slice.
   function toggleDrawing(): void {

@@ -691,6 +691,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_pencil::init())
         .manage(opened::OpenedFiles::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
