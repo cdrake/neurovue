@@ -81,10 +81,14 @@ impl NeuroVueState {
             .servers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        servers
+        let server = servers
             .entry(label.to_string())
-            .or_insert_with(volumetric_server::spawn_empty)
-            .clone()
+            .or_insert_with(volumetric_server::spawn_empty);
+        #[cfg(target_os = "ios")]
+        if let Some(revived) = volumetric_server::revive(server) {
+            *server = revived;
+        }
+        server.clone()
     }
 
     /// Stops the server of a window that has closed.

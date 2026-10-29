@@ -39,6 +39,7 @@ pub struct ServerHandle {
     preview_cache: Arc<Mutex<PreviewCache>>,
     decoded_level_cache: Arc<Mutex<DecodedLevelCache>>,
     pyramid_locks: PyramidLocks,
+    patch: Arc<Mutex<Option<Value>>>,
     warm_generation: Arc<AtomicU64>,
     warm_progress: Arc<Mutex<WarmProgress>>,
     shutdown: Arc<tokio::sync::Notify>,
@@ -329,6 +330,42 @@ pub fn shutdown(server: &ServerHandle) {
 
 fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind NeuroVue local server");
+    let volume_count = discovery.volumes.len();
+    let warm_volumes = discovery.volumes.clone();
+    let warm_root = discovery.root.clone();
+    let server = ServerHandle {
+        url: String::new(),
+        port: 0,
+        volume_count,
+        volumes: Arc::new(Mutex::new(discovery.volumes)),
+        dataset_root: Arc::new(Mutex::new(discovery.root)),
+        discovery_stats: Arc::new(Mutex::new(discovery.stats)),
+        preview_cache: Arc::new(Mutex::new(PreviewCache::default())),
+        decoded_level_cache: Arc::new(Mutex::new(DecodedLevelCache::default())),
+        pyramid_locks: Arc::new(Mutex::new(HashMap::new())),
+        patch: Arc::new(Mutex::new(None)),
+        warm_generation: Arc::new(AtomicU64::new(0)),
+        warm_progress: Arc::new(Mutex::new(WarmProgress::default())),
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+    };
+
+    // Warm pyramid levels for the startup dataset (if any) in the background.
+    let my_gen = server.warm_generation.load(Ordering::SeqCst);
+    spawn_pyramid_warm(
+        warm_volumes,
+        warm_root,
+        server.pyramid_locks.clone(),
+        server.warm_generation.clone(),
+        server.warm_progress.clone(),
+        my_gen,
+    );
+
+    serve(listener, server)
+}
+
+/// Serves `server`'s dataset on `listener`, and returns the handle with the
+/// address it now answers at.
+fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
     let addr = listener
         .local_addr()
         .expect("read NeuroVue local server addr");
@@ -337,40 +374,18 @@ fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
         .expect("set NeuroVue listener nonblocking");
 
     let base_url = format!("http://{}", addr);
-    let volume_count = discovery.volumes.len();
-    let warm_volumes = discovery.volumes.clone();
-    let warm_root = discovery.root.clone();
-    let volumes = Arc::new(Mutex::new(discovery.volumes));
-    let dataset_root = Arc::new(Mutex::new(discovery.root));
-    let discovery_stats = Arc::new(Mutex::new(discovery.stats));
-    let preview_cache = Arc::new(Mutex::new(PreviewCache::default()));
-    let decoded_level_cache = Arc::new(Mutex::new(DecodedLevelCache::default()));
-    let pyramid_locks: PyramidLocks = Arc::new(Mutex::new(HashMap::new()));
-    let warm_generation = Arc::new(AtomicU64::new(0));
-    let warm_progress = Arc::new(Mutex::new(WarmProgress::default()));
     let shutdown = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
         base_url: base_url.clone(),
-        volumes: volumes.clone(),
-        dataset_root: dataset_root.clone(),
-        discovery_stats: discovery_stats.clone(),
-        preview_cache: preview_cache.clone(),
-        decoded_level_cache: decoded_level_cache.clone(),
-        pyramid_locks: pyramid_locks.clone(),
-        patch: Arc::new(Mutex::new(None)),
+        volumes: server.volumes.clone(),
+        dataset_root: server.dataset_root.clone(),
+        discovery_stats: server.discovery_stats.clone(),
+        preview_cache: server.preview_cache.clone(),
+        decoded_level_cache: server.decoded_level_cache.clone(),
+        pyramid_locks: server.pyramid_locks.clone(),
+        patch: server.patch.clone(),
         render_semaphore: Arc::new(tokio::sync::Semaphore::new(render_permits())),
     };
-
-    // Warm pyramid levels for the startup dataset (if any) in the background.
-    let my_gen = warm_generation.load(Ordering::SeqCst);
-    spawn_pyramid_warm(
-        warm_volumes,
-        warm_root,
-        pyramid_locks.clone(),
-        warm_generation.clone(),
-        warm_progress.clone(),
-        my_gen,
-    );
 
     let stop = shutdown.clone();
     std::thread::spawn(move || {
@@ -398,17 +413,26 @@ fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
     ServerHandle {
         url: base_url,
         port: addr.port(),
-        volume_count,
-        volumes,
-        dataset_root,
-        discovery_stats,
-        preview_cache,
-        decoded_level_cache,
-        pyramid_locks,
-        warm_generation,
-        warm_progress,
         shutdown,
+        ..server
     }
+}
+
+/// A server listening again, when `server` no longer answers: iOS can take a
+/// suspended app's listening socket. It keeps the dataset and, when the port
+/// is still free, the address, so the page's URLs stay good.
+#[cfg(target_os = "ios")]
+pub fn revive(server: &ServerHandle) -> Option<ServerHandle> {
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, server.port));
+    if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok()
+    {
+        return None;
+    }
+    server.shutdown.notify_one();
+    let listener = TcpListener::bind(address)
+        .or_else(|_| TcpListener::bind("127.0.0.1:0"))
+        .ok()?;
+    Some(serve(listener, server.clone()))
 }
 
 fn build_router(state: AppState, port: u16) -> Router {
