@@ -4,10 +4,21 @@ version = "0.1.0"
 description = "NeuroVue desktop viewer"
 edition = "2021"
 license = "BSD-2-Clause"
+# tauri dev runs the window, not neurovue-cli
+default-run = "neurovue"
 
 [lib]
 name = "neurovue_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# neurovue-cli builds only with --features cli, so tauri's bundler (which copies
+# every enabled bin) leaves it out of the app.
+[features]
+cli = []
+
+[[bin]]
+name = "neurovue-cli"
+required-features = ["cli"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

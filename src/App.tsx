@@ -2340,6 +2340,9 @@ export function App(): JSX.Element {
                                 selected,
                                 clipPlanes,
                                 backend,
+                                selected
+                                  ? composeCurrentBundle(selected).view
+                                  : null,
                               )
                               setStatus(
                                 `Clip-plane correction saved for ${selected?.label ?? 'volume'}.`,
@@ -4314,6 +4317,7 @@ async function savePatch(
   item: DesktopItem | null,
   clipPlanes: ClipPlane[],
   backend: Backend,
+  view: BundleViewState | null,
 ): Promise<void> {
   if (!serverUrl || !item) {
     throw new Error('Select a volume before saving a clip-plane correction.')
@@ -4332,6 +4336,8 @@ async function savePatch(
       backend,
       clipPlanes: clipPlanes.filter((plane) => plane.enabled),
       savedAt: new Date().toISOString(),
+      // Under NeuroFlow the server writes review.state.json from it.
+      view,
     }),
   })
   if (!response.ok) {

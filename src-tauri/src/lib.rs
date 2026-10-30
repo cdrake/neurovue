@@ -2,6 +2,7 @@
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod bonjour;
+pub mod headless;
 #[cfg(desktop)]
 mod mcp;
 #[cfg(desktop)]

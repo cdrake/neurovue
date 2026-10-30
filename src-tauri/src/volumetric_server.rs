@@ -328,15 +328,12 @@ pub fn shutdown(server: &ServerHandle) {
     server.shutdown.notify_one();
 }
 
-fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind NeuroVue local server");
-    let volume_count = discovery.volumes.len();
-    let warm_volumes = discovery.volumes.clone();
-    let warm_root = discovery.root.clone();
-    let server = ServerHandle {
+/// A handle on `discovery`'s dataset that no listener serves yet.
+fn new_handle(discovery: VolumeDiscovery) -> ServerHandle {
+    ServerHandle {
         url: String::new(),
         port: 0,
-        volume_count,
+        volume_count: discovery.volumes.len(),
         volumes: Arc::new(Mutex::new(discovery.volumes)),
         dataset_root: Arc::new(Mutex::new(discovery.root)),
         discovery_stats: Arc::new(Mutex::new(discovery.stats)),
@@ -347,7 +344,14 @@ fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
         warm_generation: Arc::new(AtomicU64::new(0)),
         warm_progress: Arc::new(Mutex::new(WarmProgress::default())),
         shutdown: Arc::new(tokio::sync::Notify::new()),
-    };
+    }
+}
+
+fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind NeuroVue local server");
+    let warm_volumes = discovery.volumes.clone();
+    let warm_root = discovery.root.clone();
+    let server = new_handle(discovery);
 
     // Warm pyramid levels for the startup dataset (if any) in the background.
     let my_gen = server.warm_generation.load(Ordering::SeqCst);
@@ -2204,7 +2208,7 @@ async fn write_patch(
     let mut patch = lock_recover(&state.patch);
     *patch = Some(payload.clone());
     // Best-effort persistence under NeuroFlow: never fail the HTTP response.
-    let persisted_path = persist_correction_patch(&payload);
+    let persisted_path = persist_correction_patch(&state, &payload);
     Ok(Json(json!({
         "ok": true,
         "path": persisted_path.unwrap_or_else(|| "session://neurovue/correction.patch.json".to_string()),
@@ -2213,12 +2217,12 @@ async fn write_patch(
 }
 
 /// Resolved NeuroFlow launch context, present only when running under a session.
-struct NeuroflowContext {
-    session_dir: PathBuf,
-    output_dir: PathBuf,
-    step: String,
-    tool: String,
-    context: Value,
+pub(crate) struct NeuroflowContext {
+    pub(crate) session_dir: PathBuf,
+    pub(crate) output_dir: PathBuf,
+    pub(crate) step: String,
+    pub(crate) tool: String,
+    pub(crate) context: Value,
 }
 
 /// Read the NeuroFlow session context from the environment, if any.
@@ -2226,7 +2230,14 @@ struct NeuroflowContext {
 /// Returns `None` when `NEUROFLOW_SESSION` is unset, preserving the legacy
 /// in-memory-only behavior.
 fn neuroflow_context() -> Option<NeuroflowContext> {
-    let session_dir = PathBuf::from(std::env::var_os("NEUROFLOW_SESSION")?);
+    Some(neuroflow_context_at(PathBuf::from(std::env::var_os(
+        "NEUROFLOW_SESSION",
+    )?)))
+}
+
+/// The NeuroFlow context of the session at `session_dir`. The NEUROFLOW_STEP
+/// and NEUROFLOW_OUTPUT_DIR variables still override what context.json says.
+pub(crate) fn neuroflow_context_at(session_dir: PathBuf) -> NeuroflowContext {
     let context = fs::read(session_dir.join("context.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -2256,13 +2267,13 @@ fn neuroflow_context() -> Option<NeuroflowContext> {
         .unwrap_or("neuroflow.gallery.tools/neurovue")
         .to_string();
 
-    Some(NeuroflowContext {
+    NeuroflowContext {
         session_dir,
         output_dir,
         step,
         tool,
         context,
-    })
+    }
 }
 
 /// Dataset roots declared by the NeuroFlow launch context (`inputs.bids_dir`
@@ -2301,8 +2312,9 @@ fn neuroflow_dataset_roots() -> Vec<PathBuf> {
 
 /// Persist a saved correction patch to disk and append a provenance line when
 /// running under NeuroFlow. Returns the disk path written, if any. All failures
-/// are swallowed so HTTP saves never break.
-fn persist_correction_patch(payload: &Value) -> Option<String> {
+/// are swallowed so HTTP saves never break. When the page sent its `view`, the
+/// review state of the volumes in it is written beside the patch.
+fn persist_correction_patch(state: &AppState, payload: &Value) -> Option<String> {
     let ctx = neuroflow_context()?;
 
     let patch_path = ctx.output_dir.join("correction.patch.json");
@@ -2314,12 +2326,43 @@ fn persist_correction_patch(payload: &Value) -> Option<String> {
         .and_then(|bytes| fs::write(&patch_path, bytes).ok())
         .is_some();
 
+    let mut outputs = json!({ "correction.patch.json": "correction.patch.json" });
+    if let Some(view) = payload.get("view") {
+        let in_view: HashSet<&str> = view["volumes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|volume| volume["id"].as_str())
+            .collect();
+        let volumes: Vec<VolumeEntry> = lock_recover(&state.volumes)
+            .iter()
+            .filter(|volume| in_view.contains(volume.id.as_str()))
+            .cloned()
+            .collect();
+        let root = lock_recover(&state.dataset_root).clone();
+        let review = review_state(&volumes, root.as_deref(), view);
+        if serde_json::to_vec_pretty(&review)
+            .ok()
+            .and_then(|bytes| fs::write(ctx.output_dir.join("review.state.json"), bytes).ok())
+            .is_some()
+        {
+            outputs["review.state.json"] = json!("review.state.json");
+        }
+    }
+    append_provenance(&ctx, "correction.save", outputs);
+
+    written.then(|| patch_path.display().to_string())
+}
+
+/// Append one line to the session's provenance.jsonl. Best effort: a session
+/// that can't take it doesn't fail the save that wrote the outputs.
+pub(crate) fn append_provenance(ctx: &NeuroflowContext, action: &str, outputs: Value) {
     let provenance = json!({
         "ts": iso8601_utc_now(),
         "step": ctx.step,
         "tool": ctx.tool,
-        "action": "correction.save",
-        "outputs": { "correction.patch.json": "correction.patch.json" },
+        "action": action,
+        "outputs": outputs,
         "agent": "neurovue@neuroflow-aware"
     });
     if let Ok(mut line) = serde_json::to_vec(&provenance) {
@@ -2332,13 +2375,136 @@ fn persist_correction_patch(payload: &Value) -> Option<String> {
             let _ = std::io::Write::write_all(&mut file, &line);
         }
     }
+}
 
-    written.then(|| patch_path.display().to_string())
+/// `review.state.json`: the dataset, the reviewed volumes and the view. One
+/// builder for the window's Save and for `neurovue-cli`.
+pub(crate) fn review_state_of(handle: &ServerHandle, view: &Value) -> Value {
+    let volumes = lock_recover(&handle.volumes).clone();
+    review_state(&volumes, dataset_root(handle).as_deref(), view)
+}
+
+fn review_state(volumes: &[VolumeEntry], root: Option<&FsPath>, view: &Value) -> Value {
+    let bids = root.and_then(read_bids_dataset_info);
+    json!({
+        "neurovue": env!("CARGO_PKG_VERSION"),
+        "savedAt": iso8601_utc_now(),
+        "dataset": {
+            "root": root.map(|path| path.display().to_string()),
+            "name": bids.as_ref().and_then(|info| info.name.clone()),
+            "bidsVersion": bids.as_ref().and_then(|info| info.bids_version.clone()),
+            "datasetDoi": bids.as_ref().and_then(|info| info.dataset_doi.clone()),
+        },
+        "volumes": volumes,
+        "view": view,
+    })
+}
+
+/// A handle on the dataset a NeuroFlow session's `inputs` name, for
+/// `neurovue-cli`: no port, no pyramid warming, no cache sweep and none of the
+/// window's working derivatives. `bids_dir` opens every volume under it, and
+/// `volumes` opens just those files; `match` keeps the volumes whose file name
+/// it matches.
+pub(crate) fn open_offline(inputs: &Value) -> Result<ServerHandle, String> {
+    let max_volumes = max_volume_count();
+    let mut root = None;
+    let mut volumes = Vec::new();
+    if let Some(bids_dir) = inputs["bids_dir"].as_str() {
+        let dir =
+            fs::canonicalize(bids_dir).map_err(|error| format!("bids_dir {bids_dir}: {error}"))?;
+        volumes = discover_volumes_in_root(&dir, max_volumes).volumes;
+        root = Some(dir);
+    }
+    for path in inputs["volumes"].as_array().into_iter().flatten() {
+        let path = path.as_str().ok_or("volumes: expected file paths")?;
+        let file = fs::canonicalize(path).map_err(|error| format!("volume {path}: {error}"))?;
+        let parent = file
+            .parent()
+            .unwrap_or_else(|| FsPath::new(""))
+            .to_path_buf();
+        let entry = volume_entry(&file, root.as_deref().unwrap_or(&parent))
+            .ok_or_else(|| format!("volume {path}: not a readable NIfTI file"))?;
+        if !volumes
+            .iter()
+            .any(|volume: &VolumeEntry| volume.id == entry.id)
+        {
+            volumes.push(entry);
+        }
+        root.get_or_insert(parent);
+    }
+    // shortcut: match filters after discovery's max_volume_count() cap, so a dataset past the cap
+    // can hide matches; filter during discovery if that bites.
+    if let Some(pattern) = inputs["match"].as_str() {
+        volumes.retain(|volume| {
+            volume
+                .source_path
+                .as_deref()
+                .and_then(FsPath::file_name)
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| glob_match(pattern, name))
+        });
+    }
+    if volumes.is_empty() {
+        return Err(
+            "no volumes to review: give inputs.bids_dir or inputs.volumes (and check match)"
+                .to_string(),
+        );
+    }
+    Ok(new_handle(VolumeDiscovery {
+        root,
+        stats: DiscoveryStats {
+            total_discovered: volumes.len(),
+            truncated: false,
+        },
+        volumes,
+    }))
+}
+
+/// The source file of the handle's volume `id`, if it has one.
+pub(crate) fn volume_source_path(handle: &ServerHandle, id: &str) -> Option<String> {
+    lock_recover(&handle.volumes)
+        .iter()
+        .find(|volume| volume.id == id)
+        .and_then(|volume| volume.source_path.as_ref())
+        .map(|path| path.display().to_string())
+}
+
+/// The ids of the handle's volumes, in order.
+pub(crate) fn volume_ids(handle: &ServerHandle) -> Vec<String> {
+    lock_recover(&handle.volumes)
+        .iter()
+        .map(|volume| volume.id.clone())
+        .collect()
+}
+
+/// A shell-style match of `name` against `pattern`: `*` is any run of
+/// characters and `?` one character.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let (pattern, name): (Vec<char>, Vec<char>) =
+        (pattern.chars().collect(), name.chars().collect());
+    let (mut p, mut n, mut star, mut mark) = (0, 0, None, 0);
+    while n < name.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
+            p += 1;
+            n += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            mark = n;
+            p += 1;
+        } else if let Some(s) = star {
+            p = s + 1;
+            mark += 1;
+            n = mark;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
 }
 
 /// Format the current time as an ISO-8601 UTC timestamp (e.g.
 /// `2026-06-02T18:30:00Z`) without pulling in a date/time dependency.
-fn iso8601_utc_now() -> String {
+pub(crate) fn iso8601_utc_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -4429,6 +4595,65 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn glob_match_handles_stars_and_question_marks() {
+        assert!(glob_match("*_T1w.nii*", "sub-01_T1w.nii.gz"));
+        assert!(glob_match("sub-0?_*", "sub-07_bold.nii"));
+        assert!(!glob_match("*_T1w.nii*", "sub-01_bold.nii.gz"));
+        assert!(!glob_match("sub-0?", "sub-010"));
+    }
+
+    #[test]
+    fn headless_review_writes_patch_state_bundle_and_provenance() {
+        let dir = scratch_dir("headless-review");
+        let bids = dir.join("ds");
+        fs::create_dir_all(&bids).unwrap();
+        fs::write(
+            bids.join("dataset_description.json"),
+            r#"{"Name":"Tiny","BIDSVersion":"1.9.0"}"#,
+        )
+        .unwrap();
+        write_nifti(&bids.join("sub-01/anat/sub-01_T1w.nii.gz"), [4, 4, 4], 7);
+        write_nifti(&bids.join("sub-01/func/sub-01_bold.nii.gz"), [4, 4, 4], 9);
+        let session = dir.join("session");
+        fs::create_dir_all(&session).unwrap();
+        let plane = json!({"id": "a", "label": "A", "enabled": true, "depth": 0.2, "azimuth": 0, "elevation": 0});
+        let context = json!({
+            "step": "review",
+            "inputs": {
+                "bids_dir": bids,
+                "match": "*_T1w.nii*",
+                "clip_planes": [plane, {"id": "b", "enabled": false}],
+                "bundle": true,
+            },
+        });
+        fs::write(session.join("context.json"), context.to_string()).unwrap();
+
+        let outputs = crate::headless::review(session.clone()).unwrap();
+
+        let out = session.join("outputs/review");
+        assert_eq!(outputs.as_object().unwrap().len(), 3);
+        let patch: Value =
+            serde_json::from_slice(&fs::read(out.join("correction.patch.json")).unwrap()).unwrap();
+        assert_eq!(patch["backend"], "headless");
+        assert_eq!(patch["clipPlanes"], json!([plane]));
+        assert!(patch["asset"]["manifest"]
+            .as_str()
+            .unwrap()
+            .ends_with("sub-01_T1w.nii.gz"));
+        let state: Value =
+            serde_json::from_slice(&fs::read(out.join("review.state.json")).unwrap()).unwrap();
+        assert_eq!(state["dataset"]["name"], "Tiny");
+        assert_eq!(state["volumes"].as_array().unwrap().len(), 1);
+        assert_eq!(state["view"]["volumes"][0]["id"], patch["asset"]["id"]);
+        assert!(out.join("review.nvbundle").metadata().unwrap().len() > 0);
+        let provenance = fs::read_to_string(session.join("provenance.jsonl")).unwrap();
+        let line: Value = serde_json::from_str(provenance.lines().last().unwrap()).unwrap();
+        assert_eq!(line["action"], "review.headless");
+        assert_eq!(line["step"], "review");
+        assert_eq!(line["outputs"], outputs);
     }
 
     #[test]
