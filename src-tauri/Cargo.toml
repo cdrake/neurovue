@@ -3,6 +3,7 @@ name = "neurovue"
 version = "0.1.0"
 description = "NeuroVue desktop viewer"
 edition = "2021"
+license = "BSD-2-Clause"
 
 [lib]
 name = "neurovue_lib"
