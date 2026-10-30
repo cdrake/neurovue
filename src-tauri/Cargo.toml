@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "NeuroVue desktop viewer"
 edition = "2021"
 license = "BSD-2-Clause"
+# tauri dev runs the window, not neurovue-cli
+default-run = "neurovue"
 
 [lib]
 name = "neurovue_lib"
