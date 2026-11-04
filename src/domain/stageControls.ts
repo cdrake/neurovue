@@ -87,6 +87,8 @@ const SLIDER_STYLE: Partial<SliderStyle> = {
 // Where the controls sit, in CSS pixels, as the HTML ones did.
 const EDGE = 14
 const TOP = 56
+/** Below the stage's floating title bar, where the controls start. */
+export const TITLE_CLEARANCE = TOP
 const ROW_GAP = 6
 /** Below the view-mode control, the only one at the top right. */
 export const TOP_RIGHT_CLEARANCE = TOP + CONTROL_HEIGHT + ROW_GAP

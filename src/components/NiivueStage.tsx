@@ -34,6 +34,7 @@ import {
   StageControls,
   type StageControlsActions,
   type StageControlsState,
+  TITLE_CLEARANCE,
   TOP_RIGHT_CLEARANCE,
 } from '../domain/stageControls'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
@@ -178,6 +179,8 @@ interface NiiVueLike {
   // Move the crosshair to an absolute RAS+ world position (mm). Fires
   // locationChange, so the readout updates like a click.
   setCrosshairPos?(pos: [number, number, number]): void
+  // Re-emits locationChange for the current crosshair.
+  createOnLocationChange?(): void
   // Slice layout: SLICE_TYPE.{AXIAL:0, CORONAL:1, SAGITTAL:2, MULTIPLANAR:3, RENDER:4}.
   sliceType?: number
   isOrientationTextVisible?: boolean
@@ -809,11 +812,17 @@ export function NiivueStage({
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
         loadedLabelColormapsRef.current = labelColormaps
-        // An atlas legend starts below the view modes, not under them.
+        // The views start below the floating title bar (it hid the 2D "A"
+        // label), and an atlas legend below the view modes, not under them.
         const hasLegend = layers.some(
           (layer) => layer.isAtlas && labelColormaps[layer.item.id],
         )
-        nv.layoutInset = [0, hasLegend ? TOP_RIGHT_CLEARANCE : 0, 0, 0]
+        nv.layoutInset = [
+          0,
+          hasLegend ? TOP_RIGHT_CLEARANCE : TITLE_CLEARANCE,
+          0,
+          0,
+        ]
         if (!cancelled) {
           if (nv.setVolume) unannouncedViewerRef.current = nv
           else onViewer?.(nv)
@@ -1424,8 +1433,13 @@ export function NiivueStage({
   function pageToSlice(target: number): void {
     const nv = nvRef.current
     if (sliceAxis === undefined || !nv?.moveCrosshairInVox) return
-    const delta = clamp(Math.round(target), 0, sliceMax) - sliceValue
-    if (delta === 0) return
+    // Step from the exact (often fractional) crosshair voxel, not the rounded
+    // slider value, or the move lands one slice off.
+    const from = Number.isFinite(currentVox)
+      ? (currentVox as number)
+      : sliceValue
+    const delta = clamp(Math.round(target), 0, sliceMax) - from
+    if (Math.abs(delta) < 1e-6) return
     const step: [number, number, number] = [0, 0, 0]
     step[sliceAxis] = delta
     nv.moveCrosshairInVox(...step)
@@ -1944,6 +1958,9 @@ async function loadRenderVolumeLods({
       return
     }
     if (isCancelled()) return
+    // A new viewer starts at its own crosshair; report it so the slice slider
+    // and readout don't keep the previous viewer's location.
+    nv.createOnLocationChange?.()
 
     loadedLevel = level
     applyClipPlanes(nv, clipPlanes)
