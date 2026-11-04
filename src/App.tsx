@@ -2289,9 +2289,6 @@ export function App(): JSX.Element {
                       setDesktopZoom((zoom) => zoomBy(zoom, 0.8))
                     }
                   />
-                  <span className="nv-zoom-readout">
-                    {Math.round(desktopZoom * 100)}%
-                  </span>
                 </fieldset>
               )}
 
@@ -2785,6 +2782,45 @@ function LayerPanel({
     .map((row) => layerWarning(selected, row.item, layerExtents))
     .filter((warning): warning is string => warning !== null)
 
+  // Only the subject check is available before the volume loads (the
+  // world-space check needs post-load extents), so a different-subject
+  // candidate is flagged right in the pool. In a large BIDS dataset those are
+  // most of the pool, so they sit behind a disclosure under the same-subject ones.
+  const sameSubjectCandidates: DesktopItem[] = []
+  const otherSubjectCandidates: DesktopItem[] = []
+  for (const item of addCandidates) {
+    ;(layerSubjectWarning(selected, item)
+      ? otherSubjectCandidates
+      : sameSubjectCandidates
+    ).push(item)
+  }
+  const renderAddOption = (item: DesktopItem): JSX.Element => {
+    const warn = layerSubjectWarning(selected, item)
+    return (
+      <button
+        className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
+        disabled={!selected}
+        key={item.id}
+        onClick={() => onOverlayToggle(item.id)}
+        title={warn ? `${item.label} — ${warn}` : item.label}
+        type="button"
+      >
+        <Plus size={13} />
+        <span>
+          <strong>{item.label}</strong>
+          <small>{layerOptionMeta(item)}</small>
+        </span>
+        {warn ? (
+          <AlertTriangle
+            aria-label="Different subject than base"
+            className="nv-layer-add-warn"
+            size={13}
+          />
+        ) : null}
+      </button>
+    )
+  }
+
   return (
     <section className="nv-control-section nv-layer-panel">
       <div className="nv-panel-heading">
@@ -2945,36 +2981,15 @@ function LayerPanel({
         <em>{addCandidates.length}</em>
       </div>
       <div className="nv-layer-list">
-        {addCandidates.map((item) => {
-          // Only the subject check is available before the volume loads (the
-          // world-space check needs post-load extents), so surface a
-          // different-subject candidate right in the pool — the mismatch is
-          // cheapest to catch before it's blended onto the base.
-          const warn = layerSubjectWarning(selected, item)
-          return (
-            <button
-              className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
-              disabled={!selected}
-              key={item.id}
-              onClick={() => onOverlayToggle(item.id)}
-              title={warn ? `${item.label} — ${warn}` : item.label}
-              type="button"
-            >
-              <Plus size={13} />
-              <span>
-                <strong>{item.label}</strong>
-                <small>{layerOptionMeta(item)}</small>
-              </span>
-              {warn ? (
-                <AlertTriangle
-                  aria-label="Different subject than base"
-                  className="nv-layer-add-warn"
-                  size={13}
-                />
-              ) : null}
-            </button>
-          )
-        })}
+        {sameSubjectCandidates.map(renderAddOption)}
+        {otherSubjectCandidates.length > 0 ? (
+          <details className="nv-layer-add-other">
+            <summary>
+              Other subjects <em>{otherSubjectCandidates.length}</em>
+            </summary>
+            {otherSubjectCandidates.map(renderAddOption)}
+          </details>
+        ) : null}
         {addCandidates.length === 0 ? (
           <div className="nv-filter-empty">No overlay candidates.</div>
         ) : null}

@@ -381,7 +381,6 @@ export function DatasetDesktop({
           className="nv-hud"
           title={`Preview level L${previewLevel} · ${previewSize} px thumbnails · grid ${layoutWorld.width} x ${layoutWorld.height}`}
         >
-          <span>zoom {Math.round(zoom * 100)}%</span>
           <span>{layoutItems.length} shown</span>
         </div>
         {derivedSource ? (
