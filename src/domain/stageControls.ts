@@ -13,6 +13,7 @@ import {
   UIKitSegmentedOverlay,
   UIKitSliderOverlay,
 } from '@niivue/uikit'
+import { provideStageControls } from './stageControlSurface'
 
 type RGBA = readonly [number, number, number, number]
 
@@ -200,7 +201,14 @@ export class StageControls implements UIKitOverlayRenderer {
     this.host = host
     const unregister = register(this)
     const unwire = this.controls.attach(host)
+    // Let an agent's list_controls / set_control reach these same controls.
+    const unprovide = provideStageControls(() =>
+      this.state && this.actions
+        ? { state: this.state, actions: this.actions }
+        : null,
+    )
     return () => {
+      unprovide()
       unwire()
       unregister()
       this.host = null
