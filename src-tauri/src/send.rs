@@ -107,7 +107,8 @@ fn connect(addresses: &[SocketAddr], device: &str) -> Result<TcpStream, String> 
     addresses
         .iter()
         .find_map(|address| TcpStream::connect_timeout(address, CONNECT_WAIT).ok())
-        .ok_or_else(|| format!("Couldn't reach {device}. Is NeuroVue open on it?"))
+        // The addresses tried say which of them refused, when a retry works.
+        .ok_or_else(|| format!("Couldn't reach {device} at {addresses:?}. Is NeuroVue open on it?"))
 }
 
 /// Sends one request with a `length`-byte body read from `body`, and returns
