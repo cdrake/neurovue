@@ -19,9 +19,9 @@
     "tauri:build:mac": "tauri build --target universal-apple-darwin"
   },
   "dependencies": {
-    "@niivue/niivue": "^1.0.0-rc.39",
-    "@niivue/nv-mcp": "1.0.0-rc.16",
-    "@niivue/uikit": "^1.0.0-rc.27",
+    "@niivue/niivue": "^1.0.0-rc.83",
+    "@niivue/nv-mcp": "1.0.0-rc.69",
+    "@niivue/uikit": "^1.0.0-rc.77",
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@xterm/addon-fit": "^0.11.0",

@@ -5,9 +5,9 @@
     "": {
       "name": "neurovue",
       "dependencies": {
-        "@niivue/niivue": "^1.0.0-rc.39",
-        "@niivue/nv-mcp": "1.0.0-rc.16",
-        "@niivue/uikit": "^1.0.0-rc.27",
+        "@niivue/niivue": "^1.0.0-rc.83",
+        "@niivue/nv-mcp": "1.0.0-rc.69",
+        "@niivue/uikit": "^1.0.0-rc.77",
         "@tauri-apps/api": "~2.11.0",
         "@tauri-apps/plugin-dialog": "~2.7.1",
         "@xterm/addon-fit": "^0.11.0",
@@ -161,11 +161,11 @@
 
     "@napi-rs/lzma-linux-x64-gnu": ["@napi-rs/lzma-linux-x64-gnu@1.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ=="],
 
-    "@niivue/niivue": ["@niivue/niivue@1.0.0-rc.39", "", { "dependencies": { "cbor-x": "^1.6.0", "clipper2-ts": "^2.0.1-13", "earcut": "^3.0.2", "gl-matrix": "^3.4.4", "nifti-reader-js": "^0.8.1", "zarrita": "^0.7.3" } }, "sha512-kjKZ9tVuE+6yrQbJCftl6uu7bICIx4Y0DIqQeUyuao2Oqv0HygD396swnyTvpBEiuv4TyCV22kfuDRQ2T3oVIQ=="],
+    "@niivue/niivue": ["@niivue/niivue@1.0.0-rc.83", "", { "dependencies": { "cbor-x": "^1.6.0", "clipper2-ts": "^2.0.1-13", "earcut": "^3.0.2", "gl-matrix": "^3.4.4", "nifti-reader-js": "^0.8.1", "zarrita": "^0.7.3" } }, "sha512-JueCAdPpt0m/MOQ98ZPlMTpLyUaJu1tLWOjtSOkkegXw/PAuknxUu6vRGLWKZ5WpiJuzub1AAZoY4qC3n0k+7Q=="],
 
-    "@niivue/nv-mcp": ["@niivue/nv-mcp@1.0.0-rc.16", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "zod": "^4.6.5" }, "peerDependencies": { "@niivue/niivue": "1.0.0-rc.39", "@niivue/uikit": "1.0.0-rc.27" }, "optionalPeers": ["@niivue/niivue", "@niivue/uikit"] }, "sha512-ATJt6b7dnSAh2oCnrBjY3jVWFjcqdT+sWF5hsOdqVUvvfW5noHlwPDxx6/LMQFTZVoKbE27niHpTEXVSvvj+vQ=="],
+    "@niivue/nv-mcp": ["@niivue/nv-mcp@1.0.0-rc.69", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "zod": "^4.6.5" }, "peerDependencies": { "@niivue/niivue": "1.0.0-rc.83", "@niivue/uikit": "1.0.0-rc.77" }, "optionalPeers": ["@niivue/niivue", "@niivue/uikit"] }, "sha512-Ba4vL1jc4vdDdclwfW6EbvkWI+N9VPcPqc5i7ansL8nMuDQq0z/Fz7DUlglXLyi7gRtdyKLWUlQqVV38GqJDWA=="],
 
-    "@niivue/uikit": ["@niivue/uikit@1.0.0-rc.27", "", { "peerDependencies": { "@niivue/niivue": "1.0.0-rc.39" } }, "sha512-G2NUqKYrpbwtkOyWkxT5xi9FLWYWtpWEKMapH8fjHN4JfszD8nJ6w9Z/BS/U7bNmQ0+mtcbCPtJFHyIK40uRSw=="],
+    "@niivue/uikit": ["@niivue/uikit@1.0.0-rc.77", "", { "peerDependencies": { "@niivue/niivue": "1.0.0-rc.83" } }, "sha512-U/oJQHA4eCnl/7Sfcuo97oTUpTCQuXgItp5D1/PzXZzO4Ipfk4qio5hxBKUQR1dqNKJdm6S3/DBWPYsHWpZlMg=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 

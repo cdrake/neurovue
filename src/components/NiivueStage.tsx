@@ -150,7 +150,9 @@ interface NiiVueLike {
   activeClipPlaneIndex?: number
   attachToCanvas(canvas: HTMLCanvasElement): Promise<unknown>
   loadVolumes(volumes: NiiVueVolumeOptions[]): Promise<unknown>
-  setColormapLabel?(volumeIndex: number, cmap: ColorMap | null): Promise<void>
+  // Registers a colormap; one with a `labels` array is a label table. Returns
+  // the canonical name to pass as a volume's colormap.
+  addColormap?(name: string, cmap: ColorMap): string
   setVolume?(
     volumeIndex: number,
     options: {
@@ -507,6 +509,9 @@ export function NiivueStage({
   // display-only re-applies (which run on a possibly-reordered `layers`) still
   // target the correct volume. `volumeIndexOfLayer` is the single lookup.
   const loadedLayerIdsRef = useRef<string[]>([])
+  // The registered label colormap of each loaded layer that has one, by item
+  // id: it stands in for the layer's own colormap (registerLabelColormaps).
+  const loadedLabelColormapsRef = useRef<Record<string, string>>({})
   // A loaded viewer not yet passed to onViewer. The display effect passes it
   // once the layers' windows are applied, so an agent never sees a stat
   // overlay before its threshold.
@@ -724,8 +729,11 @@ export function NiivueStage({
         const attachedCanvas = activeCanvasFor(nv, canvas)
         canvasRef.current = attachedCanvas
         resizeNiiVue(nv, attachedCanvas, stage)
+        const labelColormaps = await registerLabelColormaps(nv, layers)
+        if (cancelled) return
         await loadRenderVolumeLods({
           layers,
+          labelColormaps,
           nv,
           clipPlanes,
           canvas: attachedCanvas,
@@ -738,6 +746,7 @@ export function NiivueStage({
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
+        loadedLabelColormapsRef.current = labelColormaps
         if (!cancelled) {
           if (nv.setVolume) unannouncedViewerRef.current = nv
           else onViewer?.(nv)
@@ -782,6 +791,7 @@ export function NiivueStage({
         localNv.destroy?.()
         nvRef.current = null
         loadedLayerIdsRef.current = []
+        loadedLabelColormapsRef.current = {}
         loadedMeshIdsRef.current = []
       }
       onLocationChange?.(null)
@@ -825,7 +835,8 @@ export function NiivueStage({
         }
         return (
           nv.setVolume?.(index, {
-            colormap: layer.colormap,
+            colormap:
+              loadedLabelColormapsRef.current[layer.item.id] ?? layer.colormap,
             colormapNegative: layer.colormapNegative ?? '',
             opacity: layer.opacity,
             ...windowOption,
@@ -1753,6 +1764,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 async function loadRenderVolumeLods({
   layers,
+  labelColormaps,
   nv,
   clipPlanes,
   canvas,
@@ -1762,6 +1774,7 @@ async function loadRenderVolumeLods({
   setStatus,
 }: {
   layers: NiivueRenderLayer[]
+  labelColormaps: Record<string, string>
   nv: NiiVueLike
   clipPlanes: ClipPlane[]
   canvas: HTMLCanvasElement
@@ -1776,9 +1789,6 @@ async function loadRenderVolumeLods({
     layer,
     levels: renderVolumeLevels(layer.item),
   }))
-  const atlasMaps = await resolveAtlasColorMaps(layers)
-  if (isCancelled()) return
-
   const levels = stackLevels[0].levels
   let loadedLevel: RenderVolumeLevel | null = null
   let lastError: unknown = null
@@ -1810,7 +1820,7 @@ async function loadRenderVolumeLods({
         return {
           url: source,
           name: `${layer.item.label} L${layerLevel.level}`,
-          colormap: layer.colormap,
+          colormap: labelColormaps[layer.item.id] ?? layer.colormap,
           colormapNegative: layer.colormapNegative ?? '',
           opacity: layer.opacity,
           isColorbarVisible: layerIndex === 0,
@@ -1823,8 +1833,6 @@ async function loadRenderVolumeLods({
 
     try {
       await nv.loadVolumes(volumes)
-      if (isCancelled()) return
-      await applyAtlasLabelMaps(nv, atlasMaps)
     } catch (error) {
       lastError = error
       if (!loadedLevel) {
@@ -1931,24 +1939,30 @@ function extractAtlasColorMap(metadata: VolumeMetadata): ColorMap | null {
   return null
 }
 
-// `atlasMaps` is built by `resolveAtlasColorMaps(layers)` in layer order and
-// applied here immediately after `nv.loadVolumes(volumes)` (also layer order),
-// so the array index IS the freshly-loaded volume index — safe by construction,
-// unlike the display re-applies which run later against a possibly-reordered
-// `layers` and therefore go through `loadedLayerIdsRef`.
-async function applyAtlasLabelMaps(
+// A layer's label colormap (a drawing's pens, an atlas's sidecar LUT),
+// registered with NiiVue under a name of its own: NiiVue picks a label
+// colormap by name, like any other. Keyed by item id; a layer without one keeps
+// its own colormap.
+async function registerLabelColormaps(
   nv: NiiVueLike,
-  atlasMaps: Array<ColorMap | null>,
-): Promise<void> {
-  if (!nv.setColormapLabel) return
-  await Promise.all(
-    atlasMaps.map((colorMap, volumeIndex) => {
-      if (!colorMap) return Promise.resolve()
-      return (
-        nv.setColormapLabel?.(volumeIndex, colorMap) ?? Promise.resolve()
-      ).catch(() => undefined)
-    }),
-  )
+  layers: NiivueRenderLayer[],
+): Promise<Record<string, string>> {
+  const colorMaps = await resolveAtlasColorMaps(layers)
+  const names: Record<string, string> = {}
+  for (const [index, colorMap] of colorMaps.entries()) {
+    if (!colorMap || !nv.addColormap) continue
+    const { id } = layers[index].item
+    try {
+      // A `labels` array, even an empty one, makes it a label table.
+      names[id] = nv.addColormap(`neurovue-labels-${id}`, {
+        ...colorMap,
+        labels: colorMap.labels ?? [],
+      })
+    } catch {
+      // A malformed LUT leaves the layer on its own colormap.
+    }
+  }
+  return names
 }
 
 function normalizeLabelColorMap(value: JsonValue): ColorMap | null {
