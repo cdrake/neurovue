@@ -952,8 +952,26 @@ pub fn export_bundle(
         return Err("export_bundle: none of the selected volumes have a source file".to_string());
     }
 
-    // The bundle is a single zip file. Replace anything already at `dest` — a
-    // stale file, or a legacy directory bundle from an older build.
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("export_bundle: create {}: {error}", parent.display()))?;
+    }
+    // Write beside `dest` and swap in only on success: the sources may live inside
+    // an existing (legacy directory) bundle at `dest`, and a failed export must not
+    // destroy the previous one.
+    let partial = dest.with_file_name(format!(
+        "{}.partial",
+        dest.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
+    ));
+    let written = write_bundle_zip(handle, &partial, &selected, view, created_at);
+    let total_bytes = match written {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
+    };
+    // Replace anything already at `dest`: a stale file, or a legacy directory bundle.
     if dest.is_dir() {
         fs::remove_dir_all(dest)
             .map_err(|error| format!("export_bundle: replace {}: {error}", dest.display()))?;
@@ -961,11 +979,23 @@ pub fn export_bundle(
         fs::remove_file(dest)
             .map_err(|error| format!("export_bundle: overwrite {}: {error}", dest.display()))?;
     }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("export_bundle: create {}: {error}", parent.display()))?;
-    }
+    fs::rename(&partial, dest)
+        .map_err(|error| format!("export_bundle: finalize {}: {error}", dest.display()))?;
 
+    Ok(BundleExportResult {
+        bundle_path: dest.display().to_string(),
+        volume_count: selected.len(),
+        total_bytes,
+    })
+}
+
+fn write_bundle_zip(
+    handle: &ServerHandle,
+    dest: &FsPath,
+    selected: &[VolumeEntry],
+    view: &Value,
+    created_at: &str,
+) -> Result<u64, String> {
     let zip_file = File::create(dest)
         .map_err(|error| format!("export_bundle: create {}: {error}", dest.display()))?;
     let mut zip = ZipWriter::new(zip_file);
@@ -979,7 +1009,7 @@ pub fn export_bundle(
     let mut total_bytes: u64 = 0;
     let mut manifest_volumes: Vec<Value> = Vec::with_capacity(selected.len());
 
-    for entry in &selected {
+    for entry in selected {
         let source = entry
             .source_path
             .as_ref()
@@ -1040,12 +1070,7 @@ pub fn export_bundle(
         .map_err(|error| format!("export_bundle: write manifest.json: {error}"))?;
     zip.finish()
         .map_err(|error| format!("export_bundle: finalize {}: {error}", dest.display()))?;
-
-    Ok(BundleExportResult {
-        bundle_path: dest.display().to_string(),
-        volume_count: selected.len(),
-        total_bytes,
-    })
+    Ok(total_bytes)
 }
 
 /// A drawing made on another device (the iPad's draw tool), as a bundle of one

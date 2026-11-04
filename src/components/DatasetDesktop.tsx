@@ -9,6 +9,7 @@ import {
   type RefObject,
   type SetStateAction,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -36,6 +37,12 @@ const GRID_STAGE_PADDING_PX = 44
 const MIN_GRID_TILE_PX = 56
 const MAX_GRID_TILE_PX = 240
 const MAX_GRID_COLUMNS = 8
+// Fit the whole dataset in the pane only while tiles stay at least this wide
+// (the width labels need); below it, scrolling readable tiles beats a wall of dots.
+const FIT_ALL_MIN_TILE_PX = 112
+// Filter transitions: slide/fade tiles so users keep their bearings.
+const TILE_TRANSITION_MS = 250
+const TILE_TRANSITION_MAX_TILES = 200
 // Rendered room above the first row for the section label chip.
 const GRID_SECTION_LABEL_PX = 52
 
@@ -75,10 +82,15 @@ export function DatasetDesktop({
 }): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const minimapRef = useRef<HTMLButtonElement | null>(null)
-  // A minimap of a single tile adds nothing, and on narrow panes it would
-  // collide with the first-run Open-your-data card.
-  const showMinimap = items.length > 1
   const zoomRef = useRef(zoom)
+  const worldRef = useRef<HTMLDivElement | null>(null)
+  // Last user scroll; read in the layout effect, scrollTop is already clamped to the new world.
+  const scrolledRef = useRef({ x: 0, y: 0 })
+  // Tile rects (px, relative to the world) from the last committed layout.
+  const lastLayoutRef = useRef<{
+    key: string
+    rects: Map<string, PxRect>
+  } | null>(null)
   const dragRef = useRef<DesktopDragState | null>(null)
   const suppressClickRef = useRef(false)
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 })
@@ -99,8 +111,9 @@ export function DatasetDesktop({
   const tileSize = manifest?.tileSize ?? 1024
   const gap = manifest?.gap ?? 96
   const gridFit = useMemo(
-    () => desktopGridFit(stageSize.width, items, tileSize, gap),
-    [gap, items, stageSize.width, tileSize],
+    () =>
+      desktopGridFit(stageSize.width, stageSize.height, items, tileSize, gap),
+    [gap, items, stageSize.height, stageSize.width, tileSize],
   )
   const desktopLayout = useMemo(
     () => normalizeDesktopLayout(items, world, tileSize, gap, gridFit),
@@ -157,12 +170,57 @@ export function DatasetDesktop({
   const sourceStyle = derivedSource
     ? worldRectStyle(derivedSource.bounds, layoutWorld)
     : undefined
+  // Nothing to navigate when one tile or the whole grid fits; it would only cover tiles.
+  const showMinimap =
+    items.length > 1 &&
+    (Number.parseFloat(String(worldSize.width)) >
+      stageSize.width - GRID_STAGE_PADDING_PX ||
+      Number.parseFloat(String(worldSize.height)) >
+        stageSize.height - GRID_STAGE_PADDING_PX)
   const isOverview =
-    renderedDesktopTileSize(worldSize, layoutWorld, tileSize) < 112
+    renderedDesktopTileSize(worldSize, layoutWorld, tileSize) <
+    FIT_ALL_MIN_TILE_PX
 
   useEffect(() => {
     zoomRef.current = zoom
   }, [zoom])
+
+  // A new shown set (open or filter; App resets zoom in the same commit) starts
+  // at the top and animates from the previous layout.
+  const shownKey = useMemo(
+    () => items.map((item) => item.id).join('\n'),
+    [items],
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: worldSize is a trigger; rects are re-measured whenever the rendered world changes.
+  useLayoutEffect(() => {
+    const worldElement = worldRef.current
+    const stage = stageRef.current
+    if (!worldElement || !stage) return
+    const rects = new Map(
+      layoutItems.map((item) => [
+        item.id,
+        pxRect(
+          item.bounds,
+          layoutWorld,
+          worldElement.clientWidth,
+          worldElement.clientHeight,
+        ),
+      ]),
+    )
+    const last = lastLayoutRef.current
+    lastLayoutRef.current = { key: shownKey, rects }
+    if (!last || last.key === shownKey) return
+    const scrolled = scrolledRef.current
+    stage.scrollTo(0, 0)
+    animateDesktopTiles(
+      worldElement,
+      last.rects,
+      rects,
+      scrolled,
+      stage.clientWidth,
+      stage.clientHeight,
+    )
+  }, [layoutItems, layoutWorld, shownKey, worldSize])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -251,14 +309,20 @@ export function DatasetDesktop({
         onPointerDown={(event) =>
           beginDesktopPan(event, dragRef, suppressClickRef, setIsPanning)
         }
-        onScroll={() => updateDesktopViewport(stageRef.current, setViewport)}
+        onScroll={(event) => {
+          scrolledRef.current = {
+            x: event.currentTarget.scrollLeft,
+            y: event.currentTarget.scrollTop,
+          }
+          updateDesktopViewport(stageRef.current, setViewport)
+        }}
         ref={stageRef}
         role="group"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the grid pans with arrow keys, so it must be focusable.
         tabIndex={0}
       >
         <StageResizeObserver stageRef={stageRef} onResize={setStageSize} />
-        <div className="nv-osd-world" style={worldSize}>
+        <div className="nv-osd-world" ref={worldRef} style={worldSize}>
           {sections.map((section) => (
             <div
               aria-hidden="true"
@@ -282,9 +346,9 @@ export function DatasetDesktop({
                 frameClassName="nv-osd-image-frame"
                 draggable={false}
               />
-              <span className="nv-osd-index">
-                {isDerivedItem(item) ? 'D' : 'L0'}
-              </span>
+              {isDerivedItem(item) ? (
+                <span className="nv-osd-index">Derived</span>
+              ) : null}
               <span className="nv-osd-label">{volumeDisplayLabel(item)}</span>
             </button>
           ))}
@@ -326,25 +390,19 @@ export function DatasetDesktop({
             <strong>Original</strong>
             <span>{derivedSource.label}</span>
           </div>
-        ) : (
-          <div className="nv-osd-source-key is-muted">
-            <span className="nv-osd-source-swatch" />
-            <strong>Original</strong>
-            <span>none selected</span>
-          </div>
-        )}
+        ) : null}
       </footer>
 
       {showMinimap ? (
         <button
-          aria-label="Click to center the desktop dataset"
+          aria-label="Jump to this part of the grid"
           className="nv-minimap"
           onClick={(event) =>
             jumpDesktopToMinimapPoint(event, stageRef, setViewport)
           }
           onPointerDown={(event) => event.stopPropagation()}
           ref={minimapRef}
-          title="Click to center desktop"
+          title="Jump to this part of the grid"
           type="button"
         >
           <span
@@ -682,14 +740,42 @@ interface DesktopGridFit {
   tilePx: number
 }
 
-function desktopGridFit(
+export function desktopGridFit(
   stageWidth: number,
+  stageHeight: number,
   items: DesktopItem[],
   tileSize: number,
   gap: number,
 ): DesktopGridFit {
   const available = Math.max(stageWidth - GRID_STAGE_PADDING_PX, 180)
+  const availableHeight = Math.max(stageHeight - GRID_STAGE_PADDING_PX, 120)
   const gapRatio = gap / Math.max(tileSize, 1)
+  let sources = 0
+  for (const item of items) if (!isDerivedItem(item)) sources += 1
+  const derived = items.length - sources
+  const layoutCount = Math.max(sources, derived, 1)
+
+  // First choice: the column count giving the largest tile at which the whole
+  // grid (rows, gaps, section labels) fits the pane on both axes.
+  const labelHeight = GRID_SECTION_LABEL_PX * (derived > 0 ? 2 : 1)
+  let best: DesktopGridFit | null = null
+  for (
+    let columns = 1;
+    columns <= Math.min(MAX_GRID_COLUMNS, layoutCount);
+    columns++
+  ) {
+    const tilePx = Math.min(
+      MAX_GRID_TILE_PX,
+      available / (columns + (columns - 1) * gapRatio),
+      (availableHeight - labelHeight) /
+        gridHeightInTiles(sources, derived, columns, gapRatio),
+    )
+    if (!best || tilePx > best.tilePx) best = { columns, tilePx }
+  }
+  if (best && best.tilePx >= FIT_ALL_MIN_TILE_PX) return best
+
+  // Too many to fit readably: fill the width and scroll vertically, but never
+  // let one tile be taller than the pane.
   const fitColumns = clamp(
     Math.floor(
       (available + MIN_GRID_TILE_PX * gapRatio) /
@@ -698,15 +784,30 @@ function desktopGridFit(
     1,
     MAX_GRID_COLUMNS,
   )
-  let sources = 0
-  for (const item of items) if (!isDerivedItem(item)) sources += 1
-  const layoutCount = Math.max(sources, items.length - sources, 1)
   const columns = Math.min(fitColumns, layoutCount)
   const tilePx = Math.min(
     MAX_GRID_TILE_PX,
     available / (columns + Math.max(columns - 1, 0) * gapRatio),
+    Math.max(availableHeight - GRID_SECTION_LABEL_PX, MIN_GRID_TILE_PX),
   )
   return { columns, tilePx }
+}
+
+// Rendered grid height in tile widths, mirroring normalizeDesktopLayout.
+function gridHeightInTiles(
+  sources: number,
+  derived: number,
+  columns: number,
+  gapRatio: number,
+): number {
+  const rowsHeight = (rows: number) => rows + Math.max(rows - 1, 0) * gapRatio
+  const sourceRows = layoutRows(sources, columns)
+  if (derived === 0) return Math.max(rowsHeight(sourceRows), 1)
+  return (
+    rowsHeight(sourceRows) +
+    Math.max(0.5, gapRatio) +
+    rowsHeight(layoutRows(derived, columns))
+  )
 }
 
 function layoutRows(count: number, columns: number): number {
@@ -781,6 +882,72 @@ function desktopSectionForRole(
       width: Math.max(world.width, 1),
       height: Math.max(maxY - minY + topPadding + bottomPadding, 1),
     },
+  }
+}
+
+interface PxRect {
+  x: number
+  y: number
+  width: number
+}
+
+function pxRect(
+  rect: WorldRect,
+  world: DesktopManifest['world'],
+  worldWidthPx: number,
+  worldHeightPx: number,
+): PxRect {
+  return {
+    x: (rect.x / Math.max(world.width, 1)) * worldWidthPx,
+    y: (rect.y / Math.max(world.height, 1)) * worldHeightPx,
+    width: (rect.width / Math.max(world.width, 1)) * worldWidthPx,
+  }
+}
+
+// FLIP: kept tiles slide/scale from their old spot, new ones fade in. Only tiles
+// in the (just reset) viewport animate, capped so big datasets stay snappy.
+function animateDesktopTiles(
+  worldElement: HTMLElement,
+  from: Map<string, PxRect>,
+  to: Map<string, PxRect>,
+  // Old rects were on screen at this scroll offset, since reset to 0.
+  scrolled: { x: number; y: number },
+  viewWidth: number,
+  viewHeight: number,
+): void {
+  if (
+    typeof worldElement.animate !== 'function' ||
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+    return
+  let budget = TILE_TRANSITION_MAX_TILES
+  for (const tile of worldElement.querySelectorAll<HTMLElement>(
+    '[data-volume-id]',
+  )) {
+    const id = tile.dataset.volumeId ?? ''
+    const next = to.get(id)
+    if (!next || next.x > viewWidth || next.y > viewHeight) continue
+    if (budget-- <= 0) break
+    const prev = from.get(id)
+    const timing = {
+      duration: TILE_TRANSITION_MS,
+      easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)',
+    }
+    if (!prev) {
+      tile.animate([{ opacity: 0 }, { opacity: 1 }], timing)
+      continue
+    }
+    const scale = prev.width / Math.max(next.width, 1)
+    tile.animate(
+      [
+        {
+          transformOrigin: '0 0',
+          transform: `translate(${prev.x - scrolled.x - next.x}px, ${prev.y - scrolled.y - next.y}px) scale(${scale})`,
+        },
+        { transformOrigin: '0 0', transform: 'none' },
+      ],
+      timing,
+    )
   }
 }
 

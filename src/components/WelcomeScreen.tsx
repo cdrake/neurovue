@@ -62,7 +62,7 @@ export function WelcomeScreen({
       <div className="nv-welcome-inner">
         <header className="nv-welcome-header">
           <h2 id="nv-welcome-title">Welcome to NeuroVue</h2>
-          <p>Open a NIfTI file or a BIDS dataset folder to start.</p>
+          <p>Open a NIfTI volume or a BIDS dataset to start.</p>
         </header>
 
         <div className="nv-welcome-columns">

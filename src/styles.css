@@ -2799,6 +2799,11 @@ button {
     grid-template-columns: 1fr;
   }
 
+  /* The dataset grid is hidden on phones; so are its zoom controls. */
+  .nv-inspector-tools {
+    display: none;
+  }
+
   .nv-workbench.is-file-list-collapsed,
   .nv-workbench.is-controls-collapsed {
     --file-list-width: 0;

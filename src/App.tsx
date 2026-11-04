@@ -34,6 +34,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Scan,
   Send,
   Shapes,
   Share2,
@@ -472,6 +473,7 @@ export function App(): JSX.Element {
     else if (!isBusyOpening) setIsWorkspaceVisible(false)
   }, [items.length, meshes.length, isBusyOpening])
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
+  const [isNiimathAvailable, setIsNiimathAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
@@ -503,6 +505,7 @@ export function App(): JSX.Element {
     void resolveRuntimeCapabilities().then((capabilities) => {
       if (cancelled) return
       setIsTerminalAvailable(capabilities.terminalAvailable)
+      setIsNiimathAvailable(capabilities.nativeNiimathAvailable)
       setIsAirdropAvailable(capabilities.airdropAvailable)
     })
     return () => {
@@ -575,6 +578,19 @@ export function App(): JSX.Element {
     clearFilters,
     setFilters,
   } = useVolumeFilters(items)
+
+  // Dataset view re-fits whenever the shown set changes (open or filter); a
+  // user/agent zoom only lasts until then. Adjusted during render so the new
+  // layout commits once at the fit size, which the tile animation relies on.
+  const shownKey = useMemo(
+    () => filteredItems.map((item) => item.id).join('\n'),
+    [filteredItems],
+  )
+  const [fittedKey, setFittedKey] = useState(shownKey)
+  if (fittedKey !== shownKey) {
+    setFittedKey(shownKey)
+    setDesktopZoom(1)
+  }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; dataset-scoped filters reset only when the backing dataset changes.
   useEffect(() => {
@@ -1635,10 +1651,7 @@ export function App(): JSX.Element {
                 ? 'No dataset open'
                 : isSampleDataset
                   ? datasetName
-                  : bidsName ||
-                    datasetRoot ||
-                    serverUrl ||
-                    'Resolving local server'}
+                  : bidsName || datasetRoot || 'Untitled workspace'}
             </p>
             {datasetNotice && !showWelcome ? (
               <p className="nv-dataset-notice" role="status">
@@ -1822,7 +1835,7 @@ export function App(): JSX.Element {
                     }}
                     title={
                       selected
-                        ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                        ? 'Export dataset bundle (volumes + this view) — one file you can share'
                         : 'Select a volume to export a bundle'
                     }
                     type="button"
@@ -1932,7 +1945,7 @@ export function App(): JSX.Element {
               onClick={handleExportBundle}
               title={
                 selected
-                  ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                  ? 'Export dataset bundle (volumes + this view) — one file you can share'
                   : 'Select a volume to export a bundle'
               }
               type="button"
@@ -2098,7 +2111,7 @@ export function App(): JSX.Element {
             >
               <section
                 className={`nv-dataset-pane ${mouseContext === 'desktop' ? 'is-context-active' : ''}`}
-                aria-label="OSD dataset viewer"
+                aria-label="Dataset view"
                 onPointerEnter={() => setMouseContext('desktop')}
                 onPointerLeave={() => setMouseContext(null)}
               >
@@ -2123,6 +2136,19 @@ export function App(): JSX.Element {
                 onPointerDown={(event) =>
                   beginSplitDrag(event, splitRef, setSplitPercent)
                 }
+                onKeyDown={(event) => {
+                  const step =
+                    event.key === 'ArrowLeft'
+                      ? -2
+                      : event.key === 'ArrowRight'
+                        ? 2
+                        : 0
+                  if (!step) return
+                  event.preventDefault()
+                  setSplitPercent((value) =>
+                    clamp(value + step, MIN_SPLIT, MAX_SPLIT),
+                  )
+                }}
                 role="separator"
                 title="Resize panes"
                 type="button"
@@ -2251,7 +2277,7 @@ export function App(): JSX.Element {
               {isExpress ? null : (
                 <fieldset
                   className="nv-inspector-tools"
-                  aria-label="Desktop controls"
+                  aria-label="Dataset grid zoom"
                 >
                   <DesktopZoomControls
                     zoom={desktopZoom}
@@ -2269,7 +2295,7 @@ export function App(): JSX.Element {
                 </fieldset>
               )}
 
-              {isExpress ? null : (
+              {isExpress || !isNiimathAvailable ? null : (
                 <SidePanelTabs
                   activeTab={sidePanelTab}
                   onChange={setSidePanelTab}
@@ -2277,7 +2303,9 @@ export function App(): JSX.Element {
               )}
 
               <div className="nv-sidepanel-content">
-                {isExpress || sidePanelTab === 'inspect' ? (
+                {isExpress ||
+                !isNiimathAvailable ||
+                sidePanelTab === 'inspect' ? (
                   <>
                     <LayerPanel
                       atlasId={atlasId}
@@ -2651,10 +2679,11 @@ function DesktopZoomControls({
         className="nv-pane-icon-button"
         disabled={zoom === 1}
         onClick={onFit}
-        title="Reset zoom"
+        title="Fit to pane"
+        aria-label="Fit to pane"
         type="button"
       >
-        <Maximize2 size={15} />
+        <Scan size={15} />
       </button>
     </>
   )

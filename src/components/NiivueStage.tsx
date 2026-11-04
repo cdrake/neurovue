@@ -190,6 +190,12 @@ interface NiiVueLike {
     type: 'sliceTypeChange',
     listener: (event: CustomEvent<{ sliceType: number }>) => void,
   ): void
+  addEventListener?(
+    type: 'change',
+    listener: (
+      event: CustomEvent<{ property: string; value: unknown }>,
+    ) => void,
+  ): void
   removeEventListener?(
     type: 'locationChange',
     listener: (event: CustomEvent<NiiVueLocation>) => void,
@@ -198,6 +204,12 @@ interface NiiVueLike {
   removeEventListener?(
     type: 'sliceTypeChange',
     listener: (event: CustomEvent<{ sliceType: number }>) => void,
+  ): void
+  removeEventListener?(
+    type: 'change',
+    listener: (
+      event: CustomEvent<{ property: string; value: unknown }>,
+    ) => void,
   ): void
   // Vector annotations (the measure tool). Shapes are drawn by our uikit
   // overlay from annotationScreenShapes, with isAnnotationDrawn off.
@@ -306,6 +318,13 @@ const NIVUE_RENDER_MODES: Record<RenderShading['renderMode'], number> = {
   mip: 1,
   cinematic: 3,
 }
+// NiiVue `change` properties that make up a RenderShading.
+const SHADING_PROPERTIES = new Set([
+  'volumeIllumination',
+  'volumeGradientOpacity',
+  'volumeSilhouette',
+  'volumeRenderMode',
+])
 
 // NiiVue SLICE_TYPE values for each selectable view mode.
 export type ViewModeId =
@@ -515,6 +534,7 @@ export function NiivueStage({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const nvRef = useRef<NiiVueLike | null>(null)
+  const isApplyingShadingRef = useRef(false)
   // `chunkVolumeGrid` from the active backend module, captured at attach so the
   // block effect can (re)tile volumes without a second dynamic import.
   const chunkVolumeGridRef = useRef<ChunkVolumeGridFn | null>(null)
@@ -628,6 +648,9 @@ export function NiivueStage({
       | null = null
     let sliceTypeListener:
       | ((event: CustomEvent<{ sliceType: number }>) => void)
+      | null = null
+    let shadingListener:
+      | ((event: CustomEvent<{ property: string; value: unknown }>) => void)
       | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
@@ -744,6 +767,23 @@ export function NiivueStage({
             if (!cancelled && mode) onViewModeChange(mode.id)
           }
           nv.addEventListener('sliceTypeChange', sliceTypeListener)
+          // Same for an agent's set_options on the 3D look, so the Look
+          // control shows it and the next viewer keeps it.
+          shadingListener = (event) => {
+            if (cancelled || isApplyingShadingRef.current) return
+            if (!SHADING_PROPERTIES.has(event.detail.property)) return
+            const renderMode = (
+              Object.keys(NIVUE_RENDER_MODES) as RenderShading['renderMode'][]
+            ).find((mode) => NIVUE_RENDER_MODES[mode] === nv.volumeRenderMode)
+            if (!renderMode) return
+            onShadingChange({
+              illumination: nv.volumeIllumination ?? 0,
+              gradientOpacity: nv.volumeGradientOpacity ?? 0,
+              silhouette: nv.volumeSilhouette ?? 0,
+              renderMode,
+            })
+          }
+          nv.addEventListener('change', shadingListener)
         }
         attachAnnotationLayer(nv)
         const attachedCanvas = activeCanvasFor(nv, canvas)
@@ -762,6 +802,8 @@ export function NiivueStage({
           isCancelled: () => cancelled,
           setStatus,
         })
+        // A cancelled load returns normally; don't let it clobber the newer stack's ids.
+        if (cancelled) return
         applyActiveClipPlane(nv, clipPlanes, activeClipPlaneId)
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
@@ -804,16 +846,22 @@ export function NiivueStage({
       if (stageControlsRef.current === stageControls) {
         stageControlsRef.current = null
       }
-      if (localNv && nvRef.current === localNv) {
+      // Always free this instance, even if a failed load already nulled nvRef.
+      if (localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
         }
         if (sliceTypeListener) {
           localNv.removeEventListener?.('sliceTypeChange', sliceTypeListener)
         }
+        if (shadingListener) {
+          localNv.removeEventListener?.('change', shadingListener)
+        }
+        localNv.destroy?.()
+      }
+      if (localNv && nvRef.current === localNv) {
         unannouncedViewerRef.current = null
         onViewer?.(null)
-        localNv.destroy?.()
         nvRef.current = null
         loadedLayerIdsRef.current = []
         loadedLabelColormapsRef.current = {}
@@ -1117,10 +1165,16 @@ export function NiivueStage({
   useEffect(() => {
     const nv = nvRef.current
     if (!nv) return
-    nv.volumeIllumination = shading.illumination
-    nv.volumeGradientOpacity = shading.gradientOpacity
-    nv.volumeSilhouette = shading.silhouette
-    nv.volumeRenderMode = NIVUE_RENDER_MODES[shading.renderMode]
+    // Our own sets emit change events too; mid-apply they'd report a half-set look.
+    isApplyingShadingRef.current = true
+    try {
+      nv.volumeIllumination = shading.illumination
+      nv.volumeGradientOpacity = shading.gradientOpacity
+      nv.volumeSilhouette = shading.silhouette
+      nv.volumeRenderMode = NIVUE_RENDER_MODES[shading.renderMode]
+    } finally {
+      isApplyingShadingRef.current = false
+    }
     nv.drawScene()
   }, [shading, loadedVersion])
 
