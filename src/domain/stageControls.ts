@@ -270,7 +270,7 @@ export class StageControls implements UIKitOverlayRenderer {
           on: state.measure.active,
           click: () => this.actions?.measure(),
         }),
-        this.toolButton('clear-measure', 'Clear', state.measure.enabled, {
+        this.toolButton('clear-measure', 'Clear ruler', state.measure.enabled, {
           click: () => this.actions?.clearMeasurements(),
         }),
       )
@@ -293,7 +293,7 @@ export class StageControls implements UIKitOverlayRenderer {
           this.toolButton('undo', 'Undo', draw.hasDrawing, {
             click: () => this.actions?.undo(),
           }),
-          this.toolButton('clear-drawing', 'Clear', draw.hasDrawing, {
+          this.toolButton('clear-drawing', 'Clear ink', draw.hasDrawing, {
             click: () => this.actions?.clearDrawing(),
           }),
         )
@@ -419,14 +419,22 @@ export class StageControls implements UIKitOverlayRenderer {
         x: Math.max(EDGE, width - EDGE - modes.width),
       })
     }
+    const rowX: number[] = []
     let x = EDGE
     for (const spec of row) {
       if (spec.id === 'draw' && row[0] !== spec) x += GROUP_GAP - GAP
-      this.buttons.updateButton(spec.id, { x, y: TOP })
+      rowX.push(x)
       x += (this.buttons.getLayout(spec.id)?.width ?? 0) + GAP
     }
+    // A row that would run into the view modes (a narrow pane) drops below them.
+    const modesLeft = width - EDGE - (modes?.width ?? 0)
+    const rowY =
+      x - GAP + GROUP_GAP > modesLeft ? TOP + CONTROL_HEIGHT + ROW_GAP : TOP
+    for (const [index, spec] of row.entries()) {
+      this.buttons.updateButton(spec.id, { x: rowX[index], y: rowY })
+    }
     if (palette) {
-      const y = TOP + CONTROL_HEIGHT + ROW_GAP
+      const y = rowY + CONTROL_HEIGHT + ROW_GAP
       let px = EDGE
       for (const color of palette.colors) {
         this.buttons.updateButton(`pen-${color.value}`, { x: px, y })
