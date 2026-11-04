@@ -87,6 +87,8 @@ const SLIDER_STYLE: Partial<SliderStyle> = {
 const EDGE = 14
 const TOP = 56
 const ROW_GAP = 6
+/** Below the view-mode control, the only one at the top right. */
+export const TOP_RIGHT_CLEARANCE = TOP + CONTROL_HEIGHT + ROW_GAP
 const GAP = 2
 const GROUP_GAP = 10
 const SWATCH = 28

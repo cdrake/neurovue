@@ -34,6 +34,7 @@ import {
   StageControls,
   type StageControlsActions,
   type StageControlsState,
+  TOP_RIGHT_CLEARANCE,
 } from '../domain/stageControls'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
@@ -154,6 +155,8 @@ interface NiiVueLike {
   // chunkPlan change). Chunked/exploded rendering needs this to take effect.
   updateGLVolume?(): Promise<void>
   activeClipPlaneIndex?: number
+  // Canvas kept clear of tiles and legend, [left, top, right, bottom] CSS px.
+  layoutInset?: [number, number, number, number]
   attachToCanvas(canvas: HTMLCanvasElement): Promise<unknown>
   loadVolumes(volumes: NiiVueVolumeOptions[]): Promise<unknown>
   // Registers a colormap; one with a `labels` array is a label table. Returns
@@ -252,6 +255,8 @@ interface NiiVueVolumeOptions {
   colormapNegative?: string
   opacity?: number
   isColorbarVisible?: boolean
+  // Whether a label colormap's names join NiiVue's legend.
+  isLegendVisible?: boolean
   calMin?: number
   calMax?: number
 }
@@ -705,7 +710,10 @@ export function NiivueStage({
           clipPlaneColor: [0.95, 0.2, 0.12, 0.7],
           isResizeCanvas: true,
           isColorbarVisible: true,
-          isLegendVisible: false,
+          // An atlas's regions, listed at the right; tapping a swatch hides
+          // or shows that region, tapping its name moves the crosshair there.
+          isLegendVisible: true,
+          isLegendToggleEnabled: true,
           isOrientCubeVisible: true,
           isOrientationTextVisible: viewMode !== 'render',
           show3Dcrosshair: false,
@@ -759,6 +767,11 @@ export function NiivueStage({
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
         loadedLabelColormapsRef.current = labelColormaps
+        // An atlas legend starts below the view modes, not under them.
+        const hasLegend = layers.some(
+          (layer) => layer.isAtlas && labelColormaps[layer.item.id],
+        )
+        nv.layoutInset = [0, hasLegend ? TOP_RIGHT_CLEARANCE : 0, 0, 0]
         if (!cancelled) {
           if (nv.setVolume) unannouncedViewerRef.current = nv
           else onViewer?.(nv)
@@ -1847,6 +1860,8 @@ async function loadRenderVolumeLods({
           colormapNegative: layer.colormapNegative ?? '',
           opacity: layer.opacity,
           isColorbarVisible: layerIndex === 0,
+          // The drawing's pens are not regions.
+          isLegendVisible: layer.item.derivation?.operation !== 'drawing',
           ...(layer.calMin !== undefined ? { calMin: layer.calMin } : {}),
           ...(layer.calMax !== undefined ? { calMax: layer.calMax } : {}),
         }
