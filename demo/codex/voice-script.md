@@ -8,6 +8,10 @@ unattended.
 
 - Open NeuroVue and turn on **View > Allow AI Agents**.
 - Start a **new chat** in Codex so it loads the NeuroVue tools.
+- Keep NeuroVue on screen beside Codex, not behind it. A hidden window stops
+  drawing, so screenshots fail and zooming the dataset can hang until it shows.
+- Clear old `motor demo` and `tracts view` saves out of `~/Downloads`, in any
+  capitalisation: the Mac treats "Motor Demo" and "motor demo" as one name.
 - The demo files are in `~/NeuroVue-demo`, with a small BIDS dataset in its
   `bids` folder. If either is missing, run `demo/codex/run.sh` once to
   download them.
@@ -33,13 +37,13 @@ unattended.
 > "Show all three slice views plus the 3D render."
 
 **7. Open a second window**
-> "Open a new NeuroVue window called tracts. Call it window B and bring it to the front."
+> "Open a new NeuroVue window called tracts. Call it window B, bring it to the front, and switch it to the express view."
 
 **8. Load surfaces and tracts**
 > "In window B, open subject 2's T1 from the dataset, then load the left hemisphere brain mesh and the dpsv tract file from the demo folder. Show only the 3D render, hide the T1 and its colour bar there, and draw the brain mesh as an outline so the tracts show through."
 
 **9. Switch back and explore**
-> "Go back to window A and bring it to the front. Move the crosshair to the strongest motor activation and tell me where it is in MNI coordinates."
+> "Go back to window A and bring it to the front. The strongest motor activation is at 48, minus 14, 56 in MNI millimetres. Move the crosshair there and tell me what you see at that spot."
 
 **10. Take a look**
 > "Take a screenshot of window A and describe what you see."
@@ -51,7 +55,7 @@ unattended.
 > "Switch to window A, bring it to the front, show only the 3D render, turn off the cut plane, and explode the brain into bricks."
 
 **13. Label it**
-> "Turn window A so the right hemisphere faces me, label the strongest motor activation as motor peak, and dim all the other bricks."
+> "Turn window A so the right hemisphere faces me, label the motor peak at 48, minus 14, 56 as motor peak, and dim all the other bricks."
 
 **14. Put it back together**
 > "Take the labels down, close the bricks back up, and go back to the three slice views plus the 3D render."
@@ -109,9 +113,14 @@ button in the drawing tools. The drawing appears in window A as an overlay.
 - Filtering and zooming happen in the dataset pane, which Express view hides,
   so step 3 switches window A to the dataset view by itself; step 4 switches
   it back to Express.
-- Step 17 opens the newest save. If "motor demo" was saved before, the new
-  one is "motor demo (1).nvd"; say that name, or clear old copies out of
-  Downloads before the demo.
+- Step 17 opens the newest save. If an old "motor demo" is still in
+  Downloads, the new one gets a number, such as "motor demo (2).nvd", and
+  Codex may open the old one; say the numbered name.
+- No tool finds a map's peak, so steps 9 and 13 give its coordinates. Asked
+  to find it, Codex has to guess from screenshots and can land on the wrong
+  side of the brain.
+- A new window opens in the dataset view, which squeezes the viewer into a
+  narrow pane; step 7 switches window B to Express for that reason.
 - The 3D render draws the T1 as a solid brain, which hides any surface
   or tracts inside it. That is why step 8 hides the T1 in window B.
 - If the iPad isn't listed, bring NeuroVue on the iPad to the front and ask

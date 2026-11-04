@@ -35,6 +35,8 @@ show.
 3. Open the second window, B, with `open_window`, titled "Codex demo: tracts".
    In tab B:
    - `focus_window`
+   - `set_window_mode` with `express`: a new window opens in the dataset view,
+     with the viewer squeezed into a narrow pane
    - `open_path` with sub-02's T1w file, the same MNI-registered volume
    - `load_surfaces` with `BrainMesh_ICBM152.lh.mz3`
    - `load_tracts` with `dpsv.trx`
@@ -44,8 +46,9 @@ show.
      `outline` shader using `set_mesh`
 4. Switch back to A:
    - `focus_window`
-   - move the crosshair to the strongest motor activation you can find, using
-     `where_am_i` and `go_to_point`
+   - move the crosshair to the strongest motor activation with `go_to_point`:
+     it is at MNI (48, -14, 56) mm, in the right precentral gyrus. No tool
+     reports a map's peak, so don't search for it from screenshots
    - `screenshot`
 5. Switch to B:
    - `focus_window`
