@@ -27,7 +27,7 @@ unattended.
 > "Zoom in on subject 2's T1 thumbnail and show it in the viewer. It's registered to MNI space. Then switch back to the express view."
 
 **5. Add the activation map**
-> "Now overlay the spm motor file from the NeuroVue demo folder. Use a warm colour map and hide anything below three."
+> "Now overlay the spm motor file from the NeuroVue demo folder. Use a warm colour map from three to eight, hiding anything below three."
 
 **6. Change the layout**
 > "Show all three slice views plus the 3D render."
@@ -36,7 +36,7 @@ unattended.
 > "Open a new NeuroVue window called tracts. Call it window B and bring it to the front."
 
 **8. Load surfaces and tracts**
-> "In window B, open subject 2's T1 from the dataset, then load the left hemisphere brain mesh and the dpsv tract file from the demo folder. Show only the 3D render, hide the T1 there, and draw the brain mesh as an outline so the tracts show through."
+> "In window B, open subject 2's T1 from the dataset, then load the left hemisphere brain mesh and the dpsv tract file from the demo folder. Show only the 3D render, hide the T1 and its colour bar there, and draw the brain mesh as an outline so the tracts show through."
 
 **9. Switch back and explore**
 > "Go back to window A and bring it to the front. Move the crosshair to the strongest motor activation and tell me where it is in MNI coordinates."
@@ -48,7 +48,7 @@ unattended.
 > "Switch to window B, bring it to the front, and rotate the brain so the left hemisphere faces me. The orientation cube should show L."
 
 **12. Explode the brain**
-> "Switch to window A, bring it to the front, show only the 3D render, and explode the brain into bricks."
+> "Switch to window A, bring it to the front, show only the 3D render, turn off the cut plane, and explode the brain into bricks."
 
 **13. Label it**
 > "Turn window A so the right hemisphere faces me, label the strongest motor activation as motor peak, and dim all the other bricks."

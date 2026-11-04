@@ -854,7 +854,7 @@ export function App(): JSX.Element {
         next.add(result.id)
         return next
       })
-      setStatus(`Overlay ${result.label} added to every volume.`, 'success')
+      setStatus(`${result.label} added to every volume.`, 'success')
     }
   }
 

@@ -28,8 +28,9 @@ show.
    - `set_window_mode` with `express`, to put the dataset pane away and give
      the viewer the whole window
    - `add_overlay_path` with `spmMotor.nii.gz`
-   - make the overlay easy to read with `set_volume`: a warm colormap, with
-     values below 3 left out
+   - make the overlay easy to read with `set_volume`: a warm colormap windowed
+     from 3 to 8 (`cal_min` 3, `cal_max` 8), with values below 3 left out;
+     `cal_min` alone leaves the top at about 3.3, so the map draws as flat blocks
    - `set_view` to the multiplanar layout with the render tile showing
 3. Open the second window, B, with `open_window`, titled "Codex demo: tracts".
    In tab B:
@@ -39,7 +40,7 @@ show.
    - `load_tracts` with `dpsv.trx`
    - `set_view` to show the render alone
    - the T1w, drawn solid in the render, hides the surface and tracts:
-     set its opacity to 0 with `set_volume`, and draw the surface with the
+     set its opacity to 0 and its `colorbar` to false with `set_volume`, and draw the surface with the
      `outline` shader using `set_mesh`
 4. Switch back to A:
    - `focus_window`
@@ -54,6 +55,8 @@ show.
 6. Switch to A and explode it:
    - `focus_window`
    - `set_view` to show the render alone
+   - `set_clip_plane` with `off`: `go_to_point` in step 4 left a cut that
+     slices the bricks in half
    - spread the T1w's bricks apart with `set_volume` and `spread` 1.5
    - turn the render to azimuth 270, so the right hemisphere faces the viewer
    - `set_labels` with one label, "Motor peak", at the strongest activation's
