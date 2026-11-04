@@ -104,6 +104,11 @@ export interface StageControlsState {
   viewMode: string
   /** False before a volume is selected: the view modes show, dimmed. */
   hasVolume: boolean
+  /** The 3D render's shading presets; value is null for custom shading. */
+  look: {
+    presets: readonly { id: string; label: string }[]
+    value: string | null
+  } | null
   measure: { active: boolean; enabled: boolean } | null
   draw: {
     active: boolean
@@ -131,6 +136,7 @@ export interface StageControlsState {
 /** What the controls do; NiivueStage passes fresh closures each render. */
 export interface StageControlsActions {
   viewMode(id: string): void
+  look(id: string): void
   measure(): void
   clearMeasurements(): void
   draw(): void
@@ -262,7 +268,24 @@ export class StageControls implements UIKitOverlayRenderer {
       },
     })
 
-    // Measure, then draw, along the top left.
+    // The render's look, then measure, then draw, along the top left.
+    const { look } = state
+    if (look) {
+      segmenteds.push({
+        id: 'look',
+        x: EDGE,
+        y: TOP,
+        segments: look.presets.map((preset) => ({
+          value: preset.id,
+          label: preset.label,
+        })),
+        value: look.value,
+        onChange: (value) => {
+          this.segmenteds.blur()
+          this.actions?.look(value)
+        },
+      })
+    }
     const row: ButtonSpec[] = []
     if (state.measure) {
       row.push(
@@ -420,7 +443,8 @@ export class StageControls implements UIKitOverlayRenderer {
       })
     }
     const rowX: number[] = []
-    let x = EDGE
+    const lookWidth = look ? (this.segmenteds.getLayout('look')?.width ?? 0) : 0
+    let x = look ? EDGE + lookWidth + GROUP_GAP : EDGE
     for (const spec of row) {
       if (spec.id === 'draw' && row[0] !== spec) x += GROUP_GAP - GAP
       rowX.push(x)
@@ -433,6 +457,7 @@ export class StageControls implements UIKitOverlayRenderer {
     for (const [index, spec] of row.entries()) {
       this.buttons.updateButton(spec.id, { x: rowX[index], y: rowY })
     }
+    if (look) this.segmenteds.updateSegmented('look', { x: EDGE, y: rowY })
     if (palette) {
       const y = rowY + CONTROL_HEIGHT + ROW_GAP
       let px = EDGE

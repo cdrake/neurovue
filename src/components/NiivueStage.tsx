@@ -25,7 +25,11 @@ import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
-import type { RenderShading } from '../domain/shading'
+import {
+  matchingShadingPreset,
+  type RenderShading,
+  SHADING_PRESETS,
+} from '../domain/shading'
 import {
   StageControls,
   type StageControlsActions,
@@ -54,8 +58,10 @@ interface NiivueStageProps {
   // Block (volume-chunk explode) settings, applied to every loaded layer: tile
   // each volume into a grid of bricks and separate them in the 3D render.
   blocks: BlockSettings
-  // 3D render look (lighting, gradient opacity, silhouette, MIP).
+  // 3D render look (lighting, gradient opacity, silhouette, MIP, cinematic).
   shading: RenderShading
+  // Picks a shading preset from the on-canvas Look control.
+  onShadingChange: (shading: RenderShading) => void
   // Surface meshes shown with the volumes, or on their own when no volume is
   // open (the Surfice case).
   meshes: MeshLayer[]
@@ -215,7 +221,7 @@ interface NiiVueLike {
   volumeIllumination?: number
   volumeGradientOpacity?: number
   volumeSilhouette?: number
-  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection.
+  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection, 3 cinematic.
   volumeRenderMode?: number
   model?: {
     scene?: {
@@ -289,7 +295,12 @@ type VoxelStep = readonly [di: number, dj: number, dk: number]
 const CLIP_DEPTH_WHEEL_STEP = 0.0015
 const NIVUE_SLICE_TYPE_RENDER = 4
 const NIVUE_SHOW_RENDER_ALWAYS = 1
-const NIVUE_RENDER_MODE_MAXIMUM = 1
+// NiiVue VOLUME_RENDER_MODE for each shading render mode.
+const NIVUE_RENDER_MODES: Record<RenderShading['renderMode'], number> = {
+  composite: 0,
+  mip: 1,
+  cinematic: 3,
+}
 
 // NiiVue SLICE_TYPE values for each selectable view mode.
 export type ViewModeId =
@@ -483,6 +494,7 @@ export function NiivueStage({
   viewMode,
   blocks,
   shading,
+  onShadingChange,
   meshes,
   crosshairTarget,
   onClipPlaneDepthChange,
@@ -1095,7 +1107,7 @@ export function NiivueStage({
     nv.volumeIllumination = shading.illumination
     nv.volumeGradientOpacity = shading.gradientOpacity
     nv.volumeSilhouette = shading.silhouette
-    nv.volumeRenderMode = shading.isMip ? NIVUE_RENDER_MODE_MAXIMUM : 0
+    nv.volumeRenderMode = NIVUE_RENDER_MODES[shading.renderMode]
     nv.drawScene()
   }, [shading, loadedVersion])
 
@@ -1372,6 +1384,13 @@ export function NiivueStage({
     })),
     viewMode,
     hasVolume: Boolean(primaryItem),
+    look:
+      isRenderMode && primaryItem
+        ? {
+            presets: SHADING_PRESETS.map(({ id, label }) => ({ id, label })),
+            value: matchingShadingPreset(shading),
+          }
+        : null,
     measure:
       isRenderMode || !primaryItem
         ? null
@@ -1425,6 +1444,10 @@ export function NiivueStage({
     viewMode: (id) => {
       const mode = VIEW_MODES.find((candidate) => candidate.id === id)
       if (mode) changeViewMode(mode.id)
+    },
+    look: (id) => {
+      const preset = SHADING_PRESETS.find((candidate) => candidate.id === id)
+      if (preset) onShadingChange(preset.shading)
     },
     measure: () => {
       setDrawTool(null)

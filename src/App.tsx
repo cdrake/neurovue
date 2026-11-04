@@ -2204,6 +2204,7 @@ export function App(): JSX.Element {
                   }
                   renderWheelMode={renderWheelMode}
                   shading={shading}
+                  onShadingChange={setShading}
                   viewMode={viewMode}
                 />
               </section>
