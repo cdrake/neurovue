@@ -153,7 +153,7 @@ import {
 import { useAgentClient } from './hooks/useAgentClient'
 import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
-import { useNativeMenu } from './hooks/useNativeMenu'
+import { useExpressMenuLabel, useNativeMenu } from './hooks/useNativeMenu'
 import {
   isInContainerTemp,
   rebaseContainerPath,
@@ -1070,6 +1070,7 @@ export function App(): JSX.Element {
     rememberUiMode(next)
   }
 
+  useExpressMenuLabel(isExpress)
   useNativeMenu({
     'express-view': toggleUiMode,
     'open-file': openLocalVolumeFile,

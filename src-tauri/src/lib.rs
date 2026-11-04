@@ -666,7 +666,8 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     let express_view = MenuItem::with_id(
         handle,
         MENU_EXPRESS_VIEW,
-        "Toggle Express View",
+        // Names the view the item switches to; the window in front sets it.
+        "Express View",
         true,
         Some("CmdOrCtrl+Alt+V"),
     )?;
@@ -698,6 +699,28 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         }
     }
     Ok(menu)
+}
+
+/// Names the View menu's switch after the view it leads to from `window`'s
+/// mode. The menu bar is shared, so only the window in front sets it.
+#[cfg(desktop)]
+#[tauri::command]
+fn set_express_menu_label(window: tauri::WebviewWindow, express: bool) {
+    if !window.is_focused().unwrap_or(false) {
+        return;
+    }
+    fn find<R: tauri::Runtime>(items: Vec<tauri::menu::MenuItemKind<R>>) -> Option<MenuItem<R>> {
+        items.into_iter().find_map(|item| {
+            if item.id() == MENU_EXPRESS_VIEW {
+                return item.as_menuitem().cloned();
+            }
+            item.as_submenu().and_then(|submenu| find(submenu.items().ok()?))
+        })
+    }
+    let item = window.app_handle().menu().and_then(|menu| find(menu.items().ok()?));
+    if let Some(item) = item {
+        let _ = item.set_text(if express { "Dataset View" } else { "Express View" });
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -822,7 +845,8 @@ pub fn run() {
             mcp::mcp_status,
             mcp::agent_resolve_path,
             mcp::open_viewer_window,
-            mcp::focus_window
+            mcp::focus_window,
+            set_express_menu_label
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
