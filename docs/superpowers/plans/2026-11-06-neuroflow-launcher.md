@@ -1,26 +1,27 @@
-# NeuroFlow Launcher Implementation Plan
+# NeuroVue Pipeline View Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Launch NeuroFlow tools and workflows on the current volume from NeuroVue
-desktop. Two UIs (A native, B `@cdrake/neuroflow-react`) are built behind a switch
-for a hands-on A/B comparison.
+**Goal:** Add a Pipelines view to NeuroVue desktop. It runs a NeuroFlow tool or
+workflow once on the dataset root, or once per filtered volume, and loads the
+outputs back into the viewer.
 
-**Architecture:** NeuroVue's Rust side spawns a locally installed `neuroflow-mcp`
-and relays JSON-RPC over stdio. A thin TS client (`neuroflowClient.ts`) drives
-list, run and cancel. Both UIs sit on that client. Variant B uses NeuroFlow's
-`WorkflowDiagram` and `RunPanel`, published from the neuroflow repo as an npm
-library.
+**Architecture:** The neuroflow repo publishes `@cdrake/neuroflow-react`. Its
+`PipelineView` combines the existing library, diagram and run panel and is
+driven entirely by props. NeuroVue's Rust side spawns a locally installed
+`neuroflow-mcp` and relays JSON-RPC over stdio. A TS client and pure reducers
+(target input, serial batch, run state) feed `PipelineViewHost`, which replaces
+`DatasetDesktop` in the left pane when the person switches to Pipelines.
 
 **Tech Stack:** Rust (Tauri 2, tokio, serde_json); React 19 + TS + bun (NeuroVue);
 React 18 + Vite library mode (neuroflow); MCP over stdio.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-neuroflow-launcher-design.md`. Read it
-first. Section numbers (§) below refer to it.
+**Spec:** `docs/superpowers/specs/2026-11-06-neuroflow-launcher-design.md` (the
+pipeline view design). Read it first. Section numbers (§) below refer to it.
 
 ## Global Constraints
 
-- NeuroVue's backend and UI entry point are desktop-only: `#[cfg(desktop)]` in
+- NeuroVue's backend and UI entry points are desktop-only: `#[cfg(desktop)]` in
   Rust. The UI checks for the command and hides itself when it's absent. Nothing
   on the iOS path depends on it.
 - No bundling of `neuroflow-mcp`. Everything comes from `neuroflow.json` in the
@@ -37,6 +38,9 @@ first. Section numbers (§) below refer to it.
   the `.d.ts` files.
 - Exported components return `React.JSX.Element`, not `JSX.Element`.
 - Package CSS is scoped under `.nf-root`, including the BIDSvue tokens it uses.
+- `PipelineView` knows nothing about datasets, batches or MCP (§1.3).
+- Batches run serially: one `tools/call` in flight at a time (`neuroflow-mcp`
+  handles requests in order).
 - No new build dependencies in either repo. Don't fork `nv-mcp`.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Repos:
@@ -46,21 +50,24 @@ first. Section numbers (§) below refer to it.
 
 ## Review Focus
 
-1. **A tool takes the volume under a differently named input.** For example,
-   `python-volume-filter` takes its volume as `input`, not `volume`. Prefill must
-   pick the first required input whose `x-neuroflow-type` is compatible with the
-   volume type. It must not match on the input name. Test in Task 7.
-2. **The volume path is `.nii.gz`, or has spaces or non-ASCII characters.** The
+1. **A pipeline takes the volume under a differently named input.** For
+   example, `python-volume-filter` takes its volume as `input`, not `volume`.
+   `targetInput` must match on `x-neuroflow-type`, never on the name. Test in
+   Task 8.
+2. **The person switches back to Dataset, or picks another pipeline, while a
+   batch runs.** The batch must keep running and its rows must survive.
+   `PipelineViewHost` stays mounted once opened (hidden, not unmounted), and the
+   batch carries its own `workflowId` and entry, so picking another pipeline
+   doesn't touch it. Manual check in Task 9.
+3. **The filters change during a batch.** The targets are a snapshot taken at
+   `startBatch`. Later filter changes don't add or drop rows. Test in Task 8.
+4. **`neuroflow-mcp` crashes mid-batch, or writes a non-JSON line.** The
+   reader skips bad lines. On exit, the running row fails and the next row
+   respawns the process. Tests in Task 6 (`classify`, `fail_all`) and Task 8
+   (an error row doesn't stop the queue).
+5. **The volume path is `.nii.gz`, or has spaces or non-ASCII characters.** The
    path must reach `neuroflow-mcp` byte-for-byte. Output loading must recognise
-   `.nii.gz` as NIfTI. Tests in Task 5 (args) and Task 7 (output classification).
-3. **The person cancels, and the panel is closed or reopened mid-run.** Cancel
-   must reach the right request id. A late response for a cancelled request must
-   be dropped, not crash or resolve a newer request. Test in Task 5.
-4. **`neuroflow-mcp` writes a partial or interleaved stdout line, or a non-JSON
-   log line.** The reader must skip it and keep routing. Test in Task 5.
-5. **A second run starts while the first is still going.** Requests must stay
-   independent by id, and progress tokens must route to the right run. Tests in
-   Task 5 (routing) and Task 6 (progress token per run).
+   `.nii.gz` as NIfTI. Tests in Task 6 (args) and Task 7 (`isNifti`).
 
 ---
 
@@ -74,8 +81,8 @@ first. Section numbers (§) below refer to it.
   - `src/domain/host.ts`: move the types out and re-export them;
   - `src/domain/neuroflow.ts`: add `idTail`;
   - `src/data/gallery.ts`: re-export `idTail` from `../domain/neuroflow`;
-  - `src/components/RunPanel.tsx`, `src/components/WorkflowDiagram.tsx` and
-    `src/domain/graph.ts`: import from `./runTypes` / `../domain/runTypes` and
+  - `src/components/RunPanel.tsx`, `src/components/WorkflowDiagram.tsx`,
+    `src/components/WorkflowLibrary.tsx` and `src/domain/graph.ts`: import from `./runTypes` / `../domain/runTypes` and
     `idTail` from `../domain/neuroflow`. Change `JSX.Element` to
     `React.JSX.Element` (add `import type React from 'react'` where needed).
 - Test: `tests/ui/packageBoundary.test.ts`
@@ -92,7 +99,8 @@ first. Section numbers (§) below refer to it.
 - [ ] **Step 2: Write the failing test** `tests/ui/packageBoundary.test.ts`.
   It reads the sources with `fs` and asserts:
   - `src/domain/runTypes.ts` exists and has no `@tauri-apps` import;
-  - none of `RunPanel.tsx`, `WorkflowDiagram.tsx` or `graph.ts` contains
+  - none of `RunPanel.tsx`, `WorkflowDiagram.tsx`, `WorkflowLibrary.tsx` or
+    `graph.ts` contains
     `from '../domain/host'`, `from './host'`, `from '../data/gallery'` or
     `JSX.Element` that is not preceded by `React.`.
 
@@ -122,7 +130,7 @@ first. Section numbers (§) below refer to it.
   from `bidsui.css`.
 
 - [ ] **Step 1: Find the class names the components use.** Grep `className=` in
-  `RunPanel.tsx`, `WorkflowDiagram.tsx` and `graph.ts`, plus the xyflow node
+  `RunPanel.tsx`, `WorkflowDiagram.tsx`, `WorkflowLibrary.tsx` and `graph.ts`, plus the xyflow node
   classes they set. Move every `app.css` rule whose selector uses one of those
   classes into `components.css`, and prefix each selector with `.nf-root `.
   Copy the `var(--…)` tokens those rules use from `bidsui.css` into a
@@ -133,9 +141,77 @@ first. Section numbers (§) below refer to it.
   builder, load the `filter-qa` workflow, and compare the diagram and Run panel
   with `main`. Expected: identical. Then run `npm run build`. Expected: success.
 
-- [ ] **Step 3: Commit.** Message: `refactor: scope diagram and run panel CSS under .nf-root`.
+- [ ] **Step 3: Commit.** Message: `refactor: scope the exported components' CSS under .nf-root`.
 
-### Task 3: Library entry, package and pre-publish check
+### Task 3: `PipelineView`, `RunPanel` props and `wrapToolAsWorkflow`
+
+**Files:**
+- Create:
+  - `src/components/PipelineView.tsx`
+  - `src/domain/runInputs.ts`
+  - `src/domain/wrapTool.ts`
+- Modify:
+  - `src/components/RunPanel.tsx`: add `initialInputs` and `lockedInputs`, and
+    use the `runInputs.ts` helpers in place of the inline `missing` and `start`
+    logic;
+  - `src/components/WorkflowLibrary.tsx`: make `onCreate` optional and hide
+    New when it's absent;
+  - `src/styles/components.css`: add the `.nf-root .nf-pipeline-view` grid,
+    stacking below 900px.
+- Test: `tests/ui/pipelineView.test.ts`
+
+**Interfaces:**
+- Consumes the Task 1 types.
+- Produces:
+  - in `runInputs.ts`:
+    - `seedValues(stored: Record<string, string>, initial?: Record<string, unknown>): Record<string, string>`:
+      `initial` wins for the keys it sets, stringified (strings stay as they
+      are, everything else goes through `JSON.stringify`);
+    - `missingInputs(workflow: WorkflowDocument, values: Record<string, string>, locked?: Record<string, string>): string[]`:
+      today's rule, with locked inputs skipped;
+    - `buildPayload(workflow: WorkflowDocument, values: Record<string, string>, locked?: Record<string, string>): Record<string, unknown>`:
+      today's `start` body, with locked inputs left out;
+  - `RunPanelProps` gains `initialInputs?: Record<string, unknown>` and
+    `lockedInputs?: Record<string, string>`. A locked input renders its label
+    in place of the field;
+  - `wrapToolAsWorkflow(toolDoc: unknown): WorkflowDocument` in `wrapTool.ts`
+    (§1.4). Its id is the tool's id, and the single step id is the tool id's
+    tail;
+  - `PipelineView` and `PipelineViewProps`, exactly as in §1.3.
+
+- [ ] **Step 1: Write the failing tests** in `tests/ui/pipelineView.test.ts`.
+  - `seedValues lets initial win and stringifies non-strings`:
+    `seedValues({a:'1', b:'x'}, {b:'y', c:3})` →
+    `{a:'1', b:'y', c:'3'}`.
+  - `missingInputs skips locked inputs`: a workflow with required `input` and
+    `sigma`, values `{sigma:'2'}` and locked `{input:'3 volumes'}` → `[]`.
+    Without `locked` → `['input']`.
+  - `buildPayload leaves locked inputs out`.
+  - `wrapToolAsWorkflow binds every tool input by ref and exposes every output`.
+    Use `gallery/tools/python-volume-filter.tool.json`. Each step input is
+    `{ref: 'inputs.<name>'}`, and `Object.keys(wf.outputs)` equals the tool's
+    output names.
+  - `PipelineView renders library, diagram slot, targets and locked label`:
+    `renderToStaticMarkup` from `react-dom/server` over a `PipelineView` with
+    one item, the wrapped workflow, `run={null}`, `lockedInputs={{input: '3 volumes'}}`
+    and `targets` set to a `<p>TARGETS</p>` element. Build elements with
+    `createElement`, since `test:ui` bundles `*.test.ts` files, not `.tsx`. The markup contains `TARGETS` and
+    `3 volumes`, and has no `<input name="input"`. Guard the `localStorage`
+    access in `RunPanel` with `typeof localStorage !== 'undefined'` so it
+    renders under node.
+
+- [ ] **Step 2: Run them to see them fail.** Run `npm run test:ui`. Expected:
+  FAIL in `pipelineView`.
+
+- [ ] **Step 3: Implement** the helpers, the props, and `PipelineView` as in §1.3.
+
+- [ ] **Step 4: Verify.** Run `npm run test:ui && npm run build`. Expected:
+  PASS. Then run `npm run dev` and load `filter-qa`. Expected: the builder looks
+  and behaves as before, and the Run panel still remembers inputs.
+
+- [ ] **Step 5: Commit.** Message: `feat: PipelineView and locked/initial run inputs`.
+
+### Task 4: Library entry, package and pre-publish check
 
 **Files:**
 - Create:
@@ -151,21 +227,25 @@ first. Section numbers (§) below refer to it.
   - `lib:check`: `npm run lib:build && node packages/neuroflow-react/scripts/check.mjs`
 
 **Interfaces:**
-- Consumes: Task 1 `runTypes.ts`, and `toolFromDocument` from `src/data/documents.ts`.
+- Consumes: Task 1 `runTypes.ts`; Task 3 `PipelineView`, `PipelineViewProps` and
+  `wrapToolAsWorkflow`; `toolFromDocument` from `src/data/documents.ts`.
 - Produces, as the `@cdrake/neuroflow-react` exports:
-  - the components `WorkflowDiagram` and `RunPanel`, with the prop types
-    `WorkflowDiagramProps` and `RunPanelProps`;
+  - the components `PipelineView`, `WorkflowDiagram`, `WorkflowLibrary` and
+    `RunPanel`, with the prop types `PipelineViewProps`,
+    `WorkflowDiagramProps`, `WorkflowLibraryProps` and `RunPanelProps`;
+  - `wrapToolAsWorkflow`;
   - `HostRunState` and `HostRunStatus`;
   - `buildWorkflowGraph` and `NodePositionMap`;
   - `toolFromDocument` and `shortType`;
-  - the types `WorkflowDocument`, `ToolDefinition` and `ParameterDef`;
+  - the types `WorkflowDocument`, `WorkflowLibraryItem`, `ToolDefinition` and
+    `ParameterDef`;
   - all of `runTypes.ts`.
 
   It also produces `@cdrake/neuroflow-react/style.css`, built from
   `src/styles/components.css`.
 
-  `WorkflowDiagramProps` and `RunPanelProps` need `export` added where they are
-  declared.
+  `WorkflowDiagramProps`, `WorkflowLibraryProps` and `RunPanelProps` need
+  `export` added where they are declared.
 
 - [ ] **Step 1: Write the check script** `scripts/check.mjs`. It fails (non-zero
   exit with a message) unless all of these hold:
@@ -177,12 +257,9 @@ first. Section numbers (§) below refer to it.
      `skipLibCheck: false`, React 19 types) and `npx vite build` succeed in
      `test/consumer`.
 
-  The consumer's `main.tsx` renders `<div className="nf-root">` holding:
-  - a `WorkflowDiagram` with a one-step workflow built inline and no-op
-    callbacks;
-  - a `RunPanel` with `run={null}`;
-
-  and imports both CSS files.
+  The consumer's `main.tsx` renders a `PipelineView` with one library item, the
+  workflow from `wrapToolAsWorkflow` over an inline tool document, `run={null}`,
+  a `lockedInputs` entry and a `targets` node, and imports both CSS files.
 
 - [ ] **Step 2: Run it to see it fail.** Run `npm run lib:check`. Expected: FAIL
   (the package doesn't exist yet).
@@ -205,7 +282,7 @@ first. Section numbers (§) below refer to it.
     `outDir: dist`, `files: [../../src/lib.ts]` and
     `types: ["vite/client"]`.
   - `README.md`: install, the two CSS imports, the consumer example, and how
-    to fill `HostRunState` from `neuroflow-mcp` (§2.3).
+    to fill `HostRunState` from `neuroflow-mcp` (§1.5).
 
 - [ ] **Step 4: Verify.** Run `npm run lib:check`. Expected: exits 0. Fix leaks
   at their source, not by loosening the check.
@@ -214,7 +291,7 @@ first. Section numbers (§) below refer to it.
   Add `packages/neuroflow-react/dist` and `test/consumer/node_modules` to
   `.gitignore`.
 
-### Task 4: Publish 0.1.0 (needs the owner)
+### Task 5: Publish 0.1.0 (needs the owner)
 
 - [ ] **Step 1: Run `npm run lib:check` again.** Expected: exits 0.
 - [ ] **Step 2: Publish.** Ask the owner to run
@@ -228,7 +305,7 @@ first. Section numbers (§) below refer to it.
 
 # Part 2 — NeuroVue backend (`~/Dev/neurovue`)
 
-### Task 5: `neuroflow.rs`: settings, spawn and JSON-RPC relay
+### Task 6: `neuroflow.rs`: settings, spawn and JSON-RPC relay
 
 **Files:**
 - Create: `src-tauri/src/neuroflow.rs`
@@ -249,7 +326,7 @@ first. Section numbers (§) below refer to it.
   `mcp::resolve_in_roots(&Path, &[PathBuf]) -> Result<PathBuf, String>`.
 - Produces these Tauri commands, all `async`, returning `Result<_, String>`:
   - `neuroflow_status() -> NeuroflowStatus`, where `NeuroflowStatus` is
-    `{ configured: bool, running: bool, settingsPath: String, stderrTail: Vec<String>, variant: String }`
+    `{ configured: bool, running: bool, settingsPath: String, stderrTail: Vec<String> }`
     (camelCase via serde);
   - `neuroflow_request(method: String, params: Value) -> Value`: returns the
     JSON-RPC `result`; an `error` member becomes `Err(message)`. It also emits
@@ -270,9 +347,8 @@ first. Section numbers (§) below refer to it.
   - `struct Pending` (`HashMap<u64, oneshot::Sender<Result<Value, String>>>`),
     with `insert`, `resolve(id, r) -> bool` (`false` when the id is unknown) and
     `fail_all(msg)`.
-- `Settings`: `{ binary, registries: Vec<String>, spec: Option<String>, interpreters: BTreeMap<String,String>, variant: String }`.
-  `~` is expanded. The template is the §2.1 JSON, with `variant` defaulting to
-  `"A"`. Sessions dir is `~/.neuroflow/runs`.
+- `Settings`: `{ binary, registries: Vec<String>, spec: Option<String>, interpreters: BTreeMap<String,String> }`.
+  `~` is expanded. The template is the §2.1 JSON. Sessions dir is `~/.neuroflow/runs`.
 
 - [ ] **Step 1: Write the failing tests.**
   - `build_args_passes_paths_verbatim`: given the registry
@@ -335,23 +411,25 @@ first. Section numbers (§) below refer to it.
 
 - [ ] **Step 6: Commit.** Message: `feat: relay to a local neuroflow-mcp from the desktop app`.
 
-### Task 6: `neuroflowClient.ts`
+### Task 7: `neuroflowClient.ts`
 
 **Files:**
 - Create: `src/domain/neuroflowClient.ts`
+- Modify: `package.json`: `bun add @cdrake/neuroflow-react@^0.1.0 @xyflow/react@^12`.
 - Test: `src/domain/neuroflowClient.test.ts`, run with `bun test`.
 
 **Interfaces:**
-- Consumes the Task 5 commands and events.
+- Consumes the Task 6 commands and events, and the run types from
+  `@cdrake/neuroflow-react` (Task 5).
 - Produces:
 
 ```ts
-export type NeuroflowStatus = { configured: boolean; running: boolean; settingsPath: string; stderrTail: string[]; variant: 'A' | 'B' }
+export type NeuroflowStatus = { configured: boolean; running: boolean; settingsPath: string; stderrTail: string[] }
 export type CatalogEntry = { id: string; kind: 'tool' | 'workflow'; title: string; description: string; mcpName: string; inputSchema: JsonSchema }
 export type RunHandle = { requestId: Promise<number>; result: Promise<RunStructured>; progressToken: string }
 export interface NeuroflowClient {
   status(): Promise<NeuroflowStatus>
-  catalog(acceptsType: string): Promise<CatalogEntry[]>  // tools/list (cached) ⋈ neuroflow_list({acceptsType, runnableOnly:true}) by id
+  catalog(): Promise<CatalogEntry[]>  // tools/list (cached) ⋈ neuroflow_list({runnableOnly:true}) by id
   describe(id: string): Promise<unknown>                  // neuroflow_describe → document
   run(entry: CatalogEntry, inputs: Record<string, unknown>, onProgress: (p: { progress: number; total?: number; message?: string }) => void): RunHandle
   cancel(requestId: number): Promise<void>
@@ -364,9 +442,8 @@ export function isNifti(path: string): boolean    // .nii or .nii.gz, case-insen
 export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flattens outputs, incl. arrays
 ```
 
-  `RunStructured`, `RunRecord` and `ArtifactDescriptor` are defined locally in
-  this file, matching neuroflow `runTypes.ts`. Variant A doesn't depend on the
-  package. Task 9 replaces these local types with the package's.
+  `RunStructured`, `RunRecord` and `ArtifactDescriptor` are imported (as types)
+  from `@cdrake/neuroflow-react`.
 
   Look up the exact `neuroflow_list` / `neuroflow_describe` argument names and
   result shapes in `~/Dev/neuroflow/crates/neuroflow-mcp/src/server.rs` (around
@@ -398,246 +475,206 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
 
 - [ ] **Step 5: Commit.** Message: `feat: typed client for neuroflow-mcp`.
 
+### Task 8: Pure modules: target input, run state, batch, overlay grouping
+
+**Files:**
+- Create:
+  - `src/domain/pipelineTargets.ts`
+  - `src/domain/neuroflowHostState.ts`
+  - `src/domain/pipelineBatch.ts`
+  - `src/domain/overlayRuns.ts`
+- Test: one `*.test.ts` file beside each, run with `bun test`.
+
+**Interfaces:**
+- Consumes the Task 7 client types, plus `HostRunState`, `RunStructured` and
+  `RunRecord` from `@cdrake/neuroflow-react`, and `DesktopItem` from
+  `src/domain/desktop.ts`.
+- Produces, in `pipelineTargets.ts`:
+  - `targetInput(inputSchema: JsonSchema): { name: string; kind: 'dataset' | 'volume' } | null`
+    (§2.4);
+  - `type BatchTarget = { key: string; label: string; path: string; itemId: string | null }`;
+  - `resolveTargets(kind: 'dataset' | 'volume', ctx: { datasetRoot: string | null; bidsName: string | null; filtered: DesktopItem[]; selected: DesktopItem | null; selectedOnly: boolean }): { targets: BatchTarget[]; blocker: string | null }`.
+    The blockers are `'needs a BIDS dataset'` and
+    `'no volumes match the filters'`. Volume targets are items with a
+    `sourcePath` and role ≠ `'overlay'`.
+- Produces, in `neuroflowHostState.ts`:
+  - `type RunEv = {type:'start', workflowId} | {type:'progress', progress, total?, message?} | {type:'done', structured: RunStructured, sessionDir: string, record: RunRecord} | {type:'error', message: string} | {type:'cancelled'}`;
+  - `reduceRunState(prev: HostRunState | null, ev: RunEv): HostRunState`:
+    - `start` gives `'starting'`;
+    - `progress` gives `'running'`;
+    - `done` sets `status` from `structured.status`, and `finished` to
+      `{ticket:'', ok: status==='completed', runId, status, structured, summary:'', sessionDir, record}`;
+    - `error` gives `'failed'` with `error` set;
+    - `cancelled` gives `'cancelled'`;
+    - `stderrTail` is `structured.logs?.stderr ?? null`.
+- Produces, in `pipelineBatch.ts`:
+  - `type RowStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'`;
+  - `type BatchRow = { target: BatchTarget; status: RowStatus; run: HostRunState | null }`;
+  - `type Batch = { id: string; workflowId: string; title: string; startedAt: number; rows: BatchRow[] }`;
+  - `startBatch(workflowId: string, title: string, targets: BatchTarget[], now: number): Batch`.
+    It copies `targets`;
+  - `reduceBatch(b: Batch, ev: {type:'row', index: number, ev: RunEv} | {type:'cancelQueued'}): Batch`.
+    Row status follows the row's `run.status`. `cancelQueued` turns every
+    `queued` row into `cancelled`;
+  - `nextQueued(b: Batch): number | null`. It returns `null` while any row is
+    `running`;
+  - `retryTargets(b: Batch): BatchTarget[]`: the targets of failed and
+    cancelled rows.
+- Produces, in `overlayRuns.ts`:
+  - `type RunTag = { runId: string; title: string; startedAt: number; sessionDir: string }`;
+  - `groupOverlaysByRun<T extends {id: string}>(items: T[], runs: Record<string, RunTag>): Array<{tag: RunTag | null; items: T[]}>`.
+    It keeps first-appearance order, and consecutive untagged items share one
+    `null` group.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `targetInput matches by type not name`. Required
+    `input: {x-neuroflow-type: neuro:volume}` and optional
+    `volume: {type: string}` give `{name:'input', kind:'volume'}`.
+  - `targetInput skips optional inputs and returns null when nothing matches`.
+  - `targetInput maps bids-dataset to dataset, and label-map and mask to volume`.
+  - `resolveTargets`:
+    - a dataset on a non-BIDS folder gives the BIDS blocker;
+    - overlays and items without a `sourcePath` are skipped;
+    - `selectedOnly` gives one target;
+    - zero filtered items gives the filters blocker.
+  - `reduceRunState`:
+    - start→progress→done(completed) gives `'completed'`, with
+      `finished.record` set and `progress`/`total` from the last progress
+      event;
+    - done(failed) sets `stderrTail` from `structured.logs.stderr`;
+    - cancelled after progress gives `'cancelled'`.
+  - `batch runs serially`: after `startBatch` with 3 targets, `nextQueued` is 0.
+    After row 0 starts, it's `null`. After row 0 completes, it's 1.
+  - `batch continues after a failed row`: row 0 errors, and `nextQueued` is 1.
+  - `startBatch snapshots targets`: mutating the input array afterwards
+    doesn't change `rows`.
+  - `cancelQueued leaves the running row alone`, and `retryTargets` returns
+    the failed and cancelled rows' targets in order.
+  - `groupOverlaysByRun keeps order and splits untagged runs`: items
+    `[u1, a1, a2, u2, b1]` (a and b are two runs) give four groups:
+    `[null:[u1]], [a:[a1,a2]], [null:[u2]], [b:[b1]]`.
+
+- [ ] **Step 2: Run them to see them fail.** Run `bun test src/domain`.
+  Expected: FAIL for the four new files.
+
+- [ ] **Step 3: Implement the four modules.**
+
+- [ ] **Step 4: Verify.** Run `bun test src/domain && npm run typecheck && npm run lint`.
+  Expected: PASS.
+
+- [ ] **Step 5: Commit.** Message: `feat: pipeline targets, batch queue and run-state reducers`.
+
 ---
 
 # Part 3 — NeuroVue UI
 
-### Task 7: Shared panel shell, entry point, prefill and output loading
+### Task 9: Dataset | Pipelines switch and `PipelineViewHost`
 
 **Files:**
-- Create:
-  - `src/components/NeuroflowPanel.tsx`: the shell (status/setup state, picker,
-    switch on the variant);
-  - `src/domain/neuroflowForm.ts`: pure helpers.
+- Create: `src/components/PipelineViewHost.tsx`
 - Modify:
-  - `src-tauri/src/lib.rs`: add a desktop View menu item `view-neuroflow`,
-    labelled "Run NeuroFlow…", plus `view-neuroflow-variant`, labelled
-    "NeuroFlow UI: A/B". Both go through the existing `view-` prefix dispatch.
-  - `src/hooks/useNativeMenu.ts`: add `'neuroflow' | 'neuroflow-variant'` to
-    `NativeMenuAction`.
+  - `src-tauri/src/lib.rs`: add a desktop View menu item `view-pipelines`,
+    labelled "Pipelines". It goes through the existing `view-` prefix dispatch;
+  - `src/hooks/useNativeMenu.ts`: add `'pipelines'` to `NativeMenuAction`;
   - `src/App.tsx`:
-    - add an `addOverlayFromPath(path)` helper, extracted from the agent
-      `addOverlay` body (lines ~1215–1224), and use it in both places;
-    - render `<NeuroflowPanel>` as a "Pipelines" section in the Operations
-      tab, right after `<NiimathOperationsPanel>` (~line 2399), and only when
-      `isAvailable()` resolves to true. It gets an `id="nv-pipelines"` anchor.
-      There is no new tab or dock;
-    - the `neuroflow` menu action and a "Run NeuroFlow…" button in the volume
-      info panel, near `metadata.sourcePath` (~line 3494), both call
-      `openPipelines()`. That runs `setSidePanelTab('operations')`, then
-      `scrollIntoView` on `#nv-pipelines` on the next frame;
-    - add `neuroflowRuns: Record<overlayId, RunTag>` state.
-      `onLoadOverlay(path, tag)` records the returned overlay id under `tag`;
-    - in the Layers overlay rows (~line 2803), group rows by run. Use
-      `groupOverlaysByRun` to render a collapsible header,
-      `Run: <title> · <HH:MM>`, with a "Reveal run" button that reveals
-      `tag.sessionDir`. Collapsing it hides that run's rows. Untagged overlays
-      render as today.
-- Test: `src/domain/neuroflowForm.test.ts`
+    - add `leftPane: 'dataset' | 'pipelines'` and `pipelinesMounted` state;
+    - add a Dataset | Pipelines switch at the top of `.nv-dataset-pane`
+      (~line 2099), reusing the `nv-sidepanel-tabs` markup pattern (~line
+      2589). It renders only when `isAvailable()` resolves to true;
+    - once Pipelines is first chosen, render `<PipelineViewHost>` in that pane
+      and keep it mounted: toggle `hidden` on it and on `DatasetDesktop`
+      rather than unmounting either;
+    - the `pipelines` menu action switches the pane to Pipelines.
+  - `src/styles.css`: the switch, and `PipelineViewHost`'s Targets strip and
+    batch rows.
 
 **Interfaces:**
-- Consumes the Task 6 client, and `metadata.sourcePath` as the current volume
-  path.
-- Produces, in `neuroflowForm.ts`:
-  - `volumeType(isLabel: boolean): 'neuro:volume' | 'neuro:label-map'`;
-  - `prefillInputs(schema: JsonSchema, volumeType: string, volumePath: string): Record<string, unknown>`.
-    It puts `volumePath` into the first **required** property whose
-    `x-neuroflow-type` equals `volumeType`. Failing that, `neuro:volume`
-    accepts `neuro:label-map` and `neuro:mask`. It applies `default`s and never
-    matches on property name.
-  - `fieldKind(prop: JsonSchemaProperty): 'path' | 'enum' | 'number' | 'text'`.
-    `path` is any `x-neuroflow-type` starting with `neuro:` or equal to
-    `core:file` or `core:directory`.
-  - `type RunTag = { runId: string; title: string; startedAt: number; sessionDir: string }`;
-  - `groupOverlaysByRun<T extends {id: string}>(items: T[], runs: Record<string, RunTag>): Array<{tag: RunTag | null; items: T[]}>`.
-    It keeps first-appearance order. Consecutive untagged items share one
-    `tag: null` group.
-- Produces `<NeuroflowPanel volumePath: string | null; isLabel: boolean; onLoadOverlay(path: string, tag: RunTag): Promise<void>; onWideChange(wide: boolean): void>`.
-  Variant B calls `onWideChange`. App toggles `is-wide` on the side panel from
-  it.
-  It renders the variant body as
-  `{variant === 'A' ? <NeuroflowRunA …/> : <NeuroflowRunB …/>}` with props
-  `{ client, entry: CatalogEntry, initialInputs, onLoadOverlay }`. The panel
-  owns `loadOutputs(structured)`:
-  1. run `isNifti` over `outputArtifacts`;
-  2. call `onLoadOverlay(path, tag)` for each NIfTI, in sequence. All of a run's outputs share one `tag` made from `runId`, the entry title, the run start time and the session dir;
-  3. collect failures and non-NIfTI outputs into "Reveal in Finder" rows, using
-     the existing reveal command (grep `reveal` in `src/domain/desktop.ts`).
+- Consumes the Task 7 client and the Task 8 modules, plus `PipelineView` and
+  `wrapToolAsWorkflow` from the package.
+- Produces
+  `<PipelineViewHost ctx={ResolveTargetsCtx minus selectedOnly} preferSelected={number} onRunOutputs(structured: RunStructured, tag: RunTag, target: BatchTarget, isShown: boolean): void onShowTarget(target: BatchTarget): void onReveal(path: string): void />`.
+  - `preferSelected` is a counter. When it increments, the host turns on
+    "Selected only" (Task 10 uses this).
+  - `isShown` is true for single runs, and for the batch row whose
+    `target.itemId` is the selected item.
 
-  Until Tasks 8–9 land, A and B are placeholders.
+- [ ] **Step 1: Implement `PipelineViewHost`** as in §3.2.
+  - The runner is a `useEffect` on the batch. When `nextQueued` returns an
+    index, it:
+    1. runs `client.checkPath(target.path)` (a rejection becomes that row's
+       `error` event);
+    2. runs `client.run(entry, {...formInputs, [targetInput.name]: target.path}, onProgress)`;
+    3. on result, calls `client.readRun(runId)`, then dispatches `done` and
+       `onRunOutputs`.
+  - **Cancel batch** dispatches `cancelQueued`, then `client.cancel` on the
+    running row's request id.
+  - `RunPanel`'s `run` is the clicked row's `run`, falling back to the running
+    row's, then the last row's.
+  - Setup and error states:
+    - not configured: show the settings path and "Reveal settings file";
+    - process error: show `stderrTail` and Restart (`neuroflow_restart`).
 
-- [ ] **Step 1: Write the failing tests.**
-  - `prefill matches by type not name`. The schema has required
-    `input: {x-neuroflow-type: neuro:volume}` and optional
-    `volume: {type: string}`. Prefill sets `input`, not `volume`.
-  - `prefill skips optional inputs and applies defaults`.
-  - `prefill accepts label-map input for neuro:volume when no exact match`.
-  - `prefill leaves inputs empty when nothing matches`.
-  - `fieldKind`: one case for each of the four kinds.
-  - `groupOverlaysByRun keeps order and splits untagged runs`: items
-    `[u1, a1, a2, u2, b1]` (a and b are two runs) give four groups
-    `[null:[u1]], [a:[a1,a2]], [null:[u2]], [b:[b1]]`.
-
-- [ ] **Step 2: Run them to see them fail.** Run
-  `bun test src/domain/neuroflowForm.test.ts`. Expected: FAIL.
-
-- [ ] **Step 3: Implement the helpers, then the panel and its wiring.** Shell
-  states:
-  - not configured: show the settings path and a "Reveal settings file"
-    button;
-  - process error: show `stderrTail` and a Restart button (`neuroflow_restart`);
-  - otherwise: the picker list, `client.catalog(volumeType(isLabel))`, then the
-    chosen entry's variant body.
-
-  The variant menu item flips `variant` in `neuroflow.json`. Add a
-  `neuroflow_set_variant(variant: String)` command to Task 5's file, with a
-  one-line test that it round-trips, and re-render.
-
-- [ ] **Step 4: Verify.** Run `bun test src/domain && npm run typecheck && npm run lint && (cd src-tauri && cargo test neuroflow)`.
+- [ ] **Step 2: Verify.** Run `npm run typecheck && npm run lint && npm run build`.
   Expected: PASS. Then run `npm run tauri:dev`, open
-  `~/Dev/neurovue-stat-demo`, and choose View › Run NeuroFlow…. Expected:
-  - the Inspector switches to Operations and scrolls to Pipelines, below
-    niimath;
-  - the picker lists the gallery tools that accept `neuro:volume`.
+  `~/Dev/neurovue-stat-demo`, and switch to Pipelines. Expected:
+  - the library lists the runnable gallery entries;
+  - choosing `python-volume-filter` shows a one-step diagram and the Targets
+    strip with the filtered volume count;
+  - filtering to 3 volumes and pressing Run completes 3 rows in order;
+  - switching to Dataset and back mid-batch keeps the batch running.
 
-- [ ] **Step 5: Commit.** Message: `feat: NeuroFlow Pipelines section in the Operations tab`.
+- [ ] **Step 3: Commit.** Message: `feat: Pipelines view hosting @cdrake/neuroflow-react PipelineView`.
 
-### Task 8: Variant A — native form
-
-**Files:**
-- Create: `src/components/NeuroflowRunA.tsx`
-- Modify: `src/components/NeuroflowPanel.tsx` (replace the A placeholder).
-
-**Interfaces:**
-- Consumes the Task 7 props, plus `fieldKind` and the Task 6 client.
-- Produces nothing for later tasks.
-
-- [ ] **Step 1: Implement.** One field per `inputSchema` property, using
-  `fieldKind`:
-  - `path`: a text field plus a "Choose…" button through
-    `@tauri-apps/plugin-dialog` `open`;
-  - `enum`: a `<select>`;
-  - `number`: `<input type=number>`;
-  - `text`: `<input>`.
-
-  Mark required fields with `*`. Disable Run until every required field is set.
-
-  On Run:
-  1. pass each `path` value through `client.checkPath`, and show the roots error
-     inline if it fails;
-  2. call `client.run`;
-  3. show the latest progress `message` and a "progress/total" line, plus a
-     Cancel button that calls `client.cancel(await handle.requestId)`.
-
-  When the run finishes:
-  - `completed`: `loadOutputs`;
-  - `failed`: show `failedStep`, `error` and `logs.stderr`, the path from
-    `RunStructured.logs`;
-  - `cancelled`: show "Cancelled".
-
-  Use NeuroVue's existing panel class names. No new CSS file.
-
-- [ ] **Step 2: Manual check.** In `tauri:dev` on `~/Dev/neurovue-stat-demo`,
-  run `python-volume-filter`. Expected: progress shows, and the filtered volume
-  appears as an overlay. Run it again and Cancel mid-run. Expected: "Cancelled",
-  and the app keeps responding. Pick a file outside the roots. Expected: the
-  roots error, and no run starts.
-
-- [ ] **Step 3: Verify.** Run `npm run typecheck && npm run lint`. Expected: PASS.
-
-- [ ] **Step 4: Commit.** Message: `feat: native NeuroFlow run form (variant A)`.
-
-### Task 9: Variant B — `@cdrake/neuroflow-react`
+### Task 10: Outputs, run headers in Layers, and the Operations button
 
 **Files:**
-- Create:
-  - `src/components/NeuroflowRunB.tsx`
-  - `src/domain/neuroflowHostState.ts`
-- Modify:
-  - `package.json`: add `@cdrake/neuroflow-react@^0.1.0` and
-    `@xyflow/react@^12` with `bun add`;
-  - `src/components/NeuroflowPanel.tsx`: replace the B placeholder;
-  - `src/domain/neuroflowClient.ts`: replace the local run types with
-    re-exports from the package.
-- Test: `src/domain/neuroflowHostState.test.ts`
+- Modify `src/App.tsx`:
+  - add `addOverlayFromPath(path)`, extracted from the agent `addOverlay` body
+    (~lines 1215–1224), and use it in both places;
+  - add `neuroflowRuns: Record<overlayId, RunTag>` state;
+  - add `handleRunOutputs`, wired to `onRunOutputs` (§2.6):
+    - when `isShown`, load each NIfTI from `outputArtifacts` in sequence and
+      record each new overlay id under `tag`;
+    - collect failures and non-NIfTI outputs as Reveal rows, which the host
+      shows on that batch row;
+  - add `onShowTarget`: call `showVolume(target.itemId)`, then load that row's
+    outputs as above;
+  - in the Layers overlay rows (~line 2803), use `groupOverlaysByRun` to render
+    a collapsible `Run: <title> · <HH:MM>` header with "Reveal run"
+    (`tag.sessionDir`). Collapsing it hides that run's rows, and untagged
+    overlays render as today;
+  - add a "Run pipeline on this volume…" button after `<NiimathOperationsPanel>`
+    (~line 2399). It sets `leftPane` to `'pipelines'` and increments
+    `preferSelected`. It renders only when `isAvailable()` resolves to true.
+- Modify `src/styles.css`: the run header row.
 
 **Interfaces:**
-- Consumes the Task 4 package API, plus the Task 6 client.
-- Produces, in `neuroflowHostState.ts`:
-  - `wrapToolAsWorkflow(toolDoc: unknown): WorkflowDocument`: a one-step
-    workflow whose inputs mirror the tool's inputs, whose step binds them by
-    `ref: "inputs.<name>"`, and whose outputs mirror the tool's outputs;
-  - `reduceRunState(prev: HostRunState | null, ev: RunEv): HostRunState`, where
-    `RunEv` is one of:
-    - `{type:'start', workflowId}`, giving `status: 'starting'`;
-    - `{type:'progress', progress, total, message}`, giving `'running'`;
-    - `{type:'done', structured, sessionDir, record}`;
-    - `{type:'error', message}`, giving `'failed'` with `error` set;
-    - `{type:'cancelled'}`.
+- Consumes the Task 9 host callbacks, Task 8 `groupOverlaysByRun` and
+  `RunTag`, Task 7 `isNifti` and `outputArtifacts`, and the existing reveal
+  command (grep `reveal` in `src/domain/desktop.ts`).
 
-    For `done`, `finished` gets
-    `{ticket:'', ok: status==='completed', runId, status, structured, summary:'', sessionDir, record}`,
-    and `status` comes from `structured.status`. `stderrTail` is
-    `structured.logs?.stderr ?? null`.
+- [ ] **Step 1: Implement the changes listed under Files.**
 
-- [ ] **Step 1: Write the failing tests.**
-  - `wrapToolAsWorkflow binds every tool input by ref and exposes every output`.
-    Use `python-volume-filter.tool.json` from `~/Dev/neuroflow/gallery/tools`,
-    copied into `src/domain/__fixtures__/`.
-  - `reduceRunState start→progress→done(completed)`: final status
-    `'completed'`, `finished.record.steps` present, `progress`/`total` from the
-    last progress event.
-  - `reduceRunState done(failed) sets stderrTail from structured.logs.stderr`.
-  - `reduceRunState cancelled after progress gives 'cancelled'`.
+- [ ] **Step 2: Verify.** Run `bun test src/domain && npm run typecheck && npm run lint && npm run build`.
+  Expected: PASS. Then, in `tauri:dev` on the stat demo:
+  - run `python-volume-filter` on the selected volume. Expected: its output
+    appears in Layers under a `Run: … · HH:MM` header, and Reveal run opens
+    the session folder;
+  - in a 3-volume batch, press Show on another row. Expected: that volume
+    opens with its output overlaid;
+  - press the Operations button. Expected: Pipelines opens with "Selected
+    only" on.
 
-- [ ] **Step 2: Run them to see them fail.** Run
-  `bun test src/domain/neuroflowHostState.test.ts`. Expected: FAIL.
+- [ ] **Step 3: Commit.** Message: `feat: load pipeline outputs grouped by run, Operations entry point`.
 
-- [ ] **Step 3: Implement.** `NeuroflowRunB` renders, inside
-  `<div className="nf-root">`:
-  - a `WorkflowDiagram`, read-only, given:
-    - the workflow: the described document if it's a workflow, otherwise
-      `wrapToolAsWorkflow`;
-    - `tools`: a map built from `toolFromDocument` over the described tool docs;
-    - `nodePositions` kept in local state, updated by `onMoveNode`;
-    - `onBindInput` and `onAddTool` as no-ops;
-  - a `RunPanel` given:
-    - `available` set to `true`;
-    - `report` set to `{ok: true, issues: []}`;
-    - `runnable={null}` and `environmentChecked`;
-    - `run` from `reduceRunState`;
-    - `onStart(inputs)`: `checkPath` the path inputs, then `client.run`. On
-      completion, call `client.readRun(runId)`, dispatch `done`, then call
-      `loadOutputs`;
-    - `onCancel`: `client.cancel`;
-    - `onOpen`: reveal in Finder.
-
-  To prefill, seed `RunPanel`'s stored inputs before mounting. It reads
-  `localStorage['neuroflow.runInputs.v1'][workflow.id]`
-  (`RunPanel.tsx:48`), so write `initialInputs` there. Add a code comment
-  starting with `shortcut:` that says RunPanel has no initial-values prop, and
-  to add one to the package if B wins. Import
-  `@xyflow/react/dist/style.css` and `@cdrake/neuroflow-react/style.css` in
-  this component only. Call `onWideChange(true)` on mount and
-  `onWideChange(false)` on unmount. Add `.nv-sidepanel.is-wide { width: 560px }`
-  (match the side panel's real class in `styles.css`).
-
-- [ ] **Step 4: Verify.** Run `bun test src/domain && npm run typecheck && npm run lint && npm run build`.
-  Expected: PASS. Then in `tauri:dev`, switch with View › NeuroFlow UI: A/B to B
-  and run the same `python-volume-filter`. Expected:
-  - a diagram with one step;
-  - the Run panel steps go from running to succeeded;
-  - the overlay loads, the same result as A.
-
-- [ ] **Step 5: Commit.** Message: `feat: NeuroFlow run panel from @cdrake/neuroflow-react (variant B)`.
-
-### Task 10: Docs and hand-off
+### Task 11: Docs and hand-off
 
 **Files:**
 - Modify: `docs/mcp.md`. Add a short "Running NeuroFlow pipelines" section:
   - the `neuroflow.json` fields;
   - that `--data-root` comes from `roots`;
-  - the A/B menu item;
+  - the Pipelines view and how target mode follows the pipeline's input type;
+  - batches run one at a time;
   - desktop only.
 
 - [ ] **Step 1: Write the section.**
@@ -645,4 +682,4 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   `npm run typecheck && npm run lint && bun test src/domain && (cd src-tauri && cargo test)`.
   Expected: all PASS.
 - [ ] **Step 3: Commit,** then push `feat/neuroflow-launcher` and open a PR. Its
-  body lists the manual A/B checklist from spec §Testing for the owner.
+  body lists the manual checklist from spec §Testing for the owner.
