@@ -41,8 +41,11 @@ app:
 - Move `ArtifactDescriptor`, `RunStepRecord`, `RunRecord`, `RunStructured`,
   `RunFinishedEvent`, `ToolStatus`, `ToolReadiness` and `isArtifactDescriptor`
   from `src/domain/host.ts`, which imports `@tauri-apps/api`, into a new
-  `src/domain/runTypes.ts` with no Tauri import. `host.ts` re-exports them, so
-  the app's imports don't change.
+  `src/domain/runTypes.ts` with no Tauri import. `host.ts` re-exports them so
+  the rest of the app is unaffected. `RunPanel.tsx`, `WorkflowDiagram.tsx` and
+  `graph.ts` must switch their imports, including `import type`, to
+  `runTypes.ts`. Otherwise `tsc --emitDeclarationOnly` still emits `host.d.ts`,
+  and that file references `@tauri-apps/api`.
 - Change the exported components' return types from `JSX.Element` to
   `React.JSX.Element`, because React 19's types removed the global `JSX`
   namespace.
@@ -51,14 +54,15 @@ app:
 
 It exports:
 
-- the components `WorkflowDiagram`, `RunPanel` and `RunTimeline`, with their
-  prop types and `HostRunState` / `HostRunStatus`;
+- the components `WorkflowDiagram` and `RunPanel`, with their prop types and
+  `HostRunState` / `HostRunStatus`. `RunTimeline` is left out: it renders the
+  app's WASM preview path (`execution.ts`), not host runs;
 - `buildWorkflowGraph` and `NodePositionMap`;
 - `toolFromDocument` (tool document → `ToolDefinition`) and `shortType`;
 - the types `WorkflowDocument`, `ToolDefinition` and `ParameterDef`;
 - everything in `runTypes.ts`.
 
-The entry must not import anything from `src/data/gallery.ts`, `host.ts` or
+The entry must not import anything from `src/data/gallery.ts`, `host.ts`, `execution.ts` or
 `@tauri-apps/*`. The tarball check in §1.5 enforces this.
 
 ### 1.3 Package folder `packages/neuroflow-react/`
@@ -103,7 +107,10 @@ that renders `WorkflowDiagram` and `RunPanel` from the installed tarball.
 2. installs the tarball into the consumer;
 3. runs `tsc --noEmit` and `vite build`;
 4. greps the built bundle to confirm it contains no `@tauri-apps` and no gallery
-   JSON.
+   JSON;
+5. checks that the package's `dist/` contains no `host.d.ts` or
+   `execution.d.ts`, and typechecks the consumer with `skipLibCheck: false` so
+   the package's own declarations are checked too.
 
 ### 1.6 Publishing
 
@@ -138,8 +145,9 @@ The file lives in the app config folder, next to `mcp.json`:
 `#[cfg(desktop)]`, about 150 lines, modelled on `mcp.rs`.
 
 - **Lazy spawn.** On the first request, start `binary` with `--registry` for each
-  entry, `--data-root` for each root, `--spec`, and
-  `--interpreter NAME=PATH`. The process uses piped stdio and `kill_on_drop`.
+  entry, `--data-root` for each root, `--spec`,
+  `--interpreter NAME=PATH`, and an explicit `--sessions ~/.neuroflow/runs` so
+  NeuroVue knows where runs are written. The process uses piped stdio and `kill_on_drop`.
   After spawning, run the MCP `initialize` handshake and send
   `notifications/initialized`.
 - **Reader thread.** Parse stdout one JSON line at a time:
@@ -156,6 +164,11 @@ The file lives in the app config folder, next to `mcp.json`:
   - `neuroflow_cancel(requestId)`: sends `notifications/cancelled`.
   - `neuroflow_status() -> {configured, running, settingsPath, stderrTail, variant}`.
   - `neuroflow_restart()`.
+  - `neuroflow_read_run(runId) -> {sessionDir, record}`: reads
+    `<sessions>/<runId>/run.json`. `runId` must be a single path segment.
+    `neuroflow-mcp` exposes no `run.json` resource, and `RunPanel` uses
+    `record.steps` for per-step status after a run. It falls back to
+    `currentStep` while a run is in progress.
 - **Process exit.** All waiting requests fail with
   `"neuroflow-mcp exited: <last stderr lines>"`. The next request respawns the
   process.
@@ -171,13 +184,18 @@ This is a thin typed wrapper over the commands:
 - `status()`;
 - `list({ acceptsType, runnableOnly: true })`, which calls `tools/call`
   `neuroflow_list`;
-- `describe(id)`, which returns the document and the tool's MCP `inputSchema`;
+- `tools()`: calls `tools/list` once after init and caches it. This is where
+  each document's MCP tool name and `inputSchema` come from. `neuroflow_list` is
+  used only for the `acceptsType` filter, and the two are joined by document id;
+- `describe(id)`, which returns the NeuroFlow document (`neuroflow_describe`)
+  for the diagram;
 - `run(id, inputs, onProgress)`, which calls `tools/call` with the tool's MCP
   name and a `_meta.progressToken`. It returns `{ requestId, result: Promise<RunStructured> }`.
 - `cancel(requestId)`;
 - `toHostRunState(...)`, the B adapter: progress events become
   `progress`/`total`/`message`, and the result becomes `finished`, built from
-  `structuredContent` plus the session's `run.json` for `record`.
+  `structuredContent` plus `neuroflow_read_run(runId)` for `sessionDir` and
+  `record`.
 
 Both UIs talk only to this module.
 
@@ -199,8 +217,9 @@ the current volume preselected.
 ### Picker (shared)
 
 The picker lists the result of `neuroflow_list({acceptsType: <volume type>,
-runnableOnly: true})`. The volume type is `neuro:volume`, or a more specific
-type when the volume's metadata says so. Each entry shows the title, kind
+runnableOnly: true})`. The type comes from the spec's vocabulary
+(`common.schema.json`): `neuro:label-map` when NeuroVue shows the volume as a
+label/atlas, otherwise `neuro:volume`. Masks aren't detected in v1. Each entry shows the title, kind
 (tool/workflow) and a one-line description.
 
 ### The A/B switch
