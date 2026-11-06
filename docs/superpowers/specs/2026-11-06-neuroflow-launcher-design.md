@@ -206,13 +206,28 @@ On a `completed` run, collect every `ArtifactDescriptor` in
 `addOverlayPath` action. Anything else, or a load that fails, becomes a
 "Reveal in Finder" row. One failed output doesn't stop the others from loading.
 
+Layers groups each run's loaded overlays under a collapsible header,
+**Run: <title> · <HH:MM>**. Collapsing it hides those rows. Its "Reveal run"
+button opens the run's session folder (`<sessions>/<runId>/`, which holds
+`run.json` with params and logs). The overlay-id → run map lives in App state
+only and isn't saved. "Working derivatives" isn't touched: outputs register
+with role `overlay`, and `isDerivedItem` excludes overlays.
+
 ## Part 3 — NeuroVue UI
 
 ### Entry point
 
-**Run NeuroFlow…** appears in the volume context menu and the Tools menu, only
-when the `neuroflow_status` command exists (desktop). It opens a side panel with
-the current volume preselected.
+The launcher is a **Pipelines** section in the Inspector's existing
+**Operations** tab, below `NiimathOperationsPanel`, with the current volume
+preselected. No new panel or tab is added. Two shortcuts open it:
+
+- View › **Run NeuroFlow…**;
+- a "Run NeuroFlow…" button in the volume info panel.
+
+Both set `sidePanelTab` to `'operations'` and scroll Pipelines into view.
+Pipelines, the menu item and the button render only when the
+`neuroflow_status` command exists (desktop). On iPad the Operations tab shows
+niimath alone.
 
 ### Picker (shared)
 
@@ -253,6 +268,10 @@ menu item without rebuilding.
 - `RunPanel` gets `toHostRunState(...)`. Its `onStart`, `onCancel` and `onOpen`
   map to `client.run`, `client.cancel` and reveal-in-Finder.
 - Outputs load into the viewer exactly as in A (§2.4).
+- The diagram doesn't fit the Inspector's normal width. While B's body is
+  mounted, the side panel gets an `is-wide` class (about 560px) and loses it
+  on unmount. Part of what the A/B test weighs is whether that width cost is
+  worth the diagram.
 
 ## Error handling
 
@@ -293,6 +312,9 @@ menu item without rebuilding.
 ## Out of scope
 
 - Run history inside NeuroVue (sessions already live in `~/.neuroflow/runs`).
+  Run headers in Layers last only for the session.
+- Registering outputs as derived items with `derivedFrom`, so they'd show up
+  in "Working derivatives".
 - Editing workflows in NeuroVue.
 - iOS/iPad.
 - Bundling `neuroflow-mcp`.

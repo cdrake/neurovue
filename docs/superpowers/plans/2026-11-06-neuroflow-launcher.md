@@ -418,11 +418,21 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   - `src/App.tsx`:
     - add an `addOverlayFromPath(path)` helper, extracted from the agent
       `addOverlay` body (lines ~1215–1224), and use it in both places;
-    - add a `neuroflowOpen` state, and render `<NeuroflowPanel>` as a dock next
-      to `TerminalPanel`;
-    - add a "Run NeuroFlow…" button to the volume info panel near
-      `metadata.sourcePath` (~line 3494). It renders only when
-      `isAvailable()` resolves to true.
+    - render `<NeuroflowPanel>` as a "Pipelines" section in the Operations
+      tab, right after `<NiimathOperationsPanel>` (~line 2399), and only when
+      `isAvailable()` resolves to true. It gets an `id="nv-pipelines"` anchor.
+      There is no new tab or dock;
+    - the `neuroflow` menu action and a "Run NeuroFlow…" button in the volume
+      info panel, near `metadata.sourcePath` (~line 3494), both call
+      `openPipelines()`. That runs `setSidePanelTab('operations')`, then
+      `scrollIntoView` on `#nv-pipelines` on the next frame;
+    - add `neuroflowRuns: Record<overlayId, RunTag>` state.
+      `onLoadOverlay(path, tag)` records the returned overlay id under `tag`;
+    - in the Layers overlay rows (~line 2803), group rows by run. Use
+      `groupOverlaysByRun` to render a collapsible header,
+      `Run: <title> · <HH:MM>`, with a "Reveal run" button that reveals
+      `tag.sessionDir`. Collapsing it hides that run's rows. Untagged overlays
+      render as today.
 - Test: `src/domain/neuroflowForm.test.ts`
 
 **Interfaces:**
@@ -438,13 +448,19 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   - `fieldKind(prop: JsonSchemaProperty): 'path' | 'enum' | 'number' | 'text'`.
     `path` is any `x-neuroflow-type` starting with `neuro:` or equal to
     `core:file` or `core:directory`.
-- Produces `<NeuroflowPanel volumePath: string | null; isLabel: boolean; onLoadOverlay(path): Promise<void>; onClose(): void>`.
+  - `type RunTag = { runId: string; title: string; startedAt: number; sessionDir: string }`;
+  - `groupOverlaysByRun<T extends {id: string}>(items: T[], runs: Record<string, RunTag>): Array<{tag: RunTag | null; items: T[]}>`.
+    It keeps first-appearance order. Consecutive untagged items share one
+    `tag: null` group.
+- Produces `<NeuroflowPanel volumePath: string | null; isLabel: boolean; onLoadOverlay(path: string, tag: RunTag): Promise<void>; onWideChange(wide: boolean): void>`.
+  Variant B calls `onWideChange`. App toggles `is-wide` on the side panel from
+  it.
   It renders the variant body as
   `{variant === 'A' ? <NeuroflowRunA …/> : <NeuroflowRunB …/>}` with props
   `{ client, entry: CatalogEntry, initialInputs, onLoadOverlay }`. The panel
   owns `loadOutputs(structured)`:
   1. run `isNifti` over `outputArtifacts`;
-  2. call `onLoadOverlay` for each NIfTI, in sequence;
+  2. call `onLoadOverlay(path, tag)` for each NIfTI, in sequence. All of a run's outputs share one `tag` made from `runId`, the entry title, the run start time and the session dir;
   3. collect failures and non-NIfTI outputs into "Reveal in Finder" rows, using
      the existing reveal command (grep `reveal` in `src/domain/desktop.ts`).
 
@@ -458,6 +474,9 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   - `prefill accepts label-map input for neuro:volume when no exact match`.
   - `prefill leaves inputs empty when nothing matches`.
   - `fieldKind`: one case for each of the four kinds.
+  - `groupOverlaysByRun keeps order and splits untagged runs`: items
+    `[u1, a1, a2, u2, b1]` (a and b are two runs) give four groups
+    `[null:[u1]], [a:[a1,a2]], [null:[u2]], [b:[b1]]`.
 
 - [ ] **Step 2: Run them to see them fail.** Run
   `bun test src/domain/neuroflowForm.test.ts`. Expected: FAIL.
@@ -476,10 +495,12 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
 
 - [ ] **Step 4: Verify.** Run `bun test src/domain && npm run typecheck && npm run lint && (cd src-tauri && cargo test neuroflow)`.
   Expected: PASS. Then run `npm run tauri:dev`, open
-  `~/Dev/neurovue-stat-demo`, and choose View › Run NeuroFlow…. Expected: the
-  picker lists the gallery tools that accept `neuro:volume`.
+  `~/Dev/neurovue-stat-demo`, and choose View › Run NeuroFlow…. Expected:
+  - the Inspector switches to Operations and scrolls to Pipelines, below
+    niimath;
+  - the picker lists the gallery tools that accept `neuro:volume`.
 
-- [ ] **Step 5: Commit.** Message: `feat: NeuroFlow launcher panel shell and entry points`.
+- [ ] **Step 5: Commit.** Message: `feat: NeuroFlow Pipelines section in the Operations tab`.
 
 ### Task 8: Variant A — native form
 
@@ -597,7 +618,9 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   starting with `shortcut:` that says RunPanel has no initial-values prop, and
   to add one to the package if B wins. Import
   `@xyflow/react/dist/style.css` and `@cdrake/neuroflow-react/style.css` in
-  this component only.
+  this component only. Call `onWideChange(true)` on mount and
+  `onWideChange(false)` on unmount. Add `.nv-sidepanel.is-wide { width: 560px }`
+  (match the side panel's real class in `styles.css`).
 
 - [ ] **Step 4: Verify.** Run `bun test src/domain && npm run typecheck && npm run lint && npm run build`.
   Expected: PASS. Then in `tauri:dev`, switch with View › NeuroFlow UI: A/B to B
