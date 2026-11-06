@@ -198,7 +198,10 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
     `createElement`, since `test:ui` bundles `*.test.ts` files, not `.tsx`. The markup contains `TARGETS` and
     `3 volumes`, and has no `<input name="input"`. Guard the `localStorage`
     access in `RunPanel` with `typeof localStorage !== 'undefined'` so it
-    renders under node.
+    renders under node. If `@xyflow/react` won't render under node, assert on
+    `RunPanel` (locked label, no field) and `WorkflowLibrary` (no New button
+    without `onCreate`) directly, and leave the diagram to the Task 4
+    consumer build.
 
 - [ ] **Step 2: Run them to see them fail.** Run `npm run test:ui`. Expected:
   FAIL in `pipelineView`.
@@ -416,6 +419,9 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
 **Files:**
 - Create: `src/domain/neuroflowClient.ts`
 - Modify: `package.json`: `bun add @cdrake/neuroflow-react@^0.1.0 @xyflow/react@^12`.
+  This needs Task 5's publish. Until then, a `file:` path to the Task 4
+  tarball is an acceptable stand-in, switched to `^0.1.0` before the PR.
+  Task 6 doesn't need the package.
 - Test: `src/domain/neuroflowClient.test.ts`, run with `bun test`.
 
 **Interfaces:**
@@ -510,9 +516,9 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
 - Produces, in `pipelineBatch.ts`:
   - `type RowStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'`;
   - `type BatchRow = { target: BatchTarget; status: RowStatus; run: HostRunState | null }`;
-  - `type Batch = { id: string; workflowId: string; title: string; startedAt: number; rows: BatchRow[] }`;
-  - `startBatch(workflowId: string, title: string, targets: BatchTarget[], now: number): Batch`.
-    It copies `targets`;
+  - `type Batch = { id: string; workflowId: string; title: string; startedAt: number; inputs: Record<string, unknown>; rows: BatchRow[] }`;
+  - `startBatch(workflowId: string, title: string, inputs: Record<string, unknown>, targets: BatchTarget[], now: number): Batch`.
+    It copies `inputs` and `targets`;
   - `reduceBatch(b: Batch, ev: {type:'row', index: number, ev: RunEv} | {type:'cancelQueued'}): Batch`.
     Row status follows the row's `run.status`. `cancelQueued` turns every
     `queued` row into `cancelled`;
@@ -546,8 +552,8 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   - `batch runs serially`: after `startBatch` with 3 targets, `nextQueued` is 0.
     After row 0 starts, it's `null`. After row 0 completes, it's 1.
   - `batch continues after a failed row`: row 0 errors, and `nextQueued` is 1.
-  - `startBatch snapshots targets`: mutating the input array afterwards
-    doesn't change `rows`.
+  - `startBatch snapshots inputs and targets`: mutating the inputs object or
+    the targets array afterwards doesn't change `batch.inputs` or `rows`.
   - `cancelQueued leaves the running row alone`, and `retryTargets` returns
     the failed and cancelled rows' targets in order.
   - `groupOverlaysByRun keeps order and splits untagged runs`: items
@@ -603,13 +609,19 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
     index, it:
     1. runs `client.checkPath(target.path)` (a rejection becomes that row's
        `error` event);
-    2. runs `client.run(entry, {...formInputs, [targetInput.name]: target.path}, onProgress)`;
+    2. runs `client.run(entry, {...batch.inputs, [targetInput.name]: target.path}, onProgress)`;
     3. on result, calls `client.readRun(runId)`, then dispatches `done` and
        `onRunOutputs`.
+  - When `targetInput` is `null`, Run starts a batch with one synthetic target
+    `{key:'run', label: title, path:'', itemId: selected?.id ?? null}`. Skip
+    `checkPath` and add nothing to `batch.inputs`.
   - **Cancel batch** dispatches `cancelQueued`, then `client.cancel` on the
     running row's request id.
-  - `RunPanel`'s `run` is the clicked row's `run`, falling back to the running
-    row's, then the last row's.
+  - Only when `batch.workflowId === activeId`: `RunPanel`'s `run` is the
+    clicked row's `run`, falling back to the running row's, then the last
+    row's, and the batch rows render in `targets`. Otherwise pass
+    `run={null}` and show one line, "Batch running for <title>". Starting a
+    new batch while one runs is blocked.
   - Setup and error states:
     - not configured: show the settings path and "Reveal settings file";
     - process error: show `stderrTail` and Restart (`neuroflow_restart`).
@@ -621,7 +633,9 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   - choosing `python-volume-filter` shows a one-step diagram and the Targets
     strip with the filtered volume count;
   - filtering to 3 volumes and pressing Run completes 3 rows in order;
-  - switching to Dataset and back mid-batch keeps the batch running.
+  - switching to Dataset and back mid-batch keeps the batch running;
+  - back on Dataset, the dataset desktop still draws, pans and resizes. If
+    OpenSeadragon needs it, trigger a redraw when it's shown again.
 
 - [ ] **Step 3: Commit.** Message: `feat: Pipelines view hosting @cdrake/neuroflow-react PipelineView`.
 
