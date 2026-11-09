@@ -6,6 +6,8 @@ pub mod headless;
 #[cfg(desktop)]
 mod mcp;
 #[cfg(desktop)]
+mod neuroflow;
+#[cfg(desktop)]
 mod niimath;
 mod opened;
 mod receive;
@@ -794,6 +796,7 @@ pub fn run() {
     let builder = builder
         .manage(terminal::TerminalState::default())
         .manage(mcp::McpState::default())
+        .manage(neuroflow::NeuroflowState::default())
         .invoke_handler(tauri::generate_handler![
             neurovue_runtime_capabilities,
             neurovue_server_info,
@@ -822,7 +825,13 @@ pub fn run() {
             mcp::mcp_status,
             mcp::agent_resolve_path,
             mcp::open_viewer_window,
-            mcp::focus_window
+            mcp::focus_window,
+            neuroflow::neuroflow_status,
+            neuroflow::neuroflow_request,
+            neuroflow::neuroflow_cancel,
+            neuroflow::neuroflow_restart,
+            neuroflow::neuroflow_read_run,
+            neuroflow::neuroflow_check_path
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -848,9 +857,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building NeuroVue");
     app.run(|_app, event| match event {
-        // Don't leave the agent server holding its port after we quit.
+        // Don't leave the agent server holding its port, or neuroflow-mcp
+        // running, after we quit.
         #[cfg(desktop)]
-        tauri::RunEvent::Exit => mcp::stop(_app),
+        tauri::RunEvent::Exit => {
+            mcp::stop(_app);
+            neuroflow::stop(_app);
+        }
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
         // A suspended iOS app can lose its listening socket and its Bonjour

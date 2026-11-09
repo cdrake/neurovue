@@ -73,7 +73,7 @@ fn is_enabled<R: Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 /// The folders agents may open files from, as configured (not yet resolved).
-fn allowed_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+pub(crate) fn allowed_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     let roots = prefs(app).roots;
     if !roots.is_empty() {
         return roots;
@@ -247,7 +247,7 @@ pub(crate) fn agent_resolve_path(app: AppHandle, path: String) -> Result<String,
     resolve_in_roots(&path, &allowed_roots(&app)).map(|path| path.display().to_string())
 }
 
-fn resolve_in_roots(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
+pub(crate) fn resolve_in_roots(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(format!("{} is not an absolute path.", path.display()));
     }
