@@ -65,6 +65,13 @@ describe('reduceRunState', () => {
     expect(s.status).toBe('failed')
     expect(s.error).toBe('x')
   })
+  test('error keeps the stderr tail it carries', () => {
+    const s = run([
+      { type: 'start', workflowId: 'w' },
+      { type: 'error', message: 'exited', stderrTail: 'trace' },
+    ])
+    expect(s.stderrTail).toBe('trace')
+  })
   test('cancelled after progress', () => {
     const s = run([
       { type: 'start', workflowId: 'w' },

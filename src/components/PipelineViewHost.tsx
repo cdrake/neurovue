@@ -80,6 +80,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
   const [reload, setReload] = useState(0)
   const [status, setStatus] = useState<NeuroflowStatus | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
+  const [describeError, setDescribeError] = useState<string | null>(null)
   const [entries, setEntries] = useState<CatalogEntry[]>([])
   const [activeId, setActiveId] = useState('')
   const [workflow, setWorkflow] = useState<WorkflowDocument | null>(null)
@@ -87,7 +88,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
   const [batch, setBatch] = useState<Batch | null>(null)
   const [clicked, setClicked] = useState<number | null>(null)
   const [selectedOnly, setSelectedOnly] = useState(false)
-  const [paths, setPaths] = useState<Record<string, string | null>>({})
+  const [paths, setPaths] = useState<Record<string, string>>({})
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload is the trigger.
   useEffect(() => {
@@ -122,6 +123,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
     let live = true
     setWorkflow(null)
     setTools(new Map())
+    setDescribeError(null)
     client
       .describe(entry.id)
       .then((doc) => {
@@ -132,7 +134,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
           setWorkflow(wrapToolAsWorkflow(doc))
         } else setWorkflow(doc as WorkflowDocument)
       })
-      .catch((e) => live && setFailure(String(e)))
+      .catch((e) => live && setDescribeError(String(e)))
     return () => {
       live = false
     }
@@ -145,23 +147,32 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
   const target = entry ? targetInput(entry.inputSchema) : null
 
   // sourcePath lives in per-volume metadata; fetch it only while a volume pipeline is on screen.
-  const pending = useRef(new Set<string>())
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new dataset invalidates the cache.
+  // Failures stay uncached and are retried once per dataset or visibility change.
+  const tried = useRef(new Set<string>())
+  const root = useRef(ctx.datasetRoot)
+  const [loading, setLoading] = useState(0)
   useEffect(() => {
-    pending.current = new Set()
+    root.current = ctx.datasetRoot
+    tried.current = new Set()
     setPaths({})
   }, [ctx.datasetRoot])
+  useEffect(() => {
+    if (!hidden) tried.current = new Set()
+  }, [hidden])
   const pool = (
     selectedOnly ? (ctx.selected ? [ctx.selected] : []) : ctx.filtered
   ).filter((i) => i.role !== 'overlay')
   const missing =
     target?.kind === 'volume' ? pool.filter((i) => !(i.id in paths)) : []
+  const missingKey = missing.map((i) => i.id).join('\n')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: missingKey stands for missing.
   useEffect(() => {
     if (hidden) return
-    const todo = missing.filter((i) => !pending.current.has(i.id))
+    const todo = missing.filter((i) => !tried.current.has(i.id))
     if (!todo.length) return
-    const batchSet = pending.current
-    for (const i of todo) batchSet.add(i.id)
+    for (const i of todo) tried.current.add(i.id)
+    const forRoot = root.current
+    setLoading((n) => n + 1)
     // shortcut: one metadata fetch per volume, all at once; page it if datasets reach thousands.
     void Promise.all(
       todo.map((i) =>
@@ -170,11 +181,14 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
           () => [i.id, null] as const,
         ),
       ),
-    ).then((found) => {
-      if (pending.current === batchSet)
-        setPaths((p) => ({ ...p, ...Object.fromEntries(found) }))
-    })
-  }, [hidden, missing])
+    )
+      .then((found) => {
+        const ok = found.flatMap(([id, path]) => (path ? [[id, path]] : []))
+        if (root.current === forRoot && ok.length)
+          setPaths((p) => ({ ...p, ...Object.fromEntries(ok) }))
+      })
+      .finally(() => setLoading((n) => n - 1))
+  }, [hidden, missingKey])
 
   const withPath = (i: DesktopItem | null) =>
     i && { ...i, sourcePath: paths[i.id] ?? null }
@@ -228,10 +242,12 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
       index,
       ev: { type: 'start', workflowId: batch.workflowId },
     })
+    let sent = false
     void (async () => {
       try {
         if (ti) await client.checkPath(row.path)
         if (cancelling.current) throw new Error('cancelled')
+        sent = true
         const h = client.run(
           run,
           ti ? { ...inputs, [ti.name]: row.path } : inputs,
@@ -258,15 +274,21 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
           )
         }
       } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        // A path rejection never reached the process, so its stderr isn't this row's.
+        const stderrTail =
+          sent && !cancelling.current
+            ? await client
+                .status()
+                .then((st) => st.stderrTail.join('\n') || undefined)
+                .catch(() => undefined)
+            : undefined
         send({
           type: 'row',
           index,
           ev: cancelling.current
             ? { type: 'cancelled' }
-            : {
-                type: 'error',
-                message: e instanceof Error ? e.message : String(e),
-              },
+            : { type: 'error', message, stderrTail },
         })
       } finally {
         busy.current = false
@@ -336,12 +358,17 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
         : `${targets.length} target volume${targets.length === 1 ? '' : 's'}`
   const runnable = running
     ? 'A batch is running'
-    : missing.length
+    : loading
       ? 'Reading volume paths…'
       : (resolved?.blocker ?? null)
 
   const strip = entry && (
     <div className="nv-pipelines-targets">
+      {describeError ? (
+        <p className="nv-pipelines-error">
+          Couldn't load {entry.title}: {describeError}
+        </p>
+      ) : null}
       <div className="nv-pipelines-targets-head">
         <strong>Targets</strong>
         <span>

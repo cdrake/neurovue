@@ -48,9 +48,11 @@ import {
 import {
   type CSSProperties,
   type JSX,
+  lazy,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -73,7 +75,6 @@ import {
   type ResolvedWindow,
   type ViewModeId,
 } from './components/NiivueStage'
-import { PipelineViewHost } from './components/PipelineViewHost'
 import { RenderShadingSection } from './components/RenderShadingSection'
 import { TerminalPanel } from './components/TerminalPanel'
 import { VolumeFilterPanel } from './components/VolumeFilterPanel'
@@ -291,6 +292,13 @@ interface AgentSend {
   bytes?: number
   error?: string
 }
+
+// Lazy: keeps @xyflow/react and the package CSS out of the initial (and iOS) bundle.
+const PipelineViewHost = lazy(() =>
+  import('./components/PipelineViewHost').then((m) => ({
+    default: m.PipelineViewHost,
+  })),
+)
 
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
@@ -2137,27 +2145,29 @@ export function App(): JSX.Element {
                   />
                 </div>
                 {pipelinesMounted ? (
-                  <PipelineViewHost
-                    hidden={leftPane !== 'pipelines'}
-                    ctx={{
-                      datasetRoot,
-                      bidsName,
-                      filtered: filteredItems,
-                      selected,
-                    }}
-                    preferSelected={preferSelected}
-                    onRunOutputs={() => {
-                      // Task 10: load NIfTI outputs as overlays.
-                    }}
-                    onShowTarget={(target) =>
-                      target.itemId && showVolume(target.itemId)
-                    }
-                    onReveal={(path) =>
-                      void createNeuroflowClient()
-                        .reveal(path)
-                        .catch((error) => setStatus(String(error)))
-                    }
-                  />
+                  <Suspense fallback={null}>
+                    <PipelineViewHost
+                      hidden={leftPane !== 'pipelines'}
+                      ctx={{
+                        datasetRoot,
+                        bidsName,
+                        filtered: filteredItems,
+                        selected,
+                      }}
+                      preferSelected={preferSelected}
+                      onRunOutputs={() => {
+                        // Task 10: load NIfTI outputs as overlays.
+                      }}
+                      onShowTarget={(target) =>
+                        target.itemId && showVolume(target.itemId)
+                      }
+                      onReveal={(path) =>
+                        void createNeuroflowClient()
+                          .reveal(path)
+                          .catch((error) => setStatus(String(error)))
+                      }
+                    />
+                  </Suspense>
                 ) : null}
               </section>
 

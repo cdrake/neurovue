@@ -478,10 +478,10 @@ pub(crate) fn neuroflow_reveal(path: String) -> Result<(), String> {
     };
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut select = OsString::from("/select,");
-        select.push(&path);
+        use std::os::windows::process::CommandExt;
+        // Explorer parses its own command line: the path must be quoted after the comma.
         let mut cmd = Command::new("explorer");
-        cmd.arg(select);
+        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
         cmd
     };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -490,7 +490,10 @@ pub(crate) fn neuroflow_reveal(path: String) -> Result<(), String> {
         cmd.arg(path.parent().unwrap_or(&path));
         cmd
     };
-    cmd.spawn().map(|_| ()).map_err(|error| error.to_string())
+    let mut child = cmd.spawn().map_err(|error| error.to_string())?;
+    // Reap it, or each reveal leaves a zombie until the app quits.
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// App exit: kill the process rather than leave it running. try_lock, so a

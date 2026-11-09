@@ -13,7 +13,7 @@ export type RunEv =
       sessionDir: string
       record: RunRecord
     }
-  | { type: 'error'; message: string }
+  | { type: 'error'; message: string; stderrTail?: string }
   | { type: 'cancelled' }
 
 const blank = (workflowId: string): HostRunState => ({
@@ -66,7 +66,12 @@ export function reduceRunState(
       }
     }
     case 'error':
-      return { ...s, status: 'failed', error: ev.message }
+      return {
+        ...s,
+        status: 'failed',
+        error: ev.message,
+        stderrTail: ev.stderrTail ?? s.stderrTail,
+      }
     case 'cancelled':
       return { ...s, status: 'cancelled' }
   }

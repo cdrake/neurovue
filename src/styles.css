@@ -995,6 +995,12 @@ button {
   font-size: 12px;
 }
 
+.nv-pipelines-error {
+  margin: 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
 .nv-pipelines-targets-head {
   display: flex;
   flex-wrap: wrap;
