@@ -411,9 +411,14 @@ pub(crate) async fn neuroflow_request(
     state
         .ensure(Path::new(&settings.binary), &args, &version, emit)
         .await?;
+    // Lets the client tell a run's id from a concurrent catalog/describe request.
+    let token = params.pointer("/_meta/progressToken").cloned();
     state
         .request(&method, params, |id| {
-            let _ = app.emit("neuroflow:request-id", json!({ "requestId": id }));
+            let _ = app.emit(
+                "neuroflow:request-id",
+                json!({ "requestId": id, "progressToken": token }),
+            );
         })
         .await
 }

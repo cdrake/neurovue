@@ -88,6 +88,33 @@ describe('neuroflowClient', () => {
     expect(got).toEqual(['two:3'])
   })
 
+  test('run gets its own request id despite an earlier null-token event', async () => {
+    const f = fake(() => new Promise(() => {}))
+    const c = createNeuroflowClient({ invoke: f.invoke, listen: f.listen })
+    const r = c.run(entry('x'), {}, () => {})
+    await Bun.sleep(5)
+    f.emit('neuroflow:request-id', { requestId: 1, progressToken: null })
+    f.emit('neuroflow:request-id', {
+      requestId: 2,
+      progressToken: r.progressToken,
+    })
+    expect(await r.requestId).toBe(2)
+  })
+
+  test('catalog retries after a tools/list rejection', async () => {
+    let n = 0
+    const f = fake((_c, a) => {
+      if (a.method === 'tools/list') {
+        if (n++ === 0) throw new Error('down')
+        return { tools: [] }
+      }
+      return ok({ items: [] })
+    })
+    const c = createNeuroflowClient({ invoke: f.invoke, listen: f.listen })
+    await expect(c.catalog()).rejects.toThrow('down')
+    expect(await c.catalog()).toEqual([])
+  })
+
   test('run rejects on isError with the tool text', async () => {
     const f = fake(() => ({
       isError: true,

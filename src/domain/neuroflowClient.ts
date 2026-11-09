@@ -38,6 +38,7 @@ export interface NeuroflowClient {
     onProgress: (p: Progress) => void,
   ): RunHandle
   cancel(requestId: number): Promise<void>
+  restart(): Promise<void>
   readRun(runId: string): Promise<{ sessionDir: string; record: RunRecord }>
   checkPath(path: string): Promise<string>
 }
@@ -70,9 +71,10 @@ export function createNeuroflowClient(
   }
 
   const progressHandlers = new Map<string, (p: Progress) => void>()
-  // shortcut: request-id events carry no token, so they're matched FIFO to runs in
-  // invoke order; upgrade if the Rust side starts echoing the progressToken.
-  const idWaiters: ((id: number) => void)[] = []
+  const idWaiters = new Map<
+    string,
+    { resolve: (id: number) => void; reject: (e: Error) => void }
+  >()
   let ready: Promise<unknown> | undefined
   const listening = () =>
     (ready ??= Promise.all([
@@ -83,8 +85,12 @@ export function createNeuroflowClient(
           if (t !== undefined) progressHandlers.get(String(t))?.(e.payload)
         },
       ),
-      listen<{ requestId: number }>('neuroflow:request-id', (e) =>
-        idWaiters.shift()?.(e.payload.requestId),
+      listen<{ requestId: number; progressToken?: string | null }>(
+        'neuroflow:request-id',
+        (e) => {
+          const t = e.payload.progressToken
+          if (t != null) idWaiters.get(String(t))?.resolve(e.payload.requestId)
+        },
       ),
     ]))
 
@@ -98,7 +104,12 @@ export function createNeuroflowClient(
   return {
     status: () => invoke<NeuroflowStatus>('neuroflow_status'),
     async catalog() {
-      tools ??= req<{ tools: never[] }>('tools/list', {}).then((r) => r.tools)
+      tools ??= req<{ tools: never[] }>('tools/list', {})
+        .then((r) => r.tools)
+        .catch((e) => {
+          tools = undefined
+          throw e
+        })
       const [all, list] = await Promise.all([
         tools,
         call<{ items: Omit<CatalogEntry, 'description' | 'inputSchema'>[] }>(
@@ -129,22 +140,28 @@ export function createNeuroflowClient(
     run(entry, inputs, onProgress) {
       const progressToken = `nv-${Date.now().toString(36)}-${++seq}`
       progressHandlers.set(progressToken, onProgress)
-      let resolveId!: (id: number) => void
-      const requestId = new Promise<number>((r) => {
-        resolveId = r
-        idWaiters.push(r)
+      const requestId = new Promise<number>((resolve, reject) => {
+        idWaiters.set(progressToken, { resolve, reject })
       })
+      requestId.catch(() => {})
       const result = listening()
         .then(() =>
           call<RunStructured>(entry.mcpName, inputs, { progressToken }),
         )
         .finally(() => {
           progressHandlers.delete(progressToken)
-          const i = idWaiters.indexOf(resolveId)
-          if (i >= 0) idWaiters.splice(i, 1)
+          // no-op if the id already arrived; otherwise the run failed before the write
+          idWaiters
+            .get(progressToken)
+            ?.reject(new Error('run ended before it was sent'))
+          idWaiters.delete(progressToken)
         })
       return { requestId, result, progressToken }
     },
+    restart: () =>
+      invoke<void>('neuroflow_restart').finally(() => {
+        tools = undefined
+      }),
     cancel: (requestId) => invoke('neuroflow_cancel', { requestId }),
     readRun: (runId) => invoke('neuroflow_read_run', { runId }),
     checkPath: (path) => invoke('neuroflow_check_path', { path }),
