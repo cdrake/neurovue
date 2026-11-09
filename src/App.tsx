@@ -1,3 +1,4 @@
+import type { RunStructured } from '@cdrake/neuroflow-react'
 import type { NiiVueLocation } from '@niivue/niivue'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
@@ -47,6 +48,7 @@ import {
 } from 'lucide-react'
 import {
   type CSSProperties,
+  Fragment,
   type JSX,
   lazy,
   type ReactNode,
@@ -135,8 +137,15 @@ import {
   openMeshFiles,
   readMeshLayer,
 } from './domain/meshes'
-import { createNeuroflowClient, isAvailable } from './domain/neuroflowClient'
+import {
+  createNeuroflowClient,
+  isAvailable,
+  isNifti,
+  outputArtifacts,
+} from './domain/neuroflowClient'
 import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
+import { groupOverlaysByRun, type RunTag } from './domain/overlayRuns'
+import type { BatchTarget } from './domain/pipelineTargets'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
   loadRememberedUiMode,
@@ -456,11 +465,18 @@ export function App(): JSX.Element {
   const [hasPipelines, setHasPipelines] = useState(false)
   const [leftPane, setLeftPane] = useState<'dataset' | 'pipelines'>('dataset')
   const [pipelinesMounted, setPipelinesMounted] = useState(false)
-  // Task 10's Operations button bumps this to open Pipelines with "Selected only".
-  const [preferSelected] = useState(0)
+  // The Operations button bumps this to open Pipelines with "Selected only".
+  const [preferSelected, setPreferSelected] = useState(0)
+  // Overlay item id -> the pipeline run that produced it; App state only.
+  const [neuroflowRuns, setNeuroflowRuns] = useState<Record<string, RunTag>>({})
   useEffect(() => {
     void isAvailable().then(setHasPipelines)
   }, [])
+  function revealPath(path: string): void {
+    void createNeuroflowClient()
+      .reveal(path)
+      .catch((error) => setStatus(String(error)))
+  }
   function showLeftPane(pane: 'dataset' | 'pipelines'): void {
     setLeftPane(pane)
     if (pane === 'pipelines') setPipelinesMounted(true)
@@ -865,6 +881,42 @@ export function App(): JSX.Element {
     }
   }
 
+  async function addOverlayFromPath(
+    path: string,
+  ): Promise<{ id: string; label: string }> {
+    if (items.length === 0) {
+      throw new Error('No dataset is open to overlay; call open_path first.')
+    }
+    const result = await addOverlayVolumeByPath(path)
+    await untilNextViewer(() => placeOverlay(result))
+    return { id: result.id, label: result.label }
+  }
+
+  /** Loads a run's NIfTI outputs in sequence; returns the paths to offer as Reveal instead. */
+  async function handleRunOutputs(
+    structured: RunStructured,
+    tag: RunTag,
+    _target: BatchTarget,
+    isShown: boolean,
+  ): Promise<string[]> {
+    if (!isShown) return []
+    const reveal: string[] = []
+    for (const { path } of outputArtifacts(structured)) {
+      if (!isNifti(path)) {
+        reveal.push(path)
+        continue
+      }
+      try {
+        const { id } = await addOverlayFromPath(path)
+        setNeuroflowRuns((runs) => ({ ...runs, [id]: tag }))
+      } catch (error) {
+        setStatus(String(error))
+        reveal.push(path)
+      }
+    }
+    return reveal
+  }
+
   async function loadMeshes(): Promise<void> {
     if (isOpeningMesh) return
 
@@ -1240,16 +1292,7 @@ export function App(): JSX.Element {
         if (id === shownBase?.id) return
         await untilNextViewer(async () => showVolume(id))
       },
-      addOverlay: async (path) => {
-        if (items.length === 0) {
-          throw new Error(
-            'No dataset is open to overlay; call open_path first.',
-          )
-        }
-        const result = await addOverlayVolumeByPath(path)
-        await untilNextViewer(() => placeOverlay(result))
-        return { id: result.id, label: result.label }
-      },
+      addOverlay: addOverlayFromPath,
       listDevices: async () => ({
         devices: (await listSendTargets()).map((target) => target.name),
       }),
@@ -2155,17 +2198,13 @@ export function App(): JSX.Element {
                         selected,
                       }}
                       preferSelected={preferSelected}
-                      onRunOutputs={() => {
-                        // Task 10: load NIfTI outputs as overlays.
+                      onRunOutputs={handleRunOutputs}
+                      onShowTarget={async ({ itemId }) => {
+                        // An already-shown volume never reloads, so don't wait for one.
+                        if (!itemId || itemId === shownBase?.id) return
+                        await untilNextViewer(async () => showVolume(itemId))
                       }}
-                      onShowTarget={(target) =>
-                        target.itemId && showVolume(target.itemId)
-                      }
-                      onReveal={(path) =>
-                        void createNeuroflowClient()
-                          .reveal(path)
-                          .catch((error) => setStatus(String(error)))
-                      }
+                      onReveal={revealPath}
                     />
                   </Suspense>
                 ) : null}
@@ -2353,6 +2392,8 @@ export function App(): JSX.Element {
                       onLayerWindowReset={resetLayerWindow}
                       onLoadOverlay={loadOverlayVolume}
                       onOverlayToggle={toggleOverlayLayer}
+                      runs={neuroflowRuns}
+                      onRevealRun={revealPath}
                     />
 
                     <MeshPanel
@@ -2454,12 +2495,27 @@ export function App(): JSX.Element {
                     )}
                   </>
                 ) : (
-                  <NiimathOperationsPanel
-                    item={selected}
-                    metadata={metadata}
-                    onDerivedVolume={refreshDesktopManifest}
-                    onStatus={setStatus}
-                  />
+                  <>
+                    <NiimathOperationsPanel
+                      item={selected}
+                      metadata={metadata}
+                      onDerivedVolume={refreshDesktopManifest}
+                      onStatus={setStatus}
+                    />
+                    {hasPipelines ? (
+                      <button
+                        className="nv-layer-load-button"
+                        onClick={() => {
+                          showDatasetPane()
+                          showLeftPane('pipelines')
+                          setPreferSelected((n) => n + 1)
+                        }}
+                        type="button"
+                      >
+                        Run pipeline on this volume…
+                      </button>
+                    ) : null}
+                  </>
                 )}
               </div>
             </aside>
@@ -2771,6 +2827,8 @@ function LayerPanel({
   onLayerWindowReset,
   onLoadOverlay,
   onOverlayToggle,
+  runs,
+  onRevealRun,
 }: {
   atlasId: string | null
   isOpeningOverlay: boolean
@@ -2788,10 +2846,13 @@ function LayerPanel({
   onLayerWindowReset: (itemId: string) => void
   onLoadOverlay: () => void
   onOverlayToggle: (itemId: string) => void
+  runs: Record<string, RunTag>
+  onRevealRun: (sessionDir: string) => void
 }): JSX.Element {
   const [expandedId, setExpandedId] = useState<string | null | undefined>(
     undefined,
   )
+  const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
   const atlasCandidates = useMemo(
     () => items.slice().sort(compareAtlasCandidates),
     [items],
@@ -2850,6 +2911,104 @@ function LayerPanel({
     .map((row) => layerWarning(selected, row.item, layerExtents))
     .filter((warning): warning is string => warning !== null)
 
+  function renderLayer(
+    item: DesktopItem,
+    role: 'base' | 'overlay' | 'atlas',
+  ): JSX.Element | null {
+    if (!selected) return null
+    const settings = layerSettings[item.id]
+    const isBaseAtlas = role === 'base' && atlasId === selected.id
+    const overlayIndex =
+      role === 'overlay' ? overlayItems.findIndex((o) => o.id === item.id) : 0
+    const rawColormap = layerColormapForItem(
+      item,
+      layerSettings,
+      role === 'overlay'
+        ? overlayColormapForIndex(overlayIndex)
+        : isBaseAtlas
+          ? DEFAULT_ATLAS_COLORMAP
+          : DEFAULT_BASE_COLORMAP,
+    )
+    // Keep the base's select in sync with what actually renders (grayscale).
+    const colormapValue =
+      role === 'base' && !isBaseAtlas ? baseColormap(rawColormap) : rawColormap
+    return (
+      <LayerRow
+        key={item.id}
+        kind={role}
+        label={item.label}
+        meta={layerOptionMeta(item)}
+        warning={layerWarning(selected, item, layerExtents)}
+        hidden={!!settings?.hidden}
+        expanded={expanded === item.id}
+        removable={role !== 'base'}
+        onToggleExpand={() =>
+          setExpandedId(expanded === item.id ? null : item.id)
+        }
+        onHiddenChange={(hidden) => onLayerHiddenChange(item.id, hidden)}
+        onRemove={
+          role === 'atlas'
+            ? () => onAtlasChange('')
+            : () => onOverlayToggle(item.id)
+        }
+      >
+        {role === 'atlas' ? (
+          <Slider
+            label="Opacity"
+            min={0}
+            max={1}
+            step={0.05}
+            value={opacityForItem(
+              item.id,
+              layerSettings,
+              DEFAULT_ATLAS_OPACITY,
+            )}
+            onChange={(value) => onLayerOpacityChange(item.id, value)}
+          />
+        ) : (
+          <>
+            <LayerColormapSelect
+              ariaLabel={`Colormap for ${item.label}`}
+              itemId={item.id}
+              value={colormapValue}
+              options={
+                role === 'base' && !isBaseAtlas
+                  ? BASE_COLORMAP_OPTIONS
+                  : COLORMAP_OPTIONS
+              }
+              onChange={onLayerColormapChange}
+            />
+            {role === 'overlay' ? (
+              <Slider
+                label="Opacity"
+                min={0}
+                max={1}
+                step={0.05}
+                value={opacityForItem(
+                  item.id,
+                  layerSettings,
+                  DEFAULT_OVERLAY_OPACITY,
+                )}
+                onChange={(value) => onLayerOpacityChange(item.id, value)}
+              />
+            ) : null}
+            {!isBaseAtlas ? (
+              <WindowControl
+                itemId={item.id}
+                label={item.label}
+                window={settings?.window}
+                resolved={resolvedWindows[item.id]}
+                variant={role === 'overlay' ? 'threshold' : 'window'}
+                onChange={onLayerWindowChange}
+                onReset={onLayerWindowReset}
+              />
+            ) : null}
+          </>
+        )}
+      </LayerRow>
+    )
+  }
+
   return (
     <section className="nv-control-section nv-layer-panel">
       <div className="nv-panel-heading">
@@ -2874,104 +3033,50 @@ function LayerPanel({
       {selected ? (
         <div className="nv-layer-rows">
           {rows.map(({ item, role }) => {
-            const settings = layerSettings[item.id]
-            const isBaseAtlas = role === 'base' && atlasId === selected.id
-            const overlayIndex =
-              role === 'overlay'
-                ? overlayItems.findIndex((o) => o.id === item.id)
-                : 0
-            const rawColormap = layerColormapForItem(
-              item,
-              layerSettings,
-              role === 'overlay'
-                ? overlayColormapForIndex(overlayIndex)
-                : isBaseAtlas
-                  ? DEFAULT_ATLAS_COLORMAP
-                  : DEFAULT_BASE_COLORMAP,
-            )
-            // Keep the base's select in sync with what actually renders (grayscale).
-            const colormapValue =
-              role === 'base' && !isBaseAtlas
-                ? baseColormap(rawColormap)
-                : rawColormap
-            return (
-              <LayerRow
-                key={item.id}
-                kind={role}
-                label={item.label}
-                meta={layerOptionMeta(item)}
-                warning={layerWarning(selected, item, layerExtents)}
-                hidden={!!settings?.hidden}
-                expanded={expanded === item.id}
-                removable={role !== 'base'}
-                onToggleExpand={() =>
-                  setExpandedId(expanded === item.id ? null : item.id)
-                }
-                onHiddenChange={(hidden) =>
-                  onLayerHiddenChange(item.id, hidden)
-                }
-                onRemove={
-                  role === 'atlas'
-                    ? () => onAtlasChange('')
-                    : () => onOverlayToggle(item.id)
-                }
-              >
-                {role === 'atlas' ? (
-                  <Slider
-                    label="Opacity"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={opacityForItem(
-                      item.id,
-                      layerSettings,
-                      DEFAULT_ATLAS_OPACITY,
-                    )}
-                    onChange={(value) => onLayerOpacityChange(item.id, value)}
-                  />
-                ) : (
-                  <>
-                    <LayerColormapSelect
-                      ariaLabel={`Colormap for ${item.label}`}
-                      itemId={item.id}
-                      value={colormapValue}
-                      options={
-                        role === 'base' && !isBaseAtlas
-                          ? BASE_COLORMAP_OPTIONS
-                          : COLORMAP_OPTIONS
-                      }
-                      onChange={onLayerColormapChange}
-                    />
-                    {role === 'overlay' ? (
-                      <Slider
-                        label="Opacity"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={opacityForItem(
-                          item.id,
-                          layerSettings,
-                          DEFAULT_OVERLAY_OPACITY,
-                        )}
-                        onChange={(value) =>
-                          onLayerOpacityChange(item.id, value)
+            if (role !== 'overlay') return renderLayer(item, role)
+            // Overlays render once, as run groups, at the first overlay row.
+            if (item.id !== overlayItems[0].id) return null
+            return groupOverlaysByRun(overlayItems, runs).map(
+              ({ tag, items: group }) => {
+                if (!tag) return group.map((o) => renderLayer(o, 'overlay'))
+                const collapsed = collapsedRuns.has(tag.runId)
+                return (
+                  <Fragment key={`run-${tag.runId}-${group[0].id}`}>
+                    <div className="nv-layer-run">
+                      <button
+                        aria-expanded={!collapsed}
+                        className="nv-layer-run-toggle"
+                        onClick={() =>
+                          setCollapsedRuns((current) => {
+                            const next = new Set(current)
+                            if (!next.delete(tag.runId)) next.add(tag.runId)
+                            return next
+                          })
                         }
-                      />
-                    ) : null}
-                    {!isBaseAtlas ? (
-                      <WindowControl
-                        itemId={item.id}
-                        label={item.label}
-                        window={settings?.window}
-                        resolved={resolvedWindows[item.id]}
-                        variant={role === 'overlay' ? 'threshold' : 'window'}
-                        onChange={onLayerWindowChange}
-                        onReset={onLayerWindowReset}
-                      />
-                    ) : null}
-                  </>
-                )}
-              </LayerRow>
+                        type="button"
+                      >
+                        <ChevronDown size={14} />
+                        Run: {tag.title} ·{' '}
+                        {new Date(tag.startedAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </button>
+                      {tag.sessionDir ? (
+                        <button
+                          onClick={() => onRevealRun(tag.sessionDir)}
+                          type="button"
+                        >
+                          Reveal run
+                        </button>
+                      ) : null}
+                    </div>
+                    {collapsed
+                      ? null
+                      : group.map((o) => renderLayer(o, 'overlay'))}
+                  </Fragment>
+                )
+              },
             )
           })}
         </div>

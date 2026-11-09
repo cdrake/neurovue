@@ -50,8 +50,8 @@ export type PipelineViewHostProps = {
     tag: RunTag,
     target: BatchTarget,
     isShown: boolean,
-  ) => void
-  onShowTarget: (target: BatchTarget) => void
+  ) => Promise<string[]>
+  onShowTarget: (target: BatchTarget) => Promise<void>
   onReveal: (path: string) => void
 }
 
@@ -86,6 +86,10 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
   const [workflow, setWorkflow] = useState<WorkflowDocument | null>(null)
   const [tools, setTools] = useState(new Map<string, ToolDefinition>())
   const [batch, setBatch] = useState<Batch | null>(null)
+  // Output paths per row (by target key) that loaded as nothing: non-NIfTI or failed loads.
+  const [reveals, setReveals] = useState<Record<string, string[]>>({})
+  const addReveals = (key: string) => (paths: string[]) =>
+    setReveals((r) => ({ ...r, [key]: paths }))
   const [clicked, setClicked] = useState<number | null>(null)
   const [selectedOnly, setSelectedOnly] = useState(false)
   const [paths, setPaths] = useState<Record<string, string>>({})
@@ -266,12 +270,16 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
         })
         if (structured.status === 'completed') {
           const p = latest.current
-          p.onRunOutputs(
-            structured,
-            { runId: structured.runId, title, startedAt, sessionDir },
-            row,
-            ti?.kind !== 'volume' || row.itemId === p.ctx.selected?.id,
-          )
+          // Not awaited: overlay loads mustn't hold the queue or fail the row.
+          void p
+            .onRunOutputs(
+              structured,
+              { runId: structured.runId, title, startedAt, sessionDir },
+              row,
+              ti?.kind !== 'volume' || row.itemId === p.ctx.selected?.id,
+            )
+            .then(addReveals(row.key))
+            .catch(() => {})
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e)
@@ -307,7 +315,34 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
   const begin = (b: Batch, e: CatalogEntry) => {
     batchEntry.current = e
     setClicked(null)
+    setReveals({})
     setBatch(b)
+  }
+
+  // Opens the row's volume, then loads that run's outputs onto it.
+  const showRow = (b: Batch, r: BatchRow) => {
+    const f = r.run?.finished
+    const p = latest.current
+    void p
+      .onShowTarget(r.target)
+      .then(() =>
+        f && 'structured' in f && f.ok
+          ? p
+              .onRunOutputs(
+                f.structured,
+                {
+                  runId: f.runId,
+                  title: b.title,
+                  startedAt: b.startedAt,
+                  sessionDir: f.sessionDir,
+                },
+                r.target,
+                true,
+              )
+              .then(addReveals(r.target.key))
+          : undefined,
+      )
+      .catch(() => {})
   }
 
   if (status && !status.configured)
@@ -434,13 +469,20 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
                   </button>
                 ) : null}
                 {r.target.itemId ? (
-                  <button
-                    onClick={() => props.onShowTarget(r.target)}
-                    type="button"
-                  >
+                  <button onClick={() => showRow(own, r)} type="button">
                     Show
                   </button>
                 ) : null}
+                {reveals[r.target.key]?.map((path) => (
+                  <button
+                    key={path}
+                    onClick={() => props.onReveal(path)}
+                    title={path}
+                    type="button"
+                  >
+                    Reveal {path.split('/').pop()}
+                  </button>
+                ))}
               </li>
             ))}
           </ul>

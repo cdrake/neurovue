@@ -2251,6 +2251,30 @@ button {
   min-width: 0;
 }
 
+/* Pipeline run header: groups the overlays one run produced. */
+.nv-layer-run {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.nv-layer-run-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nv-layer-run-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
 .nv-layer-row {
   border: 1px solid var(--line);
   border-left-width: 3px;
