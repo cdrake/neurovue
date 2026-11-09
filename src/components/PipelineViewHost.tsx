@@ -198,6 +198,9 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
       .finally(() => setLoading((n) => n - 1))
   }, [hidden, missingKey])
 
+  // Tried and not loading, yet still pathless: the lookup failed or gave no source path.
+  const skipped = loading ? [] : missing.filter((i) => tried.current.has(i.id))
+
   const withPath = (i: DesktopItem | null) =>
     i && { ...i, sourcePath: paths[i.id] ?? null }
   const resolved = target
@@ -443,6 +446,20 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
           {targets.length > SHOWN_NAMES
             ? ` +${targets.length - SHOWN_NAMES} more`
             : ''}
+        </p>
+      ) : null}
+      {skipped.length ? (
+        <p className="nv-pipelines-names">
+          {skipped.length} volume{skipped.length === 1 ? '' : 's'} skipped: no
+          source path (
+          {skipped
+            .slice(0, SHOWN_NAMES)
+            .map((i) => i.label)
+            .join(', ')}
+          {skipped.length > SHOWN_NAMES
+            ? ` +${skipped.length - SHOWN_NAMES} more`
+            : ''}
+          )
         </p>
       ) : null}
       {batch && !own && running ? (

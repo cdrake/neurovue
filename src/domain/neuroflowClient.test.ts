@@ -101,6 +101,22 @@ describe('neuroflowClient', () => {
     expect(await r.requestId).toBe(2)
   })
 
+  test('describe unwraps the neuroflow_describe wrapper', async () => {
+    const document = { kind: 'workflow', id: 'w', inputs: {}, steps: {} }
+    const f = fake(() =>
+      ok({
+        id: 'w',
+        kind: 'workflow',
+        mcpName: 'nf_w',
+        runnable: true,
+        notRunnableReason: null,
+        document,
+      }),
+    )
+    const c = createNeuroflowClient({ invoke: f.invoke, listen: f.listen })
+    expect(await c.describe('w')).toEqual(document)
+  })
+
   test('catalog retries after a tools/list rejection', async () => {
     let n = 0
     const f = fake((_c, a) => {

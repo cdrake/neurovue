@@ -1,8 +1,8 @@
-import {
-  type ArtifactDescriptor,
-  isArtifactDescriptor,
-  type RunRecord,
-  type RunStructured,
+// Type-only: a value import would pull @xyflow/react into the entry (and iOS) bundle.
+import type {
+  ArtifactDescriptor,
+  RunRecord,
+  RunStructured,
 } from '@cdrake/neuroflow-react'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen } from '@tauri-apps/api/event'
@@ -137,7 +137,10 @@ export function createNeuroflowClient(
           : []
       })
     },
-    describe: (id) => call('neuroflow_describe', { id }),
+    describe: (id) =>
+      call<{ document: unknown }>('neuroflow_describe', { id }).then(
+        (r) => r.document,
+      ),
     run(entry, inputs, onProgress) {
       const progressToken = `nv-${Date.now().toString(36)}-${++seq}`
       progressHandlers.set(progressToken, onProgress)
@@ -180,6 +183,12 @@ export async function isAvailable(): Promise<boolean> {
 }
 
 export const isNifti = (path: string) => /\.nii(\.gz)?$/i.test(path)
+
+const isArtifactDescriptor = (v: unknown): v is ArtifactDescriptor =>
+  typeof v === 'object' &&
+  v !== null &&
+  typeof (v as ArtifactDescriptor).path === 'string' &&
+  typeof (v as ArtifactDescriptor).uri === 'string'
 
 export function outputArtifacts(s: RunStructured): ArtifactDescriptor[] {
   const walk = (v: unknown): ArtifactDescriptor[] =>

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::oneshot;
 
@@ -28,6 +28,7 @@ const TEMPLATE: &str = r#"{
 "#;
 const STDERR_LINES: usize = 200;
 const INIT_TIMEOUT: Duration = Duration::from_secs(30);
+const STOP_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Deserialize)]
 pub(crate) struct Settings {
@@ -142,6 +143,10 @@ impl Pending {
         self.0.remove(&id).is_some_and(|tx| tx.send(r).is_ok())
     }
 
+    fn ids(&self) -> Vec<u64> {
+        self.0.keys().copied().collect()
+    }
+
     pub(crate) fn fail_all(&mut self, msg: &str) {
         for (_, tx) in self.0.drain() {
             let _ = tx.send(Err(msg.to_string()));
@@ -155,12 +160,27 @@ type Emit = Arc<dyn Fn(Value) + Send + Sync>;
 /// earlier process can't fail requests sent to a newer one.
 struct Proc {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     pending: Arc<Mutex<Pending>>,
 }
 
+fn cancelled(id: u64) -> Value {
+    json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": id } })
+}
+
 impl Drop for Proc {
+    /// Cancels in-flight steps first: neuroflow-mcp tears a step's process group
+    /// down only on `notifications/cancelled`, not on stdin EOF or its own kill.
     fn drop(&mut self) {
+        let ids = self.pending.lock().unwrap().ids();
+        for id in ids {
+            let _ = self.write(&cancelled(id));
+        }
+        self.stdin = None;
+        let deadline = Instant::now() + STOP_GRACE;
+        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -169,8 +189,12 @@ impl Drop for Proc {
 impl Proc {
     // shortcut: a blocking pipe write under the state lock, fine for small JSON-RPC messages; move to a writer thread if messages grow large.
     fn write(&mut self, msg: &Value) -> Result<(), String> {
-        writeln!(self.stdin, "{msg}")
-            .and_then(|()| self.stdin.flush())
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or("neuroflow-mcp's stdin is closed")?;
+        writeln!(stdin, "{msg}")
+            .and_then(|()| stdin.flush())
             .map_err(|error| format!("couldn't write to neuroflow-mcp: {error}"))
     }
 
@@ -271,7 +295,7 @@ impl NeuroflowState {
         });
         let mut proc = Proc {
             child,
-            stdin,
+            stdin: Some(stdin),
             pending,
         };
         let init = json!({
@@ -312,15 +336,16 @@ impl NeuroflowState {
             return Ok(());
         };
         proc.pending.lock().unwrap().remove(id);
-        proc.write(&json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/cancelled",
-            "params": { "requestId": id },
-        }))
+        proc.write(&cancelled(id))
     }
 
+    /// Holds the lock until the old process is gone, so a new one can't race it.
     async fn stop(&self) {
-        self.proc.lock().await.take();
+        let mut slot = self.proc.lock().await;
+        if let Some(proc) = slot.take() {
+            // Drop waits up to STOP_GRACE; keep it off the async workers.
+            let _ = tokio::task::spawn_blocking(move || drop(proc)).await;
+        }
     }
 
     /// Not running while the lock is held (a spawn or handshake is underway),
@@ -496,8 +521,8 @@ pub(crate) fn neuroflow_reveal(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// App exit: kill the process rather than leave it running. try_lock, so a
-/// stuck handshake can't hold up quitting; the child then sees stdin close.
+/// App exit: cancel running steps and stop the process (blocks up to STOP_GRACE).
+/// try_lock, so a stuck handshake can't hold up quitting; the child then sees stdin close.
 pub(crate) fn stop<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(mut slot) = app.state::<NeuroflowState>().proc.try_lock() {
         slot.take();
@@ -692,6 +717,32 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, "neuroflow-mcp exited: boom");
         assert!(!state.running());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn drop_cancels_pending_then_closes_stdin() {
+        let out = std::env::temp_dir().join(format!("neuroflow-stop-{}", std::process::id()));
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$0\""])
+            .arg(&out)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let _rx = pending.lock().unwrap().insert(5);
+        let started = Instant::now();
+        drop(Proc {
+            child,
+            stdin,
+            pending,
+        });
+        // cat exits on EOF, well before the grace period.
+        assert!(started.elapsed() < STOP_GRACE);
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(written.trim(), cancelled(5).to_string());
+        std::fs::remove_file(&out).unwrap();
     }
 
     #[test]

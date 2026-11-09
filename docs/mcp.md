@@ -143,6 +143,8 @@ locally installed `neuroflow-mcp`. Nothing is bundled.
 - **Data roots**: `--data-root` is passed once per entry in `mcp.json`'s
   `roots` (home folder when unset), so agents and pipelines see the same
   folders. A target outside them is rejected before it runs.
+- **Changing settings**: edits to `mcp.json` roots or `neuroflow.json` take
+  effect after Restart in the Pipelines view (or relaunching the app).
 - **Run records**: `~/.neuroflow/runs/<runId>/` (`run.json`, params, logs).
 - **Pipelines view**: the Dataset | Pipelines switch at the top of the left
   pane (or View ▸ Pipelines). The pipeline's input type picks the target:
