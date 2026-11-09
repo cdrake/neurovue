@@ -619,6 +619,8 @@ export function App(): JSX.Element {
   useEffect(() => {
     clearFilters()
   }, [datasetRevision])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; overlay ids are path-derived, so a new dataset can reuse them.
+  useEffect(() => setNeuroflowRuns({}), [datasetRevision])
 
   const { metadata, metadataStatus } = useVolumeMetadata(selected)
   const renderLayers = useMemo<NiivueRenderLayer[]>(() => {
@@ -888,6 +890,10 @@ export function App(): JSX.Element {
       throw new Error('No dataset is open to overlay; call open_path first.')
     }
     const result = await addOverlayVolumeByPath(path)
+    // A path already registered keeps its id; a layer already shown won't reload the viewer.
+    if (overlayIds.has(result.id) || result.id === atlasId) {
+      return { id: result.id, label: result.label }
+    }
     await untilNextViewer(() => placeOverlay(result))
     return { id: result.id, label: result.label }
   }

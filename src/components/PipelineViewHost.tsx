@@ -67,6 +67,10 @@ const stub = (id: string): WorkflowDocument => ({
   outputs: {},
 })
 
+// Batch rows name their target so headers from different rows stay distinct.
+const runTitle = (b: Batch, t: BatchTarget): string =>
+  b.rows.length > 1 ? `${b.title} · ${t.label}` : b.title
+
 const sessionDir = (r: BatchRow): string => {
   const f = r.run?.finished
   return f && 'sessionDir' in f ? f.sessionDir : ''
@@ -235,7 +239,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
     if (index === null) return
     busy.current = true
     cancelling.current = false
-    const { id, inputs, startedAt, title } = batch
+    const { id, inputs, startedAt } = batch
     const row = batch.rows[index].target
     const ti = targetInput(run.inputSchema)
     const send = (ev: Parameters<typeof reduceBatch>[1]) =>
@@ -274,7 +278,12 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
           void p
             .onRunOutputs(
               structured,
-              { runId: structured.runId, title, startedAt, sessionDir },
+              {
+                runId: structured.runId,
+                title: runTitle(batch, row),
+                startedAt,
+                sessionDir,
+              },
               row,
               ti?.kind !== 'volume' || row.itemId === p.ctx.selected?.id,
             )
@@ -332,7 +341,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
                 f.structured,
                 {
                   runId: f.runId,
-                  title: b.title,
+                  title: runTitle(b, r.target),
                   startedAt: b.startedAt,
                   sessionDir: f.sessionDir,
                 },
