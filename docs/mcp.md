@@ -127,6 +127,36 @@ own handler.
    through `agentPath` so the host checks it.
 4. Check the document with neuroflow-spec's validator. CI doesn't run it yet.
 
+## Running NeuroFlow pipelines
+
+The desktop app can run NeuroFlow tools and workflows on a dataset through a
+locally installed `neuroflow-mcp`. Nothing is bundled.
+
+- **Settings**: `neuroflow.json` in the app config dir, next to `mcp.json`. The
+  app writes a template on first launch. `~` expands to the home folder.
+  - `binary`: path to `neuroflow-mcp` (required; Pipelines shows a setup
+    screen with "Reveal settings file" until it exists).
+  - `registries`: folders of tool/workflow documents, e.g. NeuroFlow's
+    `gallery`.
+  - `spec`: path to a neuroflow-spec checkout.
+  - `interpreters`: name → executable, e.g. `node`, `python3`.
+- **Data roots**: `--data-root` is passed once per entry in `mcp.json`'s
+  `roots` (home folder when unset), so agents and pipelines see the same
+  folders. A target outside them is rejected before it runs.
+- **Run records**: `~/.neuroflow/runs/<runId>/` (`run.json`, params, logs).
+- **Pipelines view**: the Dataset | Pipelines switch at the top of the left
+  pane (or View ▸ Pipelines). The pipeline's input type picks the target:
+  a `neuro:bids-dataset` input runs once on the dataset root; a `neuro:volume`
+  or `neuro:label-map` input runs once per filtered volume, or only the
+  selected one with "Selected only" (Operations ▸ "Run pipeline on this
+  volume…" turns it on).
+- **Batches** run one at a time (`neuroflow-mcp` handles requests in order).
+  A failed row doesn't stop the rest; Cancel batch cancels the running row and
+  the queued ones. NIfTI outputs of a single run, or of the row for the
+  shown volume, load as overlays under a "Run: …" header in Layers; other
+  outputs get a Reveal button.
+- **Desktop only**: none of this exists on iOS.
+
 ## Platform notes
 
 - **macOS and Windows**: the sidecar ships in the app bundle and installer.
