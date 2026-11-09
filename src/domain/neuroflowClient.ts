@@ -41,6 +41,7 @@ export interface NeuroflowClient {
   restart(): Promise<void>
   readRun(runId: string): Promise<{ sessionDir: string; record: RunRecord }>
   checkPath(path: string): Promise<string>
+  reveal(path: string): Promise<void>
 }
 
 type CallToolResult = {
@@ -165,6 +166,7 @@ export function createNeuroflowClient(
     cancel: (requestId) => invoke('neuroflow_cancel', { requestId }),
     readRun: (runId) => invoke('neuroflow_read_run', { runId }),
     checkPath: (path) => invoke('neuroflow_check_path', { path }),
+    reveal: (path) => invoke('neuroflow_reveal', { path }),
   }
 }
 

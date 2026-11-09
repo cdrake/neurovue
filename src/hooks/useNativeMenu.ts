@@ -11,6 +11,7 @@ export type NativeMenuAction =
   | 'open-sample'
   | 'export-bundle'
   | 'share'
+  | 'pipelines'
 
 export type NativeMenuHandlers = Record<
   NativeMenuAction,

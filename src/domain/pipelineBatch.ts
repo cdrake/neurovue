@@ -91,3 +91,16 @@ export const retryTargets = (b: Batch): BatchTarget[] =>
   b.rows
     .filter((r) => r.status === 'failed' || r.status === 'cancelled')
     .map((r) => r.target)
+
+/** The row RunPanel shows: the clicked one, else the running one, else the last. */
+export function shownRow(b: Batch, clicked: number | null): BatchRow | null {
+  return (
+    (clicked !== null ? b.rows[clicked] : undefined) ??
+    b.rows.find((r) => r.status === 'running') ??
+    b.rows[b.rows.length - 1] ??
+    null
+  )
+}
+
+export const isActive = (b: Batch | null): boolean =>
+  !!b?.rows.some((r) => r.status === 'queued' || r.status === 'running')

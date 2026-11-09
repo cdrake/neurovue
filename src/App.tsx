@@ -40,6 +40,7 @@ import {
   SlidersHorizontal,
   SquareTerminal,
   Tablet,
+  Workflow,
   X,
   ZoomIn,
   ZoomOut,
@@ -72,6 +73,7 @@ import {
   type ResolvedWindow,
   type ViewModeId,
 } from './components/NiivueStage'
+import { PipelineViewHost } from './components/PipelineViewHost'
 import { RenderShadingSection } from './components/RenderShadingSection'
 import { TerminalPanel } from './components/TerminalPanel'
 import { VolumeFilterPanel } from './components/VolumeFilterPanel'
@@ -132,6 +134,7 @@ import {
   openMeshFiles,
   readMeshLayer,
 } from './domain/meshes'
+import { createNeuroflowClient, isAvailable } from './domain/neuroflowClient'
 import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
@@ -442,6 +445,18 @@ export function App(): JSX.Element {
   const [splitPercent, setSplitPercent] = useState(52)
   const [desktopZoom, setDesktopZoom] = useState(1)
   const [mouseContext, setMouseContext] = useState<MouseContext>(null)
+  const [hasPipelines, setHasPipelines] = useState(false)
+  const [leftPane, setLeftPane] = useState<'dataset' | 'pipelines'>('dataset')
+  const [pipelinesMounted, setPipelinesMounted] = useState(false)
+  // Task 10's Operations button bumps this to open Pipelines with "Selected only".
+  const [preferSelected] = useState(0)
+  useEffect(() => {
+    void isAvailable().then(setHasPipelines)
+  }, [])
+  function showLeftPane(pane: 'dataset' | 'pipelines'): void {
+    setLeftPane(pane)
+    if (pane === 'pipelines') setPipelinesMounted(true)
+  }
   // On a phone both side panels start collapsed (off-screen drawers) so the
   // viewer is the landing surface; on desktop/iPad they start open.
   const [isFileListCollapsed, setIsFileListCollapsed] =
@@ -1069,6 +1084,11 @@ export function App(): JSX.Element {
       isAirdropAvailable
         ? handleShareBundle()
         : setStatus('AirDrop is not available on this Mac.'),
+    pipelines: () => {
+      if (!hasPipelines) return
+      showDatasetPane()
+      showLeftPane('pipelines')
+    },
   })
 
   // The live NiiVue instance for agent tools, set once its volumes load.
@@ -2102,15 +2122,43 @@ export function App(): JSX.Element {
                 onPointerEnter={() => setMouseContext('desktop')}
                 onPointerLeave={() => setMouseContext(null)}
               >
-                <DatasetDesktop
-                  datasetName={datasetName}
-                  items={filteredItems}
-                  manifest={manifest}
-                  selected={selected}
-                  zoom={desktopZoom}
-                  onZoom={setDesktopZoom}
-                  onSelect={(item) => showVolume(item.id)}
-                />
+                {hasPipelines ? (
+                  <LeftPaneTabs active={leftPane} onChange={showLeftPane} />
+                ) : null}
+                <div className="nv-pane-body" hidden={leftPane !== 'dataset'}>
+                  <DatasetDesktop
+                    datasetName={datasetName}
+                    items={filteredItems}
+                    manifest={manifest}
+                    selected={selected}
+                    zoom={desktopZoom}
+                    onZoom={setDesktopZoom}
+                    onSelect={(item) => showVolume(item.id)}
+                  />
+                </div>
+                {pipelinesMounted ? (
+                  <PipelineViewHost
+                    hidden={leftPane !== 'pipelines'}
+                    ctx={{
+                      datasetRoot,
+                      bidsName,
+                      filtered: filteredItems,
+                      selected,
+                    }}
+                    preferSelected={preferSelected}
+                    onRunOutputs={() => {
+                      // Task 10: load NIfTI outputs as overlays.
+                    }}
+                    onShowTarget={(target) =>
+                      target.itemId && showVolume(target.itemId)
+                    }
+                    onReveal={(path) =>
+                      void createNeuroflowClient()
+                        .reveal(path)
+                        .catch((error) => setStatus(String(error)))
+                    }
+                  />
+                ) : null}
               </section>
 
               {/* biome-ignore lint/a11y/useSemanticElements: a focusable, draggable splitter is a separator widget; <hr> cannot take focus or aria-valuenow. */}
@@ -2575,6 +2623,43 @@ function BlockControls({
         Pick a grid, then raise Explode.
       </p>
     </section>
+  )
+}
+
+function LeftPaneTabs({
+  active,
+  onChange,
+}: {
+  active: 'dataset' | 'pipelines'
+  onChange: (pane: 'dataset' | 'pipelines') => void
+}): JSX.Element {
+  return (
+    <div
+      className="nv-sidepanel-tabs nv-pane-tabs"
+      role="tablist"
+      aria-label="Left pane"
+    >
+      <button
+        aria-selected={active === 'dataset'}
+        className={active === 'dataset' ? 'is-active' : ''}
+        onClick={() => onChange('dataset')}
+        role="tab"
+        type="button"
+      >
+        <Database size={14} />
+        Dataset
+      </button>
+      <button
+        aria-selected={active === 'pipelines'}
+        className={active === 'pipelines' ? 'is-active' : ''}
+        onClick={() => onChange('pipelines')}
+        role="tab"
+        type="button"
+      >
+        <Workflow size={14} />
+        Pipelines
+      </button>
+    </div>
   )
 }
 

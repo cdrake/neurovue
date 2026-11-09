@@ -465,6 +465,34 @@ pub(crate) async fn neuroflow_check_path(app: AppHandle, path: String) -> Result
     )?)
 }
 
+/// Shows `path` in the file manager. shortcut: any path, unconfined; it only
+/// reveals (never opens or runs) — confine to roots if it ever does more.
+#[tauri::command]
+pub(crate) fn neuroflow_reveal(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = Command::new("open");
+        cmd.arg("-R").arg(&path);
+        cmd
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut select = OsString::from("/select,");
+        select.push(&path);
+        let mut cmd = Command::new("explorer");
+        cmd.arg(select);
+        cmd
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut cmd = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(path.parent().unwrap_or(&path));
+        cmd
+    };
+    cmd.spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
 /// App exit: kill the process rather than leave it running. try_lock, so a
 /// stuck handshake can't hold up quitting; the child then sees stdin close.
 pub(crate) fn stop<R: Runtime>(app: &AppHandle<R>) {

@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import type { RunStructured } from '@cdrake/neuroflow-react'
 import type { RunEv } from './neuroflowHostState'
 import {
+  isActive,
   nextQueued,
   reduceBatch,
   retryTargets,
+  shownRow,
   startBatch,
 } from './pipelineBatch'
 import type { BatchTarget } from './pipelineTargets'
@@ -81,4 +83,17 @@ describe('batch', () => {
     expect(b.rows[0].status).toBe('cancelled')
     expect(nextQueued(b)).toBe(1)
   })
+})
+
+test('shownRow and isActive', () => {
+  let b = startBatch('w', 'T', {}, targets, 5)
+  expect(isActive(b)).toBe(true)
+  expect(shownRow(b, null)).toBe(b.rows[2])
+  b = reduceBatch(b, row(1, { type: 'start', workflowId: 'w' }))
+  expect(shownRow(b, null)).toBe(b.rows[1])
+  expect(shownRow(b, 0)).toBe(b.rows[0])
+  b = reduceBatch(b, { type: 'cancelQueued' })
+  b = reduceBatch(b, row(1, done('completed')))
+  expect(isActive(b)).toBe(false)
+  expect(isActive(null)).toBe(false)
 })

@@ -49,6 +49,8 @@ const MENU_EXPORT_BUNDLE: &str = "file-export-bundle";
 const MENU_SHARE: &str = "file-share";
 #[cfg(desktop)]
 const MENU_EXPRESS_VIEW: &str = "view-express-view";
+#[cfg(desktop)]
+const MENU_PIPELINES: &str = "view-pipelines";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -672,6 +674,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         Some("CmdOrCtrl+Alt+V"),
     )?;
+    let pipelines = MenuItem::with_id(handle, MENU_PIPELINES, "Pipelines", true, None::<&str>)?;
     let allow_agents = CheckMenuItem::with_id(
         handle,
         mcp::MENU_ALLOW_AGENTS,
@@ -690,12 +693,17 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     match existing_view {
         Some(view_menu) => view_menu.prepend_items(&[
             &express_view,
+            &pipelines,
             &allow_agents,
             &PredefinedMenuItem::separator(handle)?,
         ])?,
         None => {
-            let view_menu =
-                Submenu::with_items(handle, "View", true, &[&express_view, &allow_agents])?;
+            let view_menu = Submenu::with_items(
+                handle,
+                "View",
+                true,
+                &[&express_view, &pipelines, &allow_agents],
+            )?;
             menu.append(&view_menu)?;
         }
     }
@@ -831,7 +839,8 @@ pub fn run() {
             neuroflow::neuroflow_cancel,
             neuroflow::neuroflow_restart,
             neuroflow::neuroflow_read_run,
-            neuroflow::neuroflow_check_path
+            neuroflow::neuroflow_check_path,
+            neuroflow::neuroflow_reveal
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
