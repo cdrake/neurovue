@@ -167,6 +167,7 @@ impl Drop for Proc {
 }
 
 impl Proc {
+    // shortcut: a blocking pipe write under the state lock, fine for small JSON-RPC messages; move to a writer thread if messages grow large.
     fn write(&mut self, msg: &Value) -> Result<(), String> {
         writeln!(self.stdin, "{msg}")
             .and_then(|()| self.stdin.flush())
@@ -322,8 +323,12 @@ impl NeuroflowState {
         self.proc.lock().await.take();
     }
 
-    async fn running(&self) -> bool {
-        Self::live(&mut *self.proc.lock().await).is_some()
+    /// Not running while the lock is held (a spawn or handshake is underway),
+    /// so status never waits on it.
+    fn running(&self) -> bool {
+        self.proc
+            .try_lock()
+            .is_ok_and(|mut slot| Self::live(&mut slot).is_some())
     }
 }
 
@@ -379,7 +384,7 @@ pub(crate) async fn neuroflow_status(app: AppHandle) -> Result<NeuroflowStatus, 
     let stderr_tail = state.stderr.lock().unwrap().iter().cloned().collect();
     Ok(NeuroflowStatus {
         configured: load_settings(&app).is_ok_and(|s| Path::new(&s.binary).is_file()),
-        running: state.running().await,
+        running: state.running(),
         settings_path: path.display().to_string(),
         stderr_tail,
     })
@@ -436,9 +441,19 @@ pub(crate) async fn neuroflow_read_run(app: AppHandle, run_id: String) -> Result
     Ok(json!({ "sessionDir": path_string(dir)?, "record": record }))
 }
 
+/// Decodes only `file://` URLs (iOS pickers); a plain path is used byte-for-byte,
+/// so a file really named `scan%20a.nii.gz` stays that.
+fn input_path(path: &str) -> PathBuf {
+    if path.starts_with("file://") {
+        PathBuf::from(crate::normalize_local_path(path))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn neuroflow_check_path(app: AppHandle, path: String) -> Result<String, String> {
-    let path = PathBuf::from(crate::normalize_local_path(&path));
+    let path = input_path(&path);
     path_string(crate::mcp::resolve_in_roots(
         &path,
         &crate::mcp::allowed_roots(&app),
@@ -640,6 +655,19 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, "neuroflow-mcp exited: boom");
-        assert!(!state.running().await);
+        assert!(!state.running());
+    }
+
+    #[test]
+    fn check_path_keeps_percent_names() {
+        let dir = std::env::temp_dir().join(format!("neuroflow-pct-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let file = dir.join("scan%20a.nii.gz");
+        std::fs::write(&file, b"").unwrap();
+        let input = file.to_str().unwrap();
+        let resolved = crate::mcp::resolve_in_roots(&input_path(input), std::slice::from_ref(&dir));
+        assert_eq!(resolved, Ok(file));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
