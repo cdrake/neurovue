@@ -30,7 +30,7 @@ export function startBatch(
   now: number,
 ): Batch {
   return {
-    id: `${workflowId}-${now}`,
+    id: crypto.randomUUID(),
     workflowId,
     title,
     startedAt: now,
@@ -58,6 +58,12 @@ export function reduceBatch(
     ...b,
     rows: b.rows.map((r, i) => {
       if (i !== ev.index) return r
+      // terminal rows are sticky, and a never-started row only accepts 'start'
+      const terminal =
+        r.status === 'completed' ||
+        r.status === 'failed' ||
+        r.status === 'cancelled'
+      if (ev.ev.type !== 'start' && (terminal || !r.run)) return r
       const run = reduceRunState(r.run, ev.ev)
       const status = run.status
       return {

@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import type { RunRecord, RunStructured } from '@cdrake/neuroflow-react'
+import type {
+  HostRunState,
+  RunRecord,
+  RunStructured,
+} from '@cdrake/neuroflow-react'
 import { type RunEv, reduceRunState } from './neuroflowHostState'
 
-const run = (evs: RunEv[]) => evs.reduce(reduceRunState, null as never)
+const run = (evs: RunEv[]) =>
+  evs.reduce<HostRunState | null>(reduceRunState, null) as HostRunState
 const st = (status: string, stderr?: string): RunStructured => ({
   runId: 'r1',
   status,

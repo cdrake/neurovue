@@ -48,7 +48,10 @@ export function reduceRunState(
       const { structured } = ev
       return {
         ...s,
-        status: structured.status as HostRunState['status'],
+        status:
+          structured.status === 'completed' || structured.status === 'cancelled'
+            ? structured.status
+            : 'failed',
         stderrTail: structured.logs?.stderr ?? null,
         finished: {
           ticket: '',

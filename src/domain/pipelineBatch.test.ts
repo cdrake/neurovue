@@ -72,4 +72,13 @@ describe('batch', () => {
     b = reduceBatch(b, row(0, done('failed')))
     expect(retryTargets(b).map((x) => x.key)).toEqual(['a', 'b', 'c'])
   })
+  test('terminal rows are sticky against late events', () => {
+    let b = b0()
+    b = reduceBatch(b, row(0, { type: 'start', workflowId: 'w' }))
+    b = reduceBatch(b, row(0, { type: 'cancelled' }))
+    b = reduceBatch(b, row(0, { type: 'progress', progress: 1 }))
+    b = reduceBatch(b, row(0, done('completed')))
+    expect(b.rows[0].status).toBe('cancelled')
+    expect(nextQueued(b)).toBe(1)
+  })
 })
