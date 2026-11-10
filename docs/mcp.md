@@ -154,9 +154,10 @@ locally installed `neuroflow-mcp`. Nothing is bundled.
   volume…" turns it on).
 - **Batches** run one at a time (`neuroflow-mcp` handles requests in order).
   A failed row doesn't stop the rest; Cancel batch cancels the running row and
-  the queued ones. NIfTI outputs of a single run, or of the row for the
-  shown volume, load as overlays under a "Run: …" header in Layers; other
-  outputs get a Reveal button.
+  the queued ones. Mask (`neuro:mask`, solid red) and label-map NIfTI outputs
+  of a single run, or of the row for the shown volume, load as overlays under
+  a "Run: …" header in Layers; Show on another row swaps them. Other outputs,
+  including intensity volumes, get a Reveal button.
 - **Desktop only**: none of this exists on iOS.
 
 ## Platform notes

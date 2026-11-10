@@ -185,12 +185,14 @@ const DEFAULT_OVERLAY_COLORMAPS = ['magma', 'viridis', 'actc'] as const
 // Default layer opacities (used when a layer has no explicit opacity setting).
 const DEFAULT_OVERLAY_OPACITY = 0.48
 const DEFAULT_ATLAS_OPACITY = 0.34
+const MASK_OVERLAY_OPACITY = 0.4
 const COLORMAP_OPTIONS = [
   { value: 'gray', label: 'Gray' },
   { value: 'viridis', label: 'Viridis' },
   { value: 'magma', label: 'Magma' },
   { value: 'actc', label: 'ACTC' },
   { value: 'warm_cool', label: 'Warm/Cool (diverging)' },
+  { value: 'red', label: 'Red' },
 ] as const
 // The anatomical base is restricted to grayscale-family maps: pseudocolor
 // (viridis/magma/actc) on a structural volume invites intensity misreading.
@@ -907,13 +909,25 @@ export function App(): JSX.Element {
   ): Promise<string[]> {
     if (!isShown) return []
     const reveal: string[] = []
-    for (const { path } of outputArtifacts(structured)) {
-      if (!isNifti(path)) {
+    for (const { path, type } of outputArtifacts(structured)) {
+      // Only masks/label maps overlay cleanly; a colour-mapped intensity volume over the base bands like ringing.
+      const isMask = type === 'neuro:mask'
+      if (!isNifti(path) || !(isMask || type === 'neuro:label-map')) {
         reveal.push(path)
         continue
       }
       try {
         const { id } = await addOverlayFromPath(path)
+        if (isMask) {
+          setLayerSettings((current) => ({
+            ...current,
+            [id]: {
+              colormap: 'red',
+              opacity: MASK_OVERLAY_OPACITY,
+              window: { min: 0, max: 1 },
+            },
+          }))
+        }
         setNeuroflowRuns((runs) => ({ ...runs, [id]: tag }))
       } catch (error) {
         setStatus(String(error))
@@ -2206,6 +2220,13 @@ export function App(): JSX.Element {
                       preferSelected={preferSelected}
                       onRunOutputs={handleRunOutputs}
                       onShowTarget={async ({ itemId }) => {
+                        // Drop earlier rows' outputs so only the shown row's are overlaid.
+                        setOverlayIds((current) => {
+                          const next = new Set(current)
+                          for (const id of Object.keys(neuroflowRuns))
+                            next.delete(id)
+                          return next.size === current.size ? current : next
+                        })
                         // An already-shown volume never reloads, so don't wait for one.
                         if (!itemId || itemId === shownBase?.id) return
                         await untilNextViewer(async () => showVolume(itemId))
