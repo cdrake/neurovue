@@ -127,6 +127,45 @@ own handler.
    through `agentPath` so the host checks it.
 4. Check the document with neuroflow-spec's validator. CI doesn't run it yet.
 
+## Running NeuroFlow pipelines
+
+The desktop app can run NeuroFlow tools and workflows on a dataset through a
+locally installed `neuroflow-mcp`. Nothing is bundled.
+
+- **Settings**: `neuroflow.json` in the app config dir, next to `mcp.json`. The
+  app writes a template on first launch. `~` expands to the home folder.
+  - `binary`: path to `neuroflow-mcp` (required; Pipelines shows a setup
+    screen with "Reveal settings file" until it exists).
+  - `registries`: folders of tool/workflow documents, e.g. NeuroFlow's
+    `gallery`.
+  - `spec`: path to a neuroflow-spec checkout.
+  - `interpreters`: name → executable, e.g. `node`, `python3`.
+- **Data roots**: `--data-root` is passed once per entry in `mcp.json`'s
+  `roots` (home folder when unset), so agents and pipelines see the same
+  folders. A target outside them is rejected before it runs.
+- **Changing settings**: edits to `mcp.json` roots or `neuroflow.json` take
+  effect after Restart in the Pipelines view (or relaunching the app).
+- **Run records**: `~/.neuroflow/runs/<runId>/` (`run.json`, params, logs).
+- **Pipelines view**: the Dataset | Pipelines switch at the top of the left
+  pane (or View ▸ Pipelines). The pipeline's input type picks the target:
+  a `neuro:bids-dataset` input runs once on the dataset root; a `neuro:volume`
+  or `neuro:label-map` input runs once per filtered volume, or only the
+  selected one with "Selected only" (Operations ▸ "Run pipeline on this
+  volume…" turns it on).
+- **Batches** run one at a time (`neuroflow-mcp` handles requests in order).
+  A failed row doesn't stop the rest; Cancel batch cancels the running row and
+  the queued ones. Mask (`neuro:mask`, solid red) and label-map NIfTI outputs
+  of a single run, or of the row for the shown volume, load as overlays under
+  a "Run: …" header in Layers; Show on another row swaps them. Other outputs,
+  including intensity volumes, get a Reveal button.
+- **Agents**: `list_pipelines`, `run_pipeline` and `pipeline_status` drive the
+  same view, and the window shows it while they do. `run_pipeline` targets the
+  selected volume (or `target: "filtered"` for every filtered one), fills the
+  target input itself, and waits up to 15 minutes, reporting progress, before
+  returning each row's status and output paths. One batch runs at a time; a
+  run still going after the wait is followed with `pipeline_status`.
+- **Desktop only**: none of this exists on iOS.
+
 ## Platform notes
 
 - **macOS and Windows**: the sidecar ships in the app bundle and installer.

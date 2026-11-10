@@ -39,6 +39,9 @@ const ROOTS = (process.env.NEUROVUE_MCP_ROOTS ?? '')
 // The Tauri webview's origin: tauri://localhost on macOS and Linux,
 // http://tauri.localhost on Windows. Dev builds load from loopback, which the
 // server always allows.
+// How long run_pipeline waits for its runs before handing over to pipeline_status.
+const RUN_WAIT_MS = 15 * 60_000
+
 const ALLOWED_ORIGINS = ['tauri://localhost', 'http://tauri.localhost']
 
 /** Registers a tool from its NeuroFlow document; `run` answers the call. */
@@ -231,6 +234,65 @@ const neurovue: Extension = {
         )
       },
     )
+
+    register(server, DOCUMENTS.listPipelines, {}, ({ tab }) =>
+      context.answer('neurovue.list_pipelines', {}, { tab }),
+    )
+
+    register(server, DOCUMENTS.pipelineStatus, {}, ({ tab }) =>
+      context.answer('neurovue.pipeline_status', {}, { tab }),
+    )
+
+    register(
+      server,
+      DOCUMENTS.runPipeline,
+      {
+        pipeline: z.string().min(1),
+        inputs: z.record(z.string(), z.unknown()),
+        target: z.enum(['selected', 'filtered']),
+      },
+      async ({ tab, ...options }) => {
+        // A run outlasts one page call, so the page starts the batch and this
+        // asks the same tab how it's going until every row has settled.
+        let runner = tab
+        const started = await context.answer('neurovue.run_pipeline', options, {
+          tab,
+          lead: (_result, answered) => {
+            runner = answered.id
+            return undefined
+          },
+        })
+        if (started.isError) return started
+        const until = Date.now() + RUN_WAIT_MS
+        while (Date.now() < until) {
+          await Bun.sleep(2000)
+          let done = false
+          const status = await context.answer(
+            'neurovue.pipeline_status',
+            {},
+            {
+              tab: runner,
+              lead: (result) => {
+                const { running, rows } = result as {
+                  running: boolean
+                  rows: { status: string }[]
+                }
+                done = !running
+                if (!done) return undefined
+                const ok = rows.filter((r) => r.status === 'completed').length
+                return `${ok} of ${rows.length} run${rows.length === 1 ? '' : 's'} completed.`
+              },
+            },
+          )
+          if (status.isError || done) return status
+        }
+        return context.failure(
+          new Error(
+            'The pipeline is still running in the window; call pipeline_status to follow it.',
+          ),
+        )
+      },
+    )
   },
 }
 
@@ -261,7 +323,10 @@ const options = {
     'open_window and drive each window by its tab id; focus_window brings one to the front so ' +
     'the person sees it, and screenshot needs that. send_to_device hands the volume shown to ' +
     "NeuroVue on the person's iPad (list_devices names the devices) so they can draw on it; " +
-    'the drawing comes back to this window as an overlay. set_instances is unrelated to windows: it ' +
+    'the drawing comes back to this window as an overlay. list_pipelines and run_pipeline run ' +
+    'NeuroFlow analyses (such as FreeSurfer SynthSeg and SynthStrip) on the selected or listed ' +
+    "volumes in the window's Pipelines view, where the person watches; their masks and label " +
+    'maps load as overlays. set_instances is unrelated to windows: it ' +
     'draws copies of a volume inside one viewer.',
 }
 

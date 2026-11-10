@@ -19,6 +19,7 @@
     "tauri:build:mac": "tauri build --target universal-apple-darwin"
   },
   "dependencies": {
+    "@medview/neuroflow-react": "^0.1.0",
     "@niivue/niivue": "^1.0.0-rc.39",
     "@niivue/nv-mcp": "1.0.0-rc.16",
     "@niivue/uikit": "^1.0.0-rc.27",
@@ -26,6 +27,7 @@
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "@xyflow/react": "^12",
     "lucide-react": "^0.468.0",
     "nifti-reader-js": "^0.8.0",
     "react": "^19",

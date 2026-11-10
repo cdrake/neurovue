@@ -1,0 +1,115 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.1",
+  "kind": "tool",
+  "id": "org.neurovue/run-pipeline",
+  "version": "1.0.0",
+  "description": "Runs a NeuroFlow pipeline from the window's Pipelines view, where the person watches it: once on the selected volume, once per volume the dataset pane lists, or once on the dataset root, as the pipeline's input type decides. Masks and label maps it writes for the volume shown load as overlays. Returns when every run has finished, with each run's status and output files.",
+  "inputs": {
+    "pipeline": {
+      "type": "core:string",
+      "description": "The pipeline's id, from list_pipelines."
+    },
+    "inputs": {
+      "type": "core:json",
+      "description": "Values for the pipeline's other inputs, by name; leave out the target input, which the dataset fills. Defaults apply to anything left out.",
+      "optional": true
+    },
+    "target": {
+      "type": "core:string",
+      "description": "For a volume pipeline: \"selected\" (the volume shown; the default) or \"filtered\" (every volume the dataset pane lists; narrow it with filter_dataset).",
+      "optional": true
+    }
+  },
+  "outputs": {
+    "batch": {
+      "type": "core:json",
+      "description": "The pipeline, and each run's target, status, error and output files (path and NeuroFlow type)."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "run_pipeline",
+      "title": "Run a pipeline",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Run an analysis such as FreeSurfer SynthSeg (segmentation) or SynthStrip (skull stripping) on the open dataset's volumes and show the result."
+      ],
+      "avoidWhen": [
+        {
+          "when": "The volume isn't part of the open dataset.",
+          "instead": "org.neurovue/open-path"
+        }
+      ],
+      "preconditions": [
+        "A dataset is open; choose the volume with select_volume, or narrow the pane with filter_dataset for target \"filtered\".",
+        "The pipeline is listed by list_pipelines."
+      ],
+      "effects": [
+        "Shows the pipeline in the Pipelines view and runs it there; the person can cancel it.",
+        "Writes a run folder under ~/.neuroflow/runs per target; mask and label-map outputs for the volume shown load as overlays (a label map with a colour table loads as the atlas)."
+      ],
+      "duration": {
+        "typicalSeconds": 60,
+        "maxSeconds": 1200
+      },
+      "failures": [
+        {
+          "match": {
+            "contains": "NeuroFlow isn't set up"
+          },
+          "meaning": "The app has no neuroflow-mcp configured.",
+          "remedy": "Ask the person to fill in neuroflow.json (Pipelines view > Reveal settings file), then press Check again.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "No pipeline"
+          },
+          "meaning": "The id isn't one this window can run.",
+          "remedy": "Call list_pipelines and use one of its ids.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "A batch is running"
+          },
+          "meaning": "Another run is still going in this window.",
+          "remedy": "Wait with pipeline_status until it finishes, then run again.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "still running"
+          },
+          "meaning": "The runs outlasted this call; they carry on in the window.",
+          "remedy": "Call pipeline_status until running is false.",
+          "retry": "never"
+        },
+        {
+          "match": {
+            "contains": "needs a BIDS dataset"
+          },
+          "meaning": "This pipeline runs on a BIDS dataset root, and the open folder isn't one.",
+          "remedy": "Open a BIDS dataset with open_path.",
+          "retry": "after-fix"
+        },
+        {
+          "match": {
+            "contains": "no volumes match"
+          },
+          "meaning": "Nothing to run on: no volume is selected, or the filter lists none.",
+          "remedy": "Call select_volume or filter_dataset, then run again.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}

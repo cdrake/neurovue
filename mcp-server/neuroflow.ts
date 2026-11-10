@@ -12,10 +12,13 @@ import dataset from './tools/dataset.neuroflow.json'
 import filterDataset from './tools/filter-dataset.neuroflow.json'
 import focusWindow from './tools/focus-window.neuroflow.json'
 import listDevices from './tools/list-devices.neuroflow.json'
+import listPipelines from './tools/list-pipelines.neuroflow.json'
 import loadSurfaces from './tools/load-surfaces.neuroflow.json'
 import loadTracts from './tools/load-tracts.neuroflow.json'
 import openPath from './tools/open-path.neuroflow.json'
 import openWindow from './tools/open-window.neuroflow.json'
+import pipelineStatus from './tools/pipeline-status.neuroflow.json'
+import runPipeline from './tools/run-pipeline.neuroflow.json'
 import selectVolume from './tools/select-volume.neuroflow.json'
 import sendToDevice from './tools/send-to-device.neuroflow.json'
 import setWindowMode from './tools/set-window-mode.neuroflow.json'
@@ -66,6 +69,9 @@ export const DOCUMENTS = {
   focusWindow,
   listDevices,
   sendToDevice,
+  listPipelines,
+  runPipeline,
+  pipelineStatus,
 } satisfies Record<string, ToolDocument>
 
 /** The MCP tool name of each document, by id, for `instead`. */

@@ -6,6 +6,8 @@ pub mod headless;
 #[cfg(desktop)]
 mod mcp;
 #[cfg(desktop)]
+mod neuroflow;
+#[cfg(desktop)]
 mod niimath;
 mod opened;
 mod receive;
@@ -47,6 +49,10 @@ const MENU_EXPORT_BUNDLE: &str = "file-export-bundle";
 const MENU_SHARE: &str = "file-share";
 #[cfg(desktop)]
 const MENU_EXPRESS_VIEW: &str = "view-express-view";
+#[cfg(desktop)]
+const MENU_PIPELINES: &str = "view-pipelines";
+#[cfg(desktop)]
+const MENU_CLEAR_ALL: &str = "view-clear-all";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -220,6 +226,16 @@ fn percent_decode(input: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Drops this window's dataset: its server stops, and the next request gets an empty one.
+#[tauri::command]
+async fn close_dataset(
+    window: tauri::Window,
+    state: tauri::State<'_, NeuroVueState>,
+) -> Result<(), String> {
+    state.close(window.label());
+    Ok(())
 }
 
 #[tauri::command]
@@ -670,6 +686,14 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         Some("CmdOrCtrl+Alt+V"),
     )?;
+    let pipelines = MenuItem::with_id(handle, MENU_PIPELINES, "Pipelines", true, None::<&str>)?;
+    let clear_all = MenuItem::with_id(
+        handle,
+        MENU_CLEAR_ALL,
+        "Clear All",
+        true,
+        Some("CmdOrCtrl+Shift+K"),
+    )?;
     let allow_agents = CheckMenuItem::with_id(
         handle,
         mcp::MENU_ALLOW_AGENTS,
@@ -688,12 +712,18 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     match existing_view {
         Some(view_menu) => view_menu.prepend_items(&[
             &express_view,
+            &pipelines,
+            &clear_all,
             &allow_agents,
             &PredefinedMenuItem::separator(handle)?,
         ])?,
         None => {
-            let view_menu =
-                Submenu::with_items(handle, "View", true, &[&express_view, &allow_agents])?;
+            let view_menu = Submenu::with_items(
+                handle,
+                "View",
+                true,
+                &[&express_view, &pipelines, &clear_all, &allow_agents],
+            )?;
             menu.append(&view_menu)?;
         }
     }
@@ -794,10 +824,12 @@ pub fn run() {
     let builder = builder
         .manage(terminal::TerminalState::default())
         .manage(mcp::McpState::default())
+        .manage(neuroflow::NeuroflowState::default())
         .invoke_handler(tauri::generate_handler![
             neurovue_runtime_capabilities,
             neurovue_server_info,
             open_dataset_path,
+            close_dataset,
             add_overlay_volume_path,
             read_mesh_file,
             export_dataset_bundle,
@@ -822,7 +854,14 @@ pub fn run() {
             mcp::mcp_status,
             mcp::agent_resolve_path,
             mcp::open_viewer_window,
-            mcp::focus_window
+            mcp::focus_window,
+            neuroflow::neuroflow_status,
+            neuroflow::neuroflow_request,
+            neuroflow::neuroflow_cancel,
+            neuroflow::neuroflow_restart,
+            neuroflow::neuroflow_read_run,
+            neuroflow::neuroflow_check_path,
+            neuroflow::neuroflow_reveal
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -848,9 +887,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building NeuroVue");
     app.run(|_app, event| match event {
-        // Don't leave the agent server holding its port after we quit.
+        // Don't leave the agent server holding its port, or neuroflow-mcp
+        // running, after we quit.
         #[cfg(desktop)]
-        tauri::RunEvent::Exit => mcp::stop(_app),
+        tauri::RunEvent::Exit => {
+            mcp::stop(_app);
+            neuroflow::stop(_app);
+        }
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
         // A suspended iOS app can lose its listening socket and its Bonjour
