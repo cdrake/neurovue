@@ -1,4 +1,6 @@
+import type { RunStructured } from '@medview/neuroflow-react'
 import type { NiiVueLocation } from '@niivue/niivue'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   AlertTriangle,
   Boxes,
@@ -33,21 +35,27 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Scan,
   Send,
   Shapes,
   Share2,
   SlidersHorizontal,
   SquareTerminal,
+  Tablet,
+  Workflow,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
 import {
   type CSSProperties,
+  Fragment,
   type JSX,
+  lazy,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -84,15 +92,24 @@ import {
   MIN_EXPLODE,
 } from './domain/blocks'
 import {
+  attachDrawing,
+  type BundleReadResult,
   type BundleViewState,
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
+  type DrawingBase,
+  type ExportBundleResult,
   exportDatasetBundle,
   formatBundleBytes,
   isBundlePath,
+  isDocumentPath,
+  listSendTargets,
   pickBundle,
   readBundle,
+  type SendTarget,
+  sendDrawingToDevice,
+  sendViewToDevice,
   shareViewViaAirDrop,
 } from './domain/bundle'
 import type {
@@ -100,10 +117,12 @@ import type {
   ClipPlane,
   DesktopItem,
   JsonValue,
+  OverlayAddResult,
   VolumeMetadata,
   WarmProgress,
 } from './domain/desktop'
 import {
+  addOverlayVolumeByPath,
   defaultClipPlanes,
   fetchVolumeMetadata,
   isBundledSampleDataset,
@@ -117,7 +136,17 @@ import {
   meshColorFromHex,
   meshColorHex,
   openMeshFiles,
+  readMeshLayer,
 } from './domain/meshes'
+import {
+  createNeuroflowClient,
+  isAvailable,
+  isNifti,
+  outputArtifacts,
+} from './domain/neuroflowClient'
+import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
+import { groupOverlaysByRun, type RunTag } from './domain/overlayRuns'
+import type { BatchTarget } from './domain/pipelineTargets'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import {
   loadRememberedUiMode,
@@ -126,20 +155,27 @@ import {
 } from './domain/uiMode'
 import {
   formatVoxelSpacing,
+  volumeFacetCounts,
   volumeImageTypeDisplay,
+  volumeImageTypeLabel,
+  volumeRoleLabel,
   volumeSession,
   volumeSubject,
   volumeSummary,
 } from './domain/volumeFacets'
+import { useAgentClient } from './hooks/useAgentClient'
 import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
-import { useNativeMenu } from './hooks/useNativeMenu'
+import { useExpressMenuLabel, useNativeMenu } from './hooks/useNativeMenu'
 import {
+  isInContainerTemp,
+  rebaseContainerPath,
   recentDatasetLabel,
   useRecentDatasets,
 } from './hooks/useRecentDatasets'
+import { useSendOffer } from './hooks/useSendOffer'
 import { useTerminalDock } from './hooks/useTerminalDock'
-import { useVolumeFilters } from './hooks/useVolumeFilters'
+import { filterVolumes, useVolumeFilters } from './hooks/useVolumeFilters'
 import { useVolumeMetadata } from './hooks/useVolumeMetadata'
 
 const MIN_SPLIT = 34
@@ -150,12 +186,14 @@ const DEFAULT_OVERLAY_COLORMAPS = ['magma', 'viridis', 'actc'] as const
 // Default layer opacities (used when a layer has no explicit opacity setting).
 const DEFAULT_OVERLAY_OPACITY = 0.48
 const DEFAULT_ATLAS_OPACITY = 0.34
+const MASK_OVERLAY_OPACITY = 0.4
 const COLORMAP_OPTIONS = [
   { value: 'gray', label: 'Gray' },
   { value: 'viridis', label: 'Viridis' },
   { value: 'magma', label: 'Magma' },
   { value: 'actc', label: 'ACTC' },
   { value: 'warm_cool', label: 'Warm/Cool (diverging)' },
+  { value: 'red', label: 'Red' },
 ] as const
 // The anatomical base is restricted to grayscale-family maps: pseudocolor
 // (viridis/magma/actc) on a structural volume invites intensity misreading.
@@ -227,6 +265,15 @@ interface LayerSettings {
 // Phone-width viewport: the workbench collapses to a single full-screen viewer
 // with the dataset/inspector panels as slide-in drawers (see the `max-width:
 // 700px` block in styles.css). iPad (~desktop width) keeps the 3-column layout.
+/** Resolves after `count` animation frames, once React's updates have laid out. */
+function nextFrames(count: number): Promise<void> {
+  return new Promise((resolve) => {
+    const step = (left: number) =>
+      left === 0 ? resolve() : requestAnimationFrame(() => step(left - 1))
+    step(count)
+  })
+}
+
 function isPhoneViewport(): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -237,6 +284,36 @@ function isPhoneViewport(): boolean {
 // Below this window width the dataset panel folds to its rail (see App).
 const AUTO_COLLAPSE_WIDTH = 1100
 
+// A window an agent opened with open_window (see src-tauri/src/mcp.rs). It
+// starts empty rather than reopening the last dataset, which the launch
+// window shows already.
+const isViewerWindow = (() => {
+  try {
+    return getCurrentWebviewWindow().label.startsWith('viewer-')
+  } catch {
+    // Not under Tauri (browser-only development).
+    return false
+  }
+})()
+
+/** A send an agent started (send_to_device), as send_status reports it. */
+interface AgentSend {
+  state: 'sending' | 'sent' | 'failed'
+  device: string
+  volumes?: number
+  bytes?: number
+  error?: string
+}
+
+import type { PipelineAgent } from './components/PipelineViewHost'
+
+// Lazy: keeps @xyflow/react and the package CSS out of the initial (and iOS) bundle.
+const PipelineViewHost = lazy(() =>
+  import('./components/PipelineViewHost').then((m) => ({
+    default: m.PipelineViewHost,
+  })),
+)
+
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
   const backend = useMemo<Backend>(preferredBackend, [])
@@ -245,6 +322,7 @@ export function App(): JSX.Element {
     promoteRecent,
     removeRecent,
     pruneExtractedBundleDirs,
+    rebaseContainerPaths,
     reopenLast,
     setReopenLast,
   } = useRecentDatasets()
@@ -257,11 +335,13 @@ export function App(): JSX.Element {
     isOpeningDataset,
     isStartupResolved,
     items,
+    latestStatus,
     manifest,
     openLocalDataset,
     openLocalVolumeFile,
     openRecentDataset,
     openSampleDataset,
+    closeDataset,
     samplePath,
     refreshDesktopManifest,
     refreshDesktopManifestData,
@@ -291,6 +371,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (cacheRoot) pruneExtractedBundleDirs(cacheRoot)
   }, [cacheRoot, pruneExtractedBundleDirs])
+  // On iOS, point recents at the current container (it changes on every
+  // update) and drop ones left in its purged tmp.
+  useEffect(() => {
+    if (cacheRoot) rebaseContainerPaths(cacheRoot)
+  }, [cacheRoot, rebaseContainerPaths])
   const [layerSettings, setLayerSettings] = useState<
     Record<string, LayerSettings>
   >({})
@@ -332,6 +417,10 @@ export function App(): JSX.Element {
     [],
   )
   const [overlayIds, setOverlayIds] = useState<Set<string>>(() => new Set())
+  // The base volume an agent removed: nothing is shown until a volume is
+  // picked again, rather than falling back to the dataset's first.
+  const [removedBaseId, setRemovedBaseId] = useState<string | null>(null)
+  const shownBase = selected?.id === removedBaseId ? null : selected
   // Phones land on a 2D axial slice (clearer on a small screen); desktop/iPad
   // reopen the view the user last picked, else the multiplanar default.
   const [viewMode, setViewMode] = useState<ViewModeId>(() =>
@@ -340,7 +429,9 @@ export function App(): JSX.Element {
       : (loadRememberedViewMode() ?? DEFAULT_VIEW_MODE),
   )
   const [uiMode, setUiMode] = useState<UiMode>(() =>
-    loadRememberedUiMode(isAppleMobile() ? 'full' : 'express'),
+    loadRememberedUiMode(
+      isAppleMobile() && isPhoneViewport() ? 'full' : 'express',
+    ),
   )
   const isExpress = uiMode === 'express'
   const [shading, setShading] = useState<RenderShading>(DEFAULT_RENDER_SHADING)
@@ -377,6 +468,38 @@ export function App(): JSX.Element {
   const [splitPercent, setSplitPercent] = useState(52)
   const [desktopZoom, setDesktopZoom] = useState(1)
   const [mouseContext, setMouseContext] = useState<MouseContext>(null)
+  const [hasPipelines, setHasPipelines] = useState(false)
+  const [leftPane, setLeftPane] = useState<'dataset' | 'pipelines'>('dataset')
+  const [pipelinesMounted, setPipelinesMounted] = useState(false)
+  // The Operations button bumps this to open Pipelines with "Selected only".
+  const [preferSelected, setPreferSelected] = useState(0)
+  // Overlay item id -> the pipeline run that produced it; App state only.
+  const [neuroflowRuns, setNeuroflowRuns] = useState<Record<string, RunTag>>({})
+  useEffect(() => {
+    void isAvailable().then(setHasPipelines)
+  }, [])
+  function revealPath(path: string): void {
+    void createNeuroflowClient()
+      .reveal(path)
+      .catch((error) => setStatus(String(error)))
+  }
+  function showLeftPane(pane: 'dataset' | 'pipelines'): void {
+    setLeftPane(pane)
+    if (pane === 'pipelines') setPipelinesMounted(true)
+  }
+  const pipelineAgentRef = useRef<PipelineAgent | null>(null)
+  /** Shows the Pipelines view (agents drive it visibly) and waits for its handle. */
+  async function pipelineAgent(): Promise<PipelineAgent> {
+    if (!hasPipelines) throw new Error('Pipelines need the desktop app.')
+    showDatasetPane()
+    showLeftPane('pipelines')
+    // ~10 s at 60 fps: the view is lazy-loaded on first use.
+    for (let i = 0; i < 600 && !pipelineAgentRef.current; i++)
+      await nextFrames(1)
+    if (!pipelineAgentRef.current)
+      throw new Error('The Pipelines view did not open.')
+    return pipelineAgentRef.current
+  }
   // On a phone both side panels start collapsed (off-screen drawers) so the
   // viewer is the landing surface; on desktop/iPad they start open.
   const [isFileListCollapsed, setIsFileListCollapsed] =
@@ -407,12 +530,16 @@ export function App(): JSX.Element {
     else if (!isBusyOpening) setIsWorkspaceVisible(false)
   }, [items.length, meshes.length, isBusyOpening])
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
+  const [isNiimathAvailable, setIsNiimathAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false)
   const shareMenuRef = useRef<HTMLDivElement | null>(null)
+  // Devices running NeuroVue nearby, looked for each time the share menu
+  // opens; null while looking.
+  const [sendTargets, setSendTargets] = useState<SendTarget[] | null>(null)
   const { isTerminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } =
     useTerminalDock()
   // The express view has no dock; the terminal keeps its state for the
@@ -435,6 +562,7 @@ export function App(): JSX.Element {
     void resolveRuntimeCapabilities().then((capabilities) => {
       if (cancelled) return
       setIsTerminalAvailable(capabilities.terminalAvailable)
+      setIsNiimathAvailable(capabilities.nativeNiimathAvailable)
       setIsAirdropAvailable(capabilities.airdropAvailable)
     })
     return () => {
@@ -477,6 +605,17 @@ export function App(): JSX.Element {
   useDismissableMenu(isRecentMenuOpen, recentMenuRef, () =>
     setIsRecentMenuOpen(false),
   )
+  useEffect(() => {
+    if (!isShareMenuOpen || !isAirdropAvailable) return
+    let cancelled = false
+    setSendTargets(null)
+    void listSendTargets().then((targets) => {
+      if (!cancelled) setSendTargets(targets)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isShareMenuOpen, isAirdropAvailable])
   useDismissableMenu(isShareMenuOpen, shareMenuRef, () =>
     setIsShareMenuOpen(false),
   )
@@ -494,16 +633,32 @@ export function App(): JSX.Element {
     toggleFormat,
     toggleDtype,
     clearFilters,
+    setFilters,
   } = useVolumeFilters(items)
+
+  // Dataset view re-fits whenever the shown set changes (open or filter); a
+  // user/agent zoom only lasts until then. Adjusted during render so the new
+  // layout commits once at the fit size, which the tile animation relies on.
+  const shownKey = useMemo(
+    () => filteredItems.map((item) => item.id).join('\n'),
+    [filteredItems],
+  )
+  const [fittedKey, setFittedKey] = useState(shownKey)
+  if (fittedKey !== shownKey) {
+    setFittedKey(shownKey)
+    setDesktopZoom(1)
+  }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; dataset-scoped filters reset only when the backing dataset changes.
   useEffect(() => {
     clearFilters()
   }, [datasetRevision])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; overlay ids are path-derived, so a new dataset can reuse them.
+  useEffect(() => setNeuroflowRuns({}), [datasetRevision])
 
   const { metadata, metadataStatus } = useVolumeMetadata(selected)
   const renderLayers = useMemo<NiivueRenderLayer[]>(() => {
-    if (!selected) return []
+    if (!selected || selected.id === removedBaseId) return []
 
     const layers: NiivueRenderLayer[] = [
       {
@@ -583,7 +738,13 @@ export function App(): JSX.Element {
     }
 
     return layers
-  }, [atlasId, items, layerSettings, overlayIds, selected])
+  }, [atlasId, items, layerSettings, overlayIds, removedBaseId, selected])
+
+  // A new dataset, or the same one reopened, shows its base again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: items is the trigger.
+  useEffect(() => {
+    setRemovedBaseId(null)
+  }, [items])
 
   useEffect(() => {
     const validIds = new Set(items.map((item) => item.id))
@@ -678,6 +839,24 @@ export function App(): JSX.Element {
     setLocationReadout(null)
   }, [renderLayers])
 
+  function showVolume(itemId: string): void {
+    setRemovedBaseId(null)
+    setSelectedId(itemId)
+  }
+
+  /** View ▸ Clear All: closes the dataset, overlays and meshes, back to the welcome screen. */
+  async function clearAll(): Promise<void> {
+    setOverlayIds(new Set())
+    setAtlasId(null)
+    setMeshes([])
+    setNeuroflowRuns({})
+    try {
+      await closeDataset()
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
   function toggleOverlayLayer(itemId: string): void {
     setOverlayIds((current) => {
       const next = new Set(current)
@@ -715,36 +894,92 @@ export function App(): JSX.Element {
         setStatus('Overlay load cancelled.')
         return
       }
-
-      const nextManifest = await refreshDesktopManifestData()
-      const overlayItem =
-        nextManifest?.items.find((item) => item.id === result.id) ?? null
-      const isAtlas = overlayItem
-        ? await volumeHasAtlasLabelSidecar(overlayItem)
-        : false
-      if (isAtlas) {
-        setAtlasId(result.id)
-        setLayerHidden(result.id, false)
-        setOverlayIds((current) => {
-          if (!current.has(result.id)) return current
-          const next = new Set(current)
-          next.delete(result.id)
-          return next
-        })
-        setStatus(`Atlas ${result.label} added with label sidecar.`, 'success')
-      } else {
-        setOverlayIds((current) => {
-          const next = new Set(current)
-          next.add(result.id)
-          return next
-        })
-        setStatus(`Overlay ${result.label} added to every volume.`, 'success')
-      }
+      await placeOverlay(result)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsOpeningOverlay(false)
     }
+  }
+
+  /** Shows an overlay the host just registered: as the atlas when it has a label sidecar. */
+  async function placeOverlay(result: OverlayAddResult): Promise<void> {
+    const nextManifest = await refreshDesktopManifestData()
+    const overlayItem =
+      nextManifest?.items.find((item) => item.id === result.id) ?? null
+    const isAtlas = overlayItem
+      ? await volumeHasAtlasLabelSidecar(overlayItem)
+      : false
+    if (isAtlas) {
+      setAtlasId(result.id)
+      setLayerHidden(result.id, false)
+      setOverlayIds((current) => {
+        if (!current.has(result.id)) return current
+        const next = new Set(current)
+        next.delete(result.id)
+        return next
+      })
+      setStatus(`Atlas ${result.label} added with label sidecar.`, 'success')
+    } else {
+      setOverlayIds((current) => {
+        const next = new Set(current)
+        next.add(result.id)
+        return next
+      })
+      setStatus(`${result.label} added to every volume.`, 'success')
+    }
+  }
+
+  async function addOverlayFromPath(
+    path: string,
+  ): Promise<{ id: string; label: string }> {
+    if (items.length === 0) {
+      throw new Error('No dataset is open to overlay; call open_path first.')
+    }
+    const result = await addOverlayVolumeByPath(path)
+    // A path already registered keeps its id; a layer already shown won't reload the viewer.
+    if (overlayIds.has(result.id) || result.id === atlasId) {
+      return { id: result.id, label: result.label }
+    }
+    await untilNextViewer(() => placeOverlay(result))
+    return { id: result.id, label: result.label }
+  }
+
+  /** Loads a run's NIfTI outputs in sequence; returns the paths to offer as Reveal instead. */
+  async function handleRunOutputs(
+    structured: RunStructured,
+    tag: RunTag,
+    _target: BatchTarget,
+    isShown: boolean,
+  ): Promise<string[]> {
+    if (!isShown) return []
+    const reveal: string[] = []
+    for (const { path, type } of outputArtifacts(structured)) {
+      // Only masks/label maps overlay cleanly; a colour-mapped intensity volume over the base bands like ringing.
+      const isMask = type === 'neuro:mask'
+      if (!isNifti(path) || !(isMask || type === 'neuro:label-map')) {
+        reveal.push(path)
+        continue
+      }
+      try {
+        const { id } = await addOverlayFromPath(path)
+        if (isMask) {
+          setLayerSettings((current) => ({
+            ...current,
+            [id]: {
+              colormap: 'red',
+              opacity: MASK_OVERLAY_OPACITY,
+              window: { min: 0, max: 1 },
+            },
+          }))
+        }
+        setNeuroflowRuns((runs) => ({ ...runs, [id]: tag }))
+      } catch (error) {
+        setStatus(String(error))
+        reveal.push(path)
+      }
+    }
+    return reveal
   }
 
   async function loadMeshes(): Promise<void> {
@@ -758,20 +993,24 @@ export function App(): JSX.Element {
         setStatus('Mesh load cancelled.')
         return
       }
-      // A mesh on its own is a 3D object; slices of nothing would be blank.
-      if (items.length === 0) setViewMode('render')
-      setMeshes((current) => [...current, ...added])
-      setStatus(
-        added.length === 1
-          ? `Mesh ${added[0].name} added.`
-          : `${added.length} meshes added.`,
-        'success',
-      )
+      showMeshes(added)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
     } finally {
       setIsOpeningMesh(false)
     }
+  }
+
+  function showMeshes(added: MeshLayer[]): void {
+    // A mesh on its own is a 3D object; slices of nothing would be blank.
+    if (items.length === 0) setViewMode('render')
+    setMeshes((current) => [...current, ...added])
+    setStatus(
+      added.length === 1
+        ? `Mesh ${added[0].name} added.`
+        : `${added.length} meshes added.`,
+      'success',
+    )
   }
 
   function updateMesh(id: string, patch: Partial<MeshLayer>): void {
@@ -844,16 +1083,10 @@ export function App(): JSX.Element {
     }
   }
 
-  async function handleShareBundle(): Promise<void> {
-    if (isSharingBundle) return
-    if (!selected || items.length === 0) {
-      setStatus('Open a dataset before sharing.', 'error')
-      return
-    }
-
-    // Share the *whole* dataset — every volume — so the recipient can browse and
-    // pick any of them. The current view is still embedded, so it opens to a
-    // sensible default; the rest show up in the recipient's dataset list.
+  // Share the *whole* dataset — every volume — so the recipient can browse and
+  // pick any of them. The current view is still embedded, so it opens to a
+  // sensible default; the rest show up in the recipient's dataset list.
+  function sharedDataset(selected: DesktopItem) {
     const { view } = composeCurrentBundle(selected)
     const volumeIds = items.map((item) => item.id)
     const shareName =
@@ -861,7 +1094,78 @@ export function App(): JSX.Element {
       datasetRoot?.split('/').pop() ||
       selected.label ||
       'neurovue-dataset'
+    return { view, volumeIds, shareName }
+  }
 
+  // Sends what's on screen (the selected volume and the layers over it) or,
+  // with `wholeDataset`, every volume, like an AirDrop share. Resolves once
+  // the person there has accepted it and it has arrived; rejects with a
+  // status-line sentence otherwise. The status line follows along.
+  async function sendToDevice(
+    target: SendTarget,
+    wholeDataset: boolean,
+  ): Promise<ExportBundleResult> {
+    if (isSharingBundle) throw new Error('A send is already in progress.')
+    if (!selected || items.length === 0) {
+      throw new Error('Open a dataset before sending.')
+    }
+    // Named after what it holds, so it doesn't evict the other's staged copy.
+    const { view, volumeIds, shareName } = wholeDataset
+      ? sharedDataset(selected)
+      : { ...composeCurrentBundle(selected), shareName: selected.label }
+    setIsSharingBundle(true)
+    setStatus(
+      `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
+        `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+    )
+    try {
+      const result = await sendViewToDevice({
+        target,
+        name: shareName,
+        volumeIds,
+        view,
+        onOffered: () => setStatus(`Waiting for ${target.name} to accept…`),
+      })
+      setStatus(
+        `Sent ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
+          `(${formatBundleBytes(result.totalBytes)}) to ${target.name}.`,
+        'success',
+      )
+      return result
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+      throw error
+    } finally {
+      setIsSharingBundle(false)
+    }
+  }
+
+  async function handleSendToDevice(
+    target: SendTarget,
+    wholeDataset: boolean,
+  ): Promise<void> {
+    if (isSharingBundle) return
+    try {
+      await sendToDevice(target, wholeDataset)
+    } catch (error) {
+      // sendToDevice reported it, unless it refused before starting.
+      if (latestStatus().tone !== 'error') {
+        setStatus(
+          error instanceof Error ? error.message : String(error),
+          'error',
+        )
+      }
+    }
+  }
+
+  async function handleShareBundle(): Promise<void> {
+    if (isSharingBundle) return
+    if (!selected || items.length === 0) {
+      setStatus('Open a dataset before sharing.', 'error')
+      return
+    }
+
+    const { view, volumeIds, shareName } = sharedDataset(selected)
     setIsSharingBundle(true)
     setStatus(
       `Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
@@ -890,6 +1194,7 @@ export function App(): JSX.Element {
     rememberUiMode(next)
   }
 
+  useExpressMenuLabel(isExpress)
   useNativeMenu({
     'express-view': toggleUiMode,
     'open-file': openLocalVolumeFile,
@@ -905,7 +1210,248 @@ export function App(): JSX.Element {
       isAirdropAvailable
         ? handleShareBundle()
         : setStatus('AirDrop is not available on this Mac.'),
+    pipelines: () => {
+      if (!hasPipelines) return
+      showDatasetPane()
+      showLeftPane('pipelines')
+    },
+    'clear-all': clearAll,
   })
+
+  // The live NiiVue instance for agent tools, set once its volumes load.
+  // Agent calls that reload the viewer wait here for the next one.
+  const viewerRef = useRef<unknown>(null)
+  const viewerWaitersRef = useRef<Array<() => void>>([])
+  const viewerGoneWaitersRef = useRef<Array<() => void>>([])
+  const handleViewer = useCallback((nv: unknown) => {
+    viewerRef.current = nv
+    const waiters = nv ? viewerWaitersRef : viewerGoneWaitersRef
+    for (const resolve of waiters.current.splice(0)) resolve()
+  }, [])
+  /** Runs `change`, then waits (up to 5 s) for the viewer it ends to go. */
+  async function untilViewerGone(change: () => Promise<void>): Promise<void> {
+    if (!viewerRef.current) return change()
+    const gone = new Promise<void>((resolve) => {
+      viewerGoneWaitersRef.current.push(resolve)
+      setTimeout(resolve, 5_000)
+    })
+    await change()
+    await gone
+  }
+  /** Runs `change`, then waits (up to 30 s) for the viewer it causes to load. */
+  async function untilNextViewer(change: () => Promise<void>): Promise<void> {
+    const loaded = new Promise<void>((resolve) => {
+      viewerWaitersRef.current.push(resolve)
+      setTimeout(resolve, 30_000)
+    })
+    await change()
+    await loaded
+  }
+  // Express and a maximized viewer hide the dataset pane; an agent browsing
+  // the dataset shows it, so the person sees what it does.
+  function showDatasetPane(): void {
+    setUiMode('full')
+    setIsRenderMaximized(false)
+    setIsFileListCollapsed(false)
+  }
+  /** A volume as agents see it, with the facets filter_dataset takes. */
+  function agentVolume(item: DesktopItem) {
+    return {
+      id: item.id,
+      label: item.label,
+      imageType: volumeImageTypeLabel(item),
+      subject: volumeSubject(item),
+      shape: item.shape,
+      spacing: item.spacing,
+      shown: item.id === shownBase?.id,
+    }
+  }
+  // The send an agent started, which send_status reports on (the person on
+  // the device takes longer to accept than one agent call may wait).
+  const agentSendRef = useRef<AgentSend | null>(null)
+  const agent = useAgentClient({
+    viewer: () => viewerRef.current,
+    title: () => (datasetName ? `NeuroVue: ${datasetName}` : 'NeuroVue'),
+    actions: {
+      openPath: (path) =>
+        untilNextViewer(async () => {
+          if (!(await openRecentEntry(path))) {
+            const last = latestStatus()
+            throw new Error(
+              last.tone === 'error'
+                ? last.text
+                : `Couldn't open ${path}: another dataset is still opening.`,
+            )
+          }
+        }),
+      dataset: () => ({
+        name: datasetName || null,
+        root: datasetRoot ?? null,
+        volumes: items.map(agentVolume),
+      }),
+      filterDataset: (filters) => {
+        if (items.length === 0) {
+          throw new Error('No dataset is open to filter; call open_path first.')
+        }
+        const facets = {
+          imageTypes: volumeFacetCounts(items, volumeImageTypeLabel),
+          roles: volumeFacetCounts(items, volumeRoleLabel),
+        }
+        for (const [key, counts] of Object.entries(facets)) {
+          const unknown = filters[key as keyof typeof facets]?.filter(
+            (value) => !counts.has(value),
+          )
+          if (unknown?.length) {
+            throw new Error(
+              `No volume has ${key === 'roles' ? 'role' : 'image type'} ${unknown.join(', ')}; ` +
+                `this dataset has ${[...counts.keys()].join(', ')}.`,
+            )
+          }
+        }
+        setFilters(filters)
+        showDatasetPane()
+        return {
+          listed: filterVolumes(items, filters).map(agentVolume),
+          of: items.length,
+          imageTypes: Object.fromEntries(facets.imageTypes),
+          roles: Object.fromEntries(facets.roles),
+        }
+      },
+      zoomDataset: async ({ zoom, volume }) => {
+        if (
+          volume !== undefined &&
+          !filteredItems.some((item) => item.id === volume)
+        ) {
+          throw new Error(
+            items.some((item) => item.id === volume)
+              ? `Volume ${volume} is filtered out; change the filter with filter_dataset first.`
+              : `No volume ${volume} in this dataset; dataset lists them.`,
+          )
+        }
+        const next =
+          zoom === undefined
+            ? desktopZoom
+            : Math.min(Math.max(zoom, MIN_DESKTOP_ZOOM), MAX_DESKTOP_ZOOM)
+        showDatasetPane()
+        setDesktopZoom(next)
+        if (volume !== undefined) {
+          // Center the tile once the pane and the new zoom have laid out.
+          await nextFrames(3)
+          document
+            .querySelector(`[data-volume-id="${CSS.escape(volume)}"]`)
+            ?.scrollIntoView({ block: 'center', inline: 'center' })
+        }
+        return { zoom: next }
+      },
+      setWindowMode: async (mode) => {
+        if (mode === 'dataset') showDatasetPane()
+        else setUiMode('express')
+        // Let the viewer resize before a screenshot.
+        await nextFrames(3)
+        return { mode }
+      },
+      selectVolume: async (id) => {
+        if (!items.some((item) => item.id === id)) {
+          throw new Error(
+            `No volume ${id} in this dataset; dataset lists them.`,
+          )
+        }
+        if (id === shownBase?.id) return
+        await untilNextViewer(async () => showVolume(id))
+      },
+      addOverlay: addOverlayFromPath,
+      listDevices: async () => ({
+        devices: (await listSendTargets()).map((target) => target.name),
+      }),
+      sendToDevice: async ({ device, wholeDataset }) => {
+        if (agentSendRef.current?.state === 'sending' || isSharingBundle) {
+          throw new Error('A send is already in progress.')
+        }
+        if (!selected || items.length === 0) {
+          throw new Error('No dataset is open to send; call open_path first.')
+        }
+        const targets = await listSendTargets()
+        const names = targets.map((target) => target.name).join(', ')
+        const target = device
+          ? targets.find((candidate) => candidate.name === device)
+          : targets.length === 1
+            ? targets[0]
+            : undefined
+        if (!target) {
+          throw new Error(
+            targets.length === 0
+              ? 'No device is on the network; ask the person to open NeuroVue on it.'
+              : device
+                ? `No device ${device} on the network; these are: ${names}.`
+                : `Several devices are on the network; pass device, one of: ${names}.`,
+          )
+        }
+        const send: AgentSend = { state: 'sending', device: target.name }
+        agentSendRef.current = send
+        sendToDevice(target, wholeDataset).then(
+          (result) => {
+            send.state = 'sent'
+            send.volumes = result.volumeCount
+            send.bytes = result.totalBytes
+          },
+          (error) => {
+            send.state = 'failed'
+            send.error = error instanceof Error ? error.message : String(error)
+          },
+        )
+        return { state: send.state, device: send.device }
+      },
+      sendStatus: () => {
+        const send = agentSendRef.current
+        if (!send) throw new Error('Nothing has been sent from this window.')
+        if (send.state === 'failed') throw new Error(send.error)
+        return { ...send }
+      },
+      removeVolumes: async (index) => {
+        const layers = index === 'all' ? renderLayers : [renderLayers[index]]
+        if (layers.some((layer) => !layer)) {
+          throw new Error(
+            `No volume ${index} is shown; there are ${renderLayers.length}.`,
+          )
+        }
+        // Overlays and the atlas are drawn over the base, so they go with it.
+        const removesBase = layers.some((layer) => layer.kind === 'base')
+        const removed = removesBase ? renderLayers : layers
+        const takeOff = async () => {
+          for (const layer of removed) {
+            if (layer.kind === 'base') setRemovedBaseId(layer.item.id)
+            else if (layer.isAtlas) changeAtlasLayer('')
+            else toggleOverlayLayer(layer.item.id)
+          }
+        }
+        // An empty stack makes no viewer to wait for, only the old one to go.
+        await (removesBase ? untilViewerGone : untilNextViewer)(takeOff)
+        return { removed: removed.map((layer) => layer.item.label) }
+      },
+      addMeshes: async (paths) => {
+        const added = await Promise.all(
+          paths.map((path, index) =>
+            readMeshLayer(path, meshes.length + index),
+          ),
+        )
+        showMeshes(added)
+        return added.map((mesh) => mesh.name)
+      },
+      listPipelines: async () => (await pipelineAgent()).list(),
+      runPipeline: async (request) => (await pipelineAgent()).run(request),
+      pipelineStatus: () => {
+        if (!pipelineAgentRef.current)
+          throw new Error(
+            'No pipeline has run in this window; start one with run_pipeline.',
+          )
+        return pipelineAgentRef.current.status()
+      },
+    },
+  })
+  const agentError = agent.status?.error
+  useEffect(() => {
+    if (agentError) setStatus(agentError, 'error')
+  }, [agentError, setStatus])
 
   // Hold the importing flag across the file dialog too, so the button stays
   // disabled while the picker is open.
@@ -931,46 +1477,85 @@ export function App(): JSX.Element {
   }
 
   // A bundle must be re-verified and its view replayed, not opened as a plain
-  // directory.
-  /** False when a dataset failed to open; bundle imports report their own errors. */
-  async function openRecentEntry(path: string): Promise<boolean> {
-    if (!isBundlePath(path)) return openRecentDataset(path)
-    await importBundleFromPath(path)
-    return true
+  // directory. A NiiVue document opens the same way.
+  /** False when the dataset or bundle failed to open; the status line says why. */
+  async function openRecentEntry(stored: string): Promise<boolean> {
+    // The rebasing effect may not have rewritten the list yet at startup.
+    const path = rebaseContainerPath(stored, cacheRoot)
+    if (!isBundlePath(path) && !isDocumentPath(path)) {
+      return openRecentDataset(path)
+    }
+    return importBundleFromPath(path)
   }
 
   // Like VS Code reopening its last folder: once startup finds nothing to open
   // (a dataset named by env or NeuroFlow wins), reopen the most recent one. A
   // failure (moved, deleted) lands on Welcome with the error in the status line
   // and keeps the entry, in case the drive is just unmounted.
+  // A file handed over by another app (AirDrop, Open in) beats both: it is what
+  // the person just asked for.
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once, when startup resolves; later recents/pref changes must not trigger a reopen.
   useEffect(() => {
     if (!isStartupResolved || reopenAttemptedRef.current) return
     reopenAttemptedRef.current = true
-    const last = recentDatasets[0]
-    if (!reopenLast || !last || items.length > 0) return
-    setReopeningPath(last)
-    void openRecentEntry(last)
-      .then((opened) => {
-        if (opened) return
-        setStatus(
-          `Couldn't reopen ${recentDatasetLabel(last)}. It may have been moved, or be on a drive that isn't connected.`,
-          'error',
-        )
-      })
-      .finally(() => setReopeningPath(null))
+    if (isViewerWindow) return
+    void takeOpenedFile().then((received) => {
+      if (received) {
+        void openRecentEntry(received)
+        return
+      }
+      const last = recentDatasets.find(
+        (entry) =>
+          !isInContainerTemp(rebaseContainerPath(entry, cacheRoot), cacheRoot),
+      )
+      if (!reopenLast || !last || items.length > 0) return
+      setReopeningPath(last)
+      void openRecentEntry(last)
+        .then((opened) => {
+          if (opened) return
+          setStatus(
+            `Couldn't reopen ${recentDatasetLabel(last)}. It may have been moved, or be on a drive that isn't connected.`,
+            'error',
+          )
+        })
+        .finally(() => setReopeningPath(null))
+    })
   }, [isStartupResolved])
 
+  // A Mac offering a file over the network waits on the person's answer.
+  const sendOffer = useSendOffer(!isViewerWindow)
+  // Each volume that arrived in a bundle → its entry there, which a drawing
+  // made on it names so the Mac that sent it can find the original.
+  const drawingBasesRef = useRef(new Map<string, DrawingBase>())
+  const drawingBase = selected
+    ? drawingBasesRef.current.get(selected.id)
+    : undefined
+
+  // Files that arrive once the page is up. Until startup has looked, they wait
+  // for the effect above, which takes them first.
+  const openRecentEntryRef = useRef(openRecentEntry)
+  openRecentEntryRef.current = openRecentEntry
+  useEffect(() => {
+    if (isViewerWindow) return
+    return onFilesOpened(() => {
+      if (!reopenAttemptedRef.current) return
+      void takeOpenedFile().then((received) => {
+        if (received) void openRecentEntryRef.current(received)
+      })
+    })
+  }, [])
+
   /** Re-open a bundle straight from recents, skipping the file dialog. */
-  async function importBundleFromPath(path: string): Promise<void> {
-    if (isImportingBundleRef.current || isOpeningDataset) return
+  async function importBundleFromPath(path: string): Promise<boolean> {
+    if (isImportingBundleRef.current || isOpeningDataset) return false
 
     isImportingBundleRef.current = true
     setIsImportingBundle(true)
     try {
-      await runBundleImport(path)
+      return await runBundleImport(path)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
+      return false
     } finally {
       isImportingBundleRef.current = false
       setIsImportingBundle(false)
@@ -978,27 +1563,33 @@ export function App(): JSX.Element {
   }
 
   // Verify a `.nvbundle`, open its extracted volumes as the working dataset, and
-  // replay the recorded view. Throws; callers own the importing flag.
-  async function runBundleImport(path: string): Promise<void> {
+  // replay the recorded view. Throws; callers own the importing flag. False
+  // when nothing opened, with the reason in the status line.
+  async function runBundleImport(path: string): Promise<boolean> {
     const bundle = await readBundle(path)
     if (bundle.manifest?.nvbundle == null) {
       setStatus('This file is not a NeuroVue bundle.', 'error')
-      return
+      return false
     }
+    // A drawing sent back goes over the volume it was drawn on, in the
+    // dataset already open, rather than replacing it.
+    if (bundle.manifest.kind === 'drawing') return attachReceivedDrawing(bundle)
 
     // Load the bundle's copied volumes as the working dataset (the data/ dir
     // opens like any dataset; each volume's new id is its filename stem), but
     // record the bundle itself in recents — `dataDir` is a temp extraction.
     // A failed open already put its error in the status line; stop here so the
     // previous dataset isn't reported as "imported" over it.
-    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) return
+    if (!(await openRecentDataset(bundle.dataDir, { promoteAs: path }))) {
+      return false
+    }
     const nextManifest = await refreshDesktopManifestData()
     const loadedIds = new Set(
       (nextManifest?.items ?? []).map((item) => item.id),
     )
     if (loadedIds.size === 0) {
       // openRecentDataset already surfaced the failure via setStatus.
-      return
+      return false
     }
 
     // Map each recorded (original-dataset) id → its freshly-registered id.
@@ -1006,8 +1597,17 @@ export function App(): JSX.Element {
     const newIds = bundleVolumeIds(
       bundle.manifest.volumes.map((volume) => volume.data),
     )
+    drawingBasesRef.current.clear()
     for (const volume of bundle.manifest.volumes) {
-      remap.set(volume.id, newIds.get(volume.data) ?? volume.id)
+      const newId = newIds.get(volume.data) ?? volume.id
+      remap.set(volume.id, newId)
+      if (volume.sha256) {
+        drawingBasesRef.current.set(newId, {
+          id: volume.id,
+          sha256: volume.sha256,
+          label: volume.label ?? volume.id,
+        })
+      }
     }
 
     const view = bundle.manifest.view
@@ -1055,10 +1655,71 @@ export function App(): JSX.Element {
       failures.length > 0
         ? ` ⚠ ${failures.length} file(s) failed the integrity check`
         : ''
+    const source = isDocumentPath(path) ? 'document' : 'bundle'
     setStatus(
-      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from bundle.${integrity}`,
+      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from ${source}.${integrity}`,
       failures.length > 0 ? 'error' : 'success',
     )
+    return true
+  }
+
+  async function attachReceivedDrawing(
+    bundle: BundleReadResult,
+  ): Promise<boolean> {
+    const base = bundle.manifest.base
+    const drawing = bundle.manifest.volumes[0]
+    if (!base || !drawing || !bundle.allVerified) {
+      setStatus("The drawing arrived damaged, so it wasn't added.", 'error')
+      return false
+    }
+    // Checking it's the same file reads the whole base volume.
+    setStatus(`Adding the drawing over ${base.label}…`)
+    const volumeId = await attachDrawing({
+      drawingPath: `${bundle.bundlePath}/${drawing.data}`,
+      base,
+    })
+    await refreshDesktopManifestData()
+    // Opaque, like the pen: the stage colors a drawing by its pens' own
+    // palette (DRAW_LABEL_COLORMAP).
+    setLayerSettings((current) => ({
+      ...current,
+      [volumeId]: {
+        ...current[volumeId],
+        opacity: 1,
+      },
+    }))
+    setOverlayIds((current) => new Set(current).add(volumeId))
+    setSelectedId(base.id)
+    setStatus(`Added the drawing over ${base.label}.`, 'success')
+    return true
+  }
+
+  // Sends the drawing over a volume that arrived from a Mac back to that Mac:
+  // the one that sent the last file accepted here, when it can be found.
+  async function handleSendDrawing(drawing: Uint8Array): Promise<void> {
+    if (!drawingBase || isSharingBundle) return
+    setIsSharingBundle(true)
+    setStatus('Looking for the Mac…')
+    try {
+      const targets = await listSendTargets()
+      const target =
+        targets.find((candidate) => candidate.name === sendOffer.lastFrom) ??
+        targets[0]
+      if (!target) {
+        setStatus(
+          "Couldn't find a Mac running NeuroVue on this network.",
+          'error',
+        )
+        return
+      }
+      setStatus(`Waiting for ${target.name} to accept the drawing…`)
+      await sendDrawingToDevice({ target, base: drawingBase, drawing })
+      setStatus(`Sent the drawing to ${target.name}.`, 'success')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setIsSharingBundle(false)
+    }
   }
 
   useEffect(() => {
@@ -1121,10 +1782,7 @@ export function App(): JSX.Element {
                 ? 'No dataset open'
                 : isSampleDataset
                   ? datasetName
-                  : bidsName ||
-                    datasetRoot ||
-                    serverUrl ||
-                    'Resolving local server'}
+                  : bidsName || datasetRoot || 'Untitled workspace'}
             </p>
             {datasetNotice && !showWelcome ? (
               <p className="nv-dataset-notice" role="status">
@@ -1308,7 +1966,7 @@ export function App(): JSX.Element {
                     }}
                     title={
                       selected
-                        ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                        ? 'Export dataset bundle (volumes + this view) — one file you can share'
                         : 'Select a volume to export a bundle'
                     }
                     type="button"
@@ -1356,6 +2014,57 @@ export function App(): JSX.Element {
                       </span>
                     </button>
                   ) : null}
+                  {sendTargets === null ? (
+                    <div className="nv-recent-item nv-share-looking">
+                      <LoaderCircle className="nv-spin" size={14} />
+                      <span className="nv-recent-item-path">
+                        Looking for devices running NeuroVue…
+                      </span>
+                    </div>
+                  ) : (
+                    sendTargets.flatMap((target) => {
+                      const key = `${target.name}@${target.host}:${target.port}`
+                      return [false, true].map((wholeDataset) => (
+                        <button
+                          aria-label={
+                            wholeDataset
+                              ? `Send dataset to ${target.name}`
+                              : `Send this view to ${target.name}`
+                          }
+                          className="nv-recent-item nv-recent-open"
+                          disabled={!selected || isSharingBundle}
+                          key={`${key}:${wholeDataset}`}
+                          onClick={() => {
+                            setIsShareMenuOpen(false)
+                            void handleSendToDevice(target, wholeDataset)
+                          }}
+                          title={
+                            wholeDataset
+                              ? `Send every volume straight into NeuroVue on ${target.name}`
+                              : `Send the selected volume and its overlays straight into NeuroVue on ${target.name}`
+                          }
+                          type="button"
+                          role="menuitem"
+                        >
+                          <Tablet size={14} />
+                          <span className="nv-menu-item-text">
+                            <span className="nv-recent-item-name">
+                              {wholeDataset
+                                ? `Send dataset to ${target.name}`
+                                : `Send ${selected?.label ?? 'volume'} to ${target.name}`}
+                            </span>
+                            <span className="nv-recent-item-path">
+                              {!selected
+                                ? 'Open a dataset first'
+                                : wholeDataset
+                                  ? `All ${items.length} volume${items.length === 1 ? '' : 's'}; opens there once accepted`
+                                  : 'This view; opens there once accepted'}
+                            </span>
+                          </span>
+                        </button>
+                      ))
+                    })
+                  )}
                 </div>
               ) : null}
             </div>
@@ -1367,7 +2076,7 @@ export function App(): JSX.Element {
               onClick={handleExportBundle}
               title={
                 selected
-                  ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                  ? 'Export dataset bundle (volumes + this view) — one file you can share'
                   : 'Select a volume to export a bundle'
               }
               type="button"
@@ -1517,7 +2226,7 @@ export function App(): JSX.Element {
                   selectedRoles={selectedRoles}
                   onClearFilters={clearFilters}
                   onQueryChange={setQuery}
-                  onSelect={(item) => setSelectedId(item.id)}
+                  onSelect={(item) => showVolume(item.id)}
                   onToggleDtype={toggleDtype}
                   onToggleFormat={toggleFormat}
                   onToggleImageType={toggleImageType}
@@ -1533,19 +2242,53 @@ export function App(): JSX.Element {
             >
               <section
                 className={`nv-dataset-pane ${mouseContext === 'desktop' ? 'is-context-active' : ''}`}
-                aria-label="OSD dataset viewer"
+                aria-label="Dataset view"
                 onPointerEnter={() => setMouseContext('desktop')}
                 onPointerLeave={() => setMouseContext(null)}
               >
-                <DatasetDesktop
-                  datasetName={datasetName}
-                  items={filteredItems}
-                  manifest={manifest}
-                  selected={selected}
-                  zoom={desktopZoom}
-                  onZoom={setDesktopZoom}
-                  onSelect={(item) => setSelectedId(item.id)}
-                />
+                {hasPipelines ? (
+                  <LeftPaneTabs active={leftPane} onChange={showLeftPane} />
+                ) : null}
+                <div className="nv-pane-body" hidden={leftPane !== 'dataset'}>
+                  <DatasetDesktop
+                    datasetName={datasetName}
+                    items={filteredItems}
+                    manifest={manifest}
+                    selected={selected}
+                    zoom={desktopZoom}
+                    onZoom={setDesktopZoom}
+                    onSelect={(item) => showVolume(item.id)}
+                  />
+                </div>
+                {pipelinesMounted ? (
+                  <Suspense fallback={null}>
+                    <PipelineViewHost
+                      agentRef={pipelineAgentRef}
+                      hidden={leftPane !== 'pipelines'}
+                      ctx={{
+                        datasetRoot,
+                        bidsName,
+                        filtered: filteredItems,
+                        selected,
+                      }}
+                      preferSelected={preferSelected}
+                      onRunOutputs={handleRunOutputs}
+                      onShowTarget={async ({ itemId }) => {
+                        // Drop earlier rows' outputs so only the shown row's are overlaid.
+                        setOverlayIds((current) => {
+                          const next = new Set(current)
+                          for (const id of Object.keys(neuroflowRuns))
+                            next.delete(id)
+                          return next.size === current.size ? current : next
+                        })
+                        // An already-shown volume never reloads, so don't wait for one.
+                        if (!itemId || itemId === shownBase?.id) return
+                        await untilNextViewer(async () => showVolume(itemId))
+                      }}
+                      onReveal={revealPath}
+                    />
+                  </Suspense>
+                ) : null}
               </section>
 
               {/* biome-ignore lint/a11y/useSemanticElements: a focusable, draggable splitter is a separator widget; <hr> cannot take focus or aria-valuenow. */}
@@ -1558,6 +2301,19 @@ export function App(): JSX.Element {
                 onPointerDown={(event) =>
                   beginSplitDrag(event, splitRef, setSplitPercent)
                 }
+                onKeyDown={(event) => {
+                  const step =
+                    event.key === 'ArrowLeft'
+                      ? -2
+                      : event.key === 'ArrowRight'
+                        ? 2
+                        : 0
+                  if (!step) return
+                  event.preventDefault()
+                  setSplitPercent((value) =>
+                    clamp(value + step, MIN_SPLIT, MAX_SPLIT),
+                  )
+                }}
                 role="separator"
                 title="Resize panes"
                 type="button"
@@ -1631,8 +2387,15 @@ export function App(): JSX.Element {
                   onResolvedWindows={handleResolvedWindows}
                   onViewModeChange={setViewMode}
                   onRenderStatus={setRenderStatus}
+                  onViewer={handleViewer}
+                  onSendDrawing={
+                    drawingBase
+                      ? (drawing) => void handleSendDrawing(drawing)
+                      : undefined
+                  }
                   renderWheelMode={renderWheelMode}
                   shading={shading}
+                  onShadingChange={setShading}
                   viewMode={viewMode}
                 />
               </section>
@@ -1679,7 +2442,7 @@ export function App(): JSX.Element {
               {isExpress ? null : (
                 <fieldset
                   className="nv-inspector-tools"
-                  aria-label="Desktop controls"
+                  aria-label="Dataset grid zoom"
                 >
                   <DesktopZoomControls
                     zoom={desktopZoom}
@@ -1691,13 +2454,10 @@ export function App(): JSX.Element {
                       setDesktopZoom((zoom) => zoomBy(zoom, 0.8))
                     }
                   />
-                  <span className="nv-zoom-readout">
-                    {Math.round(desktopZoom * 100)}%
-                  </span>
                 </fieldset>
               )}
 
-              {isExpress ? null : (
+              {isExpress || !isNiimathAvailable ? null : (
                 <SidePanelTabs
                   activeTab={sidePanelTab}
                   onChange={setSidePanelTab}
@@ -1705,7 +2465,9 @@ export function App(): JSX.Element {
               )}
 
               <div className="nv-sidepanel-content">
-                {isExpress || sidePanelTab === 'inspect' ? (
+                {isExpress ||
+                !isNiimathAvailable ||
+                sidePanelTab === 'inspect' ? (
                   <>
                     <LayerPanel
                       atlasId={atlasId}
@@ -1715,7 +2477,7 @@ export function App(): JSX.Element {
                       layerExtents={layerExtents}
                       resolvedWindows={resolvedWindows}
                       overlayIds={overlayIds}
-                      selected={selected}
+                      selected={shownBase}
                       onAtlasChange={changeAtlasLayer}
                       onLayerColormapChange={changeLayerColormap}
                       onLayerHiddenChange={setLayerHidden}
@@ -1724,6 +2486,8 @@ export function App(): JSX.Element {
                       onLayerWindowReset={resetLayerWindow}
                       onLoadOverlay={loadOverlayVolume}
                       onOverlayToggle={toggleOverlayLayer}
+                      runs={neuroflowRuns}
+                      onRevealRun={revealPath}
                     />
 
                     <MeshPanel
@@ -1769,6 +2533,9 @@ export function App(): JSX.Element {
                                 selected,
                                 clipPlanes,
                                 backend,
+                                selected
+                                  ? composeCurrentBundle(selected).view
+                                  : null,
                               )
                               setStatus(
                                 `Clip-plane correction saved for ${selected?.label ?? 'volume'}.`,
@@ -1822,12 +2589,27 @@ export function App(): JSX.Element {
                     )}
                   </>
                 ) : (
-                  <NiimathOperationsPanel
-                    item={selected}
-                    metadata={metadata}
-                    onDerivedVolume={refreshDesktopManifest}
-                    onStatus={setStatus}
-                  />
+                  <>
+                    <NiimathOperationsPanel
+                      item={selected}
+                      metadata={metadata}
+                      onDerivedVolume={refreshDesktopManifest}
+                      onStatus={setStatus}
+                    />
+                    {hasPipelines ? (
+                      <button
+                        className="nv-layer-load-button"
+                        onClick={() => {
+                          showDatasetPane()
+                          showLeftPane('pipelines')
+                          setPreferSelected((n) => n + 1)
+                        }}
+                        type="button"
+                      >
+                        Run pipeline on this volume…
+                      </button>
+                    ) : null}
+                  </>
                 )}
               </div>
             </aside>
@@ -1849,6 +2631,36 @@ export function App(): JSX.Element {
             <GripHorizontal size={16} />
           </button>
           <TerminalPanel datasetRoot={datasetRoot} onStatus={setStatus} />
+        </section>
+      ) : null}
+
+      {sendOffer.offer ? (
+        <section
+          aria-label="Incoming file"
+          className="nv-send-offer"
+          role="alertdialog"
+        >
+          <p>
+            <strong>{sendOffer.offer.from}</strong> wants to send{' '}
+            <strong>{sendOffer.offer.name}</strong> (
+            {formatBundleBytes(sendOffer.offer.size)}).
+          </p>
+          <div className="nv-send-offer-actions">
+            <button
+              className="nv-tool-button"
+              onClick={() => sendOffer.answer(false)}
+              type="button"
+            >
+              Decline
+            </button>
+            <button
+              className="nv-tool-button is-primary"
+              onClick={() => sendOffer.answer(true)}
+              type="button"
+            >
+              Accept
+            </button>
+          </div>
         </section>
       ) : null}
 
@@ -1974,6 +2786,43 @@ function BlockControls({
   )
 }
 
+function LeftPaneTabs({
+  active,
+  onChange,
+}: {
+  active: 'dataset' | 'pipelines'
+  onChange: (pane: 'dataset' | 'pipelines') => void
+}): JSX.Element {
+  return (
+    <div
+      className="nv-sidepanel-tabs nv-pane-tabs"
+      role="tablist"
+      aria-label="Left pane"
+    >
+      <button
+        aria-selected={active === 'dataset'}
+        className={active === 'dataset' ? 'is-active' : ''}
+        onClick={() => onChange('dataset')}
+        role="tab"
+        type="button"
+      >
+        <Database size={14} />
+        Dataset
+      </button>
+      <button
+        aria-selected={active === 'pipelines'}
+        className={active === 'pipelines' ? 'is-active' : ''}
+        onClick={() => onChange('pipelines')}
+        role="tab"
+        type="button"
+      >
+        <Workflow size={14} />
+        Pipelines
+      </button>
+    </div>
+  )
+}
+
 function SidePanelTabs({
   activeTab,
   onChange,
@@ -2046,10 +2895,11 @@ function DesktopZoomControls({
         className="nv-pane-icon-button"
         disabled={zoom === 1}
         onClick={onFit}
-        title="Reset zoom"
+        title="Fit to pane"
+        aria-label="Fit to pane"
         type="button"
       >
-        <Maximize2 size={15} />
+        <Scan size={15} />
       </button>
     </>
   )
@@ -2072,6 +2922,8 @@ function LayerPanel({
   onLayerWindowReset,
   onLoadOverlay,
   onOverlayToggle,
+  runs,
+  onRevealRun,
 }: {
   atlasId: string | null
   isOpeningOverlay: boolean
@@ -2089,10 +2941,13 @@ function LayerPanel({
   onLayerWindowReset: (itemId: string) => void
   onLoadOverlay: () => void
   onOverlayToggle: (itemId: string) => void
+  runs: Record<string, RunTag>
+  onRevealRun: (sessionDir: string) => void
 }): JSX.Element {
   const [expandedId, setExpandedId] = useState<string | null | undefined>(
     undefined,
   )
+  const [collapsedRuns, setCollapsedRuns] = useState<Set<string>>(new Set())
   const atlasCandidates = useMemo(
     () => items.slice().sort(compareAtlasCandidates),
     [items],
@@ -2151,6 +3006,143 @@ function LayerPanel({
     .map((row) => layerWarning(selected, row.item, layerExtents))
     .filter((warning): warning is string => warning !== null)
 
+  function renderLayer(
+    item: DesktopItem,
+    role: 'base' | 'overlay' | 'atlas',
+  ): JSX.Element | null {
+    if (!selected) return null
+    const settings = layerSettings[item.id]
+    const isBaseAtlas = role === 'base' && atlasId === selected.id
+    const overlayIndex =
+      role === 'overlay' ? overlayItems.findIndex((o) => o.id === item.id) : 0
+    const rawColormap = layerColormapForItem(
+      item,
+      layerSettings,
+      role === 'overlay'
+        ? overlayColormapForIndex(overlayIndex)
+        : isBaseAtlas
+          ? DEFAULT_ATLAS_COLORMAP
+          : DEFAULT_BASE_COLORMAP,
+    )
+    // Keep the base's select in sync with what actually renders (grayscale).
+    const colormapValue =
+      role === 'base' && !isBaseAtlas ? baseColormap(rawColormap) : rawColormap
+    return (
+      <LayerRow
+        key={item.id}
+        kind={role}
+        label={item.label}
+        meta={layerOptionMeta(item)}
+        warning={layerWarning(selected, item, layerExtents)}
+        hidden={!!settings?.hidden}
+        expanded={expanded === item.id}
+        removable={role !== 'base'}
+        onToggleExpand={() =>
+          setExpandedId(expanded === item.id ? null : item.id)
+        }
+        onHiddenChange={(hidden) => onLayerHiddenChange(item.id, hidden)}
+        onRemove={
+          role === 'atlas'
+            ? () => onAtlasChange('')
+            : () => onOverlayToggle(item.id)
+        }
+      >
+        {role === 'atlas' ? (
+          <Slider
+            label="Opacity"
+            min={0}
+            max={1}
+            step={0.05}
+            value={opacityForItem(
+              item.id,
+              layerSettings,
+              DEFAULT_ATLAS_OPACITY,
+            )}
+            onChange={(value) => onLayerOpacityChange(item.id, value)}
+          />
+        ) : (
+          <>
+            <LayerColormapSelect
+              ariaLabel={`Colormap for ${item.label}`}
+              itemId={item.id}
+              value={colormapValue}
+              options={
+                role === 'base' && !isBaseAtlas
+                  ? BASE_COLORMAP_OPTIONS
+                  : COLORMAP_OPTIONS
+              }
+              onChange={onLayerColormapChange}
+            />
+            {role === 'overlay' ? (
+              <Slider
+                label="Opacity"
+                min={0}
+                max={1}
+                step={0.05}
+                value={opacityForItem(
+                  item.id,
+                  layerSettings,
+                  DEFAULT_OVERLAY_OPACITY,
+                )}
+                onChange={(value) => onLayerOpacityChange(item.id, value)}
+              />
+            ) : null}
+            {!isBaseAtlas ? (
+              <WindowControl
+                itemId={item.id}
+                label={item.label}
+                window={settings?.window}
+                resolved={resolvedWindows[item.id]}
+                variant={role === 'overlay' ? 'threshold' : 'window'}
+                onChange={onLayerWindowChange}
+                onReset={onLayerWindowReset}
+              />
+            ) : null}
+          </>
+        )}
+      </LayerRow>
+    )
+  }
+
+  // Only the subject check is available before the volume loads (the
+  // world-space check needs post-load extents), so a different-subject
+  // candidate is flagged right in the pool. In a large BIDS dataset those are
+  // most of the pool, so they sit behind a disclosure under the same-subject ones.
+  const sameSubjectCandidates: DesktopItem[] = []
+  const otherSubjectCandidates: DesktopItem[] = []
+  for (const item of addCandidates) {
+    ;(layerSubjectWarning(selected, item)
+      ? otherSubjectCandidates
+      : sameSubjectCandidates
+    ).push(item)
+  }
+  const renderAddOption = (item: DesktopItem): JSX.Element => {
+    const warn = layerSubjectWarning(selected, item)
+    return (
+      <button
+        className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
+        disabled={!selected}
+        key={item.id}
+        onClick={() => onOverlayToggle(item.id)}
+        title={warn ? `${item.label} — ${warn}` : item.label}
+        type="button"
+      >
+        <Plus size={13} />
+        <span>
+          <strong>{item.label}</strong>
+          <small>{layerOptionMeta(item)}</small>
+        </span>
+        {warn ? (
+          <AlertTriangle
+            aria-label="Different subject than base"
+            className="nv-layer-add-warn"
+            size={13}
+          />
+        ) : null}
+      </button>
+    )
+  }
+
   return (
     <section className="nv-control-section nv-layer-panel">
       <div className="nv-panel-heading">
@@ -2175,104 +3167,50 @@ function LayerPanel({
       {selected ? (
         <div className="nv-layer-rows">
           {rows.map(({ item, role }) => {
-            const settings = layerSettings[item.id]
-            const isBaseAtlas = role === 'base' && atlasId === selected.id
-            const overlayIndex =
-              role === 'overlay'
-                ? overlayItems.findIndex((o) => o.id === item.id)
-                : 0
-            const rawColormap = layerColormapForItem(
-              item,
-              layerSettings,
-              role === 'overlay'
-                ? overlayColormapForIndex(overlayIndex)
-                : isBaseAtlas
-                  ? DEFAULT_ATLAS_COLORMAP
-                  : DEFAULT_BASE_COLORMAP,
-            )
-            // Keep the base's select in sync with what actually renders (grayscale).
-            const colormapValue =
-              role === 'base' && !isBaseAtlas
-                ? baseColormap(rawColormap)
-                : rawColormap
-            return (
-              <LayerRow
-                key={item.id}
-                kind={role}
-                label={item.label}
-                meta={layerOptionMeta(item)}
-                warning={layerWarning(selected, item, layerExtents)}
-                hidden={!!settings?.hidden}
-                expanded={expanded === item.id}
-                removable={role !== 'base'}
-                onToggleExpand={() =>
-                  setExpandedId(expanded === item.id ? null : item.id)
-                }
-                onHiddenChange={(hidden) =>
-                  onLayerHiddenChange(item.id, hidden)
-                }
-                onRemove={
-                  role === 'atlas'
-                    ? () => onAtlasChange('')
-                    : () => onOverlayToggle(item.id)
-                }
-              >
-                {role === 'atlas' ? (
-                  <Slider
-                    label="Opacity"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={opacityForItem(
-                      item.id,
-                      layerSettings,
-                      DEFAULT_ATLAS_OPACITY,
-                    )}
-                    onChange={(value) => onLayerOpacityChange(item.id, value)}
-                  />
-                ) : (
-                  <>
-                    <LayerColormapSelect
-                      ariaLabel={`Colormap for ${item.label}`}
-                      itemId={item.id}
-                      value={colormapValue}
-                      options={
-                        role === 'base' && !isBaseAtlas
-                          ? BASE_COLORMAP_OPTIONS
-                          : COLORMAP_OPTIONS
-                      }
-                      onChange={onLayerColormapChange}
-                    />
-                    {role === 'overlay' ? (
-                      <Slider
-                        label="Opacity"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={opacityForItem(
-                          item.id,
-                          layerSettings,
-                          DEFAULT_OVERLAY_OPACITY,
-                        )}
-                        onChange={(value) =>
-                          onLayerOpacityChange(item.id, value)
+            if (role !== 'overlay') return renderLayer(item, role)
+            // Overlays render once, as run groups, at the first overlay row.
+            if (item.id !== overlayItems[0].id) return null
+            return groupOverlaysByRun(overlayItems, runs).map(
+              ({ tag, items: group }) => {
+                if (!tag) return group.map((o) => renderLayer(o, 'overlay'))
+                const collapsed = collapsedRuns.has(tag.runId)
+                return (
+                  <Fragment key={`run-${tag.runId}-${group[0].id}`}>
+                    <div className="nv-layer-run">
+                      <button
+                        aria-expanded={!collapsed}
+                        className="nv-layer-run-toggle"
+                        onClick={() =>
+                          setCollapsedRuns((current) => {
+                            const next = new Set(current)
+                            if (!next.delete(tag.runId)) next.add(tag.runId)
+                            return next
+                          })
                         }
-                      />
-                    ) : null}
-                    {!isBaseAtlas ? (
-                      <WindowControl
-                        itemId={item.id}
-                        label={item.label}
-                        window={settings?.window}
-                        resolved={resolvedWindows[item.id]}
-                        variant={role === 'overlay' ? 'threshold' : 'window'}
-                        onChange={onLayerWindowChange}
-                        onReset={onLayerWindowReset}
-                      />
-                    ) : null}
-                  </>
-                )}
-              </LayerRow>
+                        type="button"
+                      >
+                        <ChevronDown size={14} />
+                        Run: {tag.title} ·{' '}
+                        {new Date(tag.startedAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </button>
+                      {tag.sessionDir ? (
+                        <button
+                          onClick={() => onRevealRun(tag.sessionDir)}
+                          type="button"
+                        >
+                          Reveal run
+                        </button>
+                      ) : null}
+                    </div>
+                    {collapsed
+                      ? null
+                      : group.map((o) => renderLayer(o, 'overlay'))}
+                  </Fragment>
+                )
+              },
             )
           })}
         </div>
@@ -2311,36 +3249,15 @@ function LayerPanel({
         <em>{addCandidates.length}</em>
       </div>
       <div className="nv-layer-list">
-        {addCandidates.map((item) => {
-          // Only the subject check is available before the volume loads (the
-          // world-space check needs post-load extents), so surface a
-          // different-subject candidate right in the pool — the mismatch is
-          // cheapest to catch before it's blended onto the base.
-          const warn = layerSubjectWarning(selected, item)
-          return (
-            <button
-              className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
-              disabled={!selected}
-              key={item.id}
-              onClick={() => onOverlayToggle(item.id)}
-              title={warn ? `${item.label} — ${warn}` : item.label}
-              type="button"
-            >
-              <Plus size={13} />
-              <span>
-                <strong>{item.label}</strong>
-                <small>{layerOptionMeta(item)}</small>
-              </span>
-              {warn ? (
-                <AlertTriangle
-                  aria-label="Different subject than base"
-                  className="nv-layer-add-warn"
-                  size={13}
-                />
-              ) : null}
-            </button>
-          )
-        })}
+        {sameSubjectCandidates.map(renderAddOption)}
+        {otherSubjectCandidates.length > 0 ? (
+          <details className="nv-layer-add-other">
+            <summary>
+              Other subjects <em>{otherSubjectCandidates.length}</em>
+            </summary>
+            {otherSubjectCandidates.map(renderAddOption)}
+          </details>
+        ) : null}
         {addCandidates.length === 0 ? (
           <div className="nv-filter-empty">No overlay candidates.</div>
         ) : null}
@@ -3713,6 +4630,7 @@ async function savePatch(
   item: DesktopItem | null,
   clipPlanes: ClipPlane[],
   backend: Backend,
+  view: BundleViewState | null,
 ): Promise<void> {
   if (!serverUrl || !item) {
     throw new Error('Select a volume before saving a clip-plane correction.')
@@ -3731,6 +4649,8 @@ async function savePatch(
       backend,
       clipPlanes: clipPlanes.filter((plane) => plane.enabled),
       savedAt: new Date().toISOString(),
+      // Under NeuroFlow the server writes review.state.json from it.
+      view,
     }),
   })
   if (!response.ok) {

@@ -48,6 +48,28 @@ function isExtractedBundleDir(path: string, cacheRoot: string): boolean {
   return segments.length === 2 && segments[1] === 'data'
 }
 
+/**
+ * iOS moves the app to a new container, a new UUID in every path, on each
+ * update or reinstall. The files move with it, so a stored path only needs the
+ * current container's prefix, which the server's `cacheRoot` (inside it) gives.
+ */
+const IOS_CONTAINER =
+  /^(?:\/private)?\/var\/mobile\/Containers\/Data\/Application\/[0-9A-Fa-f-]{36}\//
+
+/** `path` in the current iOS container; unchanged anywhere else. */
+export function rebaseContainerPath(path: string, cacheRoot: string): string {
+  const current = IOS_CONTAINER.exec(cacheRoot)?.[0]
+  const stored = IOS_CONTAINER.exec(path)?.[0]
+  if (!current || !stored) return path
+  return current + path.slice(stored.length)
+}
+
+/** Under the iOS container's tmp, which iOS purges (the old Inbox entries). */
+export function isInContainerTemp(path: string, cacheRoot: string): boolean {
+  const current = IOS_CONTAINER.exec(cacheRoot)?.[0]
+  return current !== undefined && path.startsWith(`${current}tmp/`)
+}
+
 function persistRecentDatasets(entries: string[]): string[] {
   try {
     window.localStorage.setItem(RECENT_DATASETS_KEY, JSON.stringify(entries))
@@ -79,6 +101,8 @@ export interface RecentDatasets {
   removeRecent: (path: string) => void
   /** One-time cleanup of pre-fix entries pointing into `<cacheRoot>/imports/`. */
   pruneExtractedBundleDirs: (cacheRoot: string) => void
+  /** Move iOS entries into the current container and drop ones in its tmp. */
+  rebaseContainerPaths: (cacheRoot: string) => void
   /** Reopen the most recent dataset at launch instead of showing Welcome. */
   reopenLast: boolean
   setReopenLast: (reopen: boolean) => void
@@ -125,11 +149,27 @@ export function useRecentDatasets(): RecentDatasets {
     })
   }, [])
 
+  // Same contract as pruneExtractedBundleDirs.
+  const rebaseContainerPaths = useCallback((cacheRoot: string): void => {
+    setRecentDatasets((previous) => {
+      const kept = [
+        ...new Set(
+          previous.map((entry) => rebaseContainerPath(entry, cacheRoot)),
+        ),
+      ].filter((entry) => !isInContainerTemp(entry, cacheRoot))
+      const unchanged =
+        kept.length === previous.length &&
+        kept.every((entry, index) => entry === previous[index])
+      return unchanged ? previous : persistRecentDatasets(kept)
+    })
+  }, [])
+
   return {
     recentDatasets,
     promoteRecent,
     removeRecent,
     pruneExtractedBundleDirs,
+    rebaseContainerPaths,
     reopenLast,
     setReopenLast,
   }

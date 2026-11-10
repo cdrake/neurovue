@@ -21,6 +21,17 @@ export interface VolumeFilters {
   toggleDtype: (value: string) => void
   /** Clear the query and all facet selections (leaves the selection). */
   clearFilters: () => void
+  /** Replace the query and facet selections; an absent field matches all. */
+  setFilters: (filters: VolumeFilterValues) => void
+}
+
+/** A whole filter, as an agent sets it: facet values are their labels. */
+export interface VolumeFilterValues {
+  query?: string
+  roles?: string[]
+  imageTypes?: string[]
+  formats?: string[]
+  dtypes?: string[]
 }
 
 function toggleValue(set: Set<string>, value: string): Set<string> {
@@ -50,37 +61,24 @@ export function useVolumeFilters(items: DesktopItem[]): VolumeFilters {
     () => new Set(),
   )
 
-  const filteredItems = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    return items.filter((item) => {
-      if (selectedRoles.size > 0 && !selectedRoles.has(volumeRoleLabel(item)))
-        return false
-      if (
-        selectedImageTypes.size > 0 &&
-        !selectedImageTypes.has(volumeImageTypeLabel(item))
-      )
-        return false
-      if (
-        selectedFormats.size > 0 &&
-        !selectedFormats.has(volumeFacetValue(item.format))
-      )
-        return false
-      if (
-        selectedDtypes.size > 0 &&
-        !selectedDtypes.has(volumeFacetValue(item.dtype))
-      )
-        return false
-      if (!normalized) return true
-      return volumeSearchText(item).includes(normalized)
-    })
-  }, [
-    items,
-    query,
-    selectedDtypes,
-    selectedFormats,
-    selectedImageTypes,
-    selectedRoles,
-  ])
+  const filteredItems = useMemo(
+    () =>
+      filterVolumes(items, {
+        query,
+        roles: [...selectedRoles],
+        imageTypes: [...selectedImageTypes],
+        formats: [...selectedFormats],
+        dtypes: [...selectedDtypes],
+      }),
+    [
+      items,
+      query,
+      selectedDtypes,
+      selectedFormats,
+      selectedImageTypes,
+      selectedRoles,
+    ],
+  )
 
   function clearFilters(): void {
     setQuery('')
@@ -88,6 +86,14 @@ export function useVolumeFilters(items: DesktopItem[]): VolumeFilters {
     setSelectedImageTypes(new Set())
     setSelectedFormats(new Set())
     setSelectedDtypes(new Set())
+  }
+
+  function setFilters(filters: VolumeFilterValues): void {
+    setQuery(filters.query ?? '')
+    setSelectedRoles(new Set(filters.roles))
+    setSelectedImageTypes(new Set(filters.imageTypes))
+    setSelectedFormats(new Set(filters.formats))
+    setSelectedDtypes(new Set(filters.dtypes))
   }
 
   return {
@@ -107,5 +113,25 @@ export function useVolumeFilters(items: DesktopItem[]): VolumeFilters {
     toggleDtype: (value) =>
       setSelectedDtypes((current) => toggleValue(current, value)),
     clearFilters,
+    setFilters,
   }
+}
+
+/** The volumes a filter keeps: each facet given must match, and the query
+ *  must appear in the volume's search text. */
+export function filterVolumes(
+  items: DesktopItem[],
+  filters: VolumeFilterValues,
+): DesktopItem[] {
+  const normalized = (filters.query ?? '').trim().toLowerCase()
+  const keeps = (values: string[] | undefined, value: string) =>
+    !values?.length || values.includes(value)
+  return items.filter(
+    (item) =>
+      keeps(filters.roles, volumeRoleLabel(item)) &&
+      keeps(filters.imageTypes, volumeImageTypeLabel(item)) &&
+      keeps(filters.formats, volumeFacetValue(item.format)) &&
+      keeps(filters.dtypes, volumeFacetValue(item.dtype)) &&
+      (!normalized || volumeSearchText(item).includes(normalized)),
+  )
 }

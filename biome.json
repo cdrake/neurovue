@@ -7,7 +7,12 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!src-tauri/gen", "!src-tauri/target"]
+    "includes": [
+      "**",
+      "!src-tauri/gen",
+      "!src-tauri/target",
+      "!src-tauri/plugins/*/permissions/schemas"
+    ]
   },
   "formatter": {
     "enabled": true,

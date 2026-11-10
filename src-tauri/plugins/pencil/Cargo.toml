@@ -1,0 +1,13 @@
+[package]
+name = "tauri-plugin-pencil"
+version = "0.1.0"
+description = "Apple Pencil double-tap, squeeze and haptics for NeuroVue on iPad"
+edition = "2021"
+publish = false
+links = "tauri-plugin-pencil"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

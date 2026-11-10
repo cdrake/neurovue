@@ -1,4 +1,5 @@
-import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useEffect, useRef } from 'react'
 
 /** Actions the desktop menus can send (see `neurovue_menu` in lib.rs). */
@@ -11,6 +12,8 @@ export type NativeMenuAction =
   | 'open-sample'
   | 'export-bundle'
   | 'share'
+  | 'pipelines'
+  | 'clear-all'
 
 export type NativeMenuHandlers = Record<
   NativeMenuAction,
@@ -32,10 +35,15 @@ export function useNativeMenu(handlers: NativeMenuHandlers): void {
     let cancelled = false
     let unlisten: (() => void) | null = null
 
-    void listen<string>('neurovue-menu', (event) => {
-      const handler = handlersRef.current[event.payload as NativeMenuAction]
-      if (handler) void handler()
-    })
+    // This window's own: the host sends a menu click to the window in front,
+    // and the global `listen` would hear clicks meant for the others too.
+    void Promise.resolve()
+      .then(() =>
+        getCurrentWebviewWindow().listen<string>('neurovue-menu', (event) => {
+          const handler = handlersRef.current[event.payload as NativeMenuAction]
+          if (handler) void handler()
+        }),
+      )
       .then((nextUnlisten) => {
         if (cancelled) nextUnlisten()
         else unlisten = nextUnlisten
@@ -49,4 +57,35 @@ export function useNativeMenu(handlers: NativeMenuHandlers): void {
       unlisten?.()
     }
   }, [])
+}
+
+/**
+ * Keeps the View menu's switch named for the view it leads to (Dataset View
+ * in express, Express View otherwise). The menu bar is shared by every
+ * window, so each one renames it when it comes to the front.
+ */
+export function useExpressMenuLabel(express: boolean): void {
+  useEffect(() => {
+    // No such command on mobile or in a plain browser; nothing to rename.
+    const sync = () =>
+      invoke('set_express_menu_label', { express }).catch(() => {})
+    void sync()
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+    void Promise.resolve()
+      .then(() =>
+        getCurrentWebviewWindow().onFocusChanged(({ payload: focused }) => {
+          if (focused) void sync()
+        }),
+      )
+      .then((next) => {
+        if (cancelled) next()
+        else unlisten = next
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [express])
 }

@@ -1,6 +1,7 @@
 import type { DesktopItem } from './desktop'
 
 const BIDS_IMAGE_TYPE_LABELS: Record<string, string> = {
+  angio: 'Angio',
   asl: 'ASL',
   bold: 'BOLD',
   dwi: 'DWI',

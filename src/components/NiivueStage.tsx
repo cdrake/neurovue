@@ -4,7 +4,6 @@ import type {
   NiiVueLocation,
   UIKitOverlayRenderer,
 } from '@niivue/niivue'
-import { Eraser, Ruler } from 'lucide-react'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
@@ -24,7 +23,20 @@ import type {
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
-import type { RenderShading } from '../domain/shading'
+import { listenToPencil, pencilFeedback } from '../domain/pencil'
+import { attachPointLabels } from '../domain/pointLabels'
+import {
+  matchingShadingPreset,
+  type RenderShading,
+  SHADING_PRESETS,
+} from '../domain/shading'
+import {
+  StageControls,
+  type StageControlsActions,
+  type StageControlsState,
+  TITLE_CLEARANCE,
+  TOP_RIGHT_CLEARANCE,
+} from '../domain/stageControls'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
 // The window NiiVue actually applied for a layer, plus the volume's robust
@@ -48,8 +60,10 @@ interface NiivueStageProps {
   // Block (volume-chunk explode) settings, applied to every loaded layer: tile
   // each volume into a grid of bricks and separate them in the 3D render.
   blocks: BlockSettings
-  // 3D render look (lighting, gradient opacity, silhouette, MIP).
+  // 3D render look (lighting, gradient opacity, silhouette, MIP, cinematic).
   shading: RenderShading
+  // Picks a shading preset from the on-canvas Look control.
+  onShadingChange: (shading: RenderShading) => void
   // Surface meshes shown with the volumes, or on their own when no volume is
   // open (the Surfice case).
   meshes: MeshLayer[]
@@ -75,6 +89,11 @@ interface NiivueStageProps {
   // the host can keep it as a diagnostic tooltip. Only a load failure is shown
   // on the stage itself.
   onRenderStatus?: (status: string) => void
+  /** The NiiVue instance once its volumes have loaded, and null when it goes. */
+  onViewer?: (nv: unknown) => void
+  /** Offers to send the drawing (a NIfTI label map over the base volume) on;
+   *  without it, the draw tools have no Send button. */
+  onSendDrawing?: (drawing: Uint8Array) => void
 }
 
 export interface NiivueRenderLayer {
@@ -112,6 +131,8 @@ type ChunkVolumeGridFn = (
 
 interface NiiVueLike {
   canvas?: HTMLCanvasElement
+  // Client (CSS) coordinates to canvas pixels, or null outside the canvas.
+  clientToCanvas?(clientX: number, clientY: number): [number, number] | null
   // Loaded volumes, in the same order as the render layers. robustMin/robustMax
   // are NiiVue's auto window (2nd/98th percentile); globalMax is the true peak;
   // extentsMin/Max are the volume's world-space (mm) bounding box, used to flag
@@ -135,9 +156,13 @@ interface NiiVueLike {
   // chunkPlan change). Chunked/exploded rendering needs this to take effect.
   updateGLVolume?(): Promise<void>
   activeClipPlaneIndex?: number
+  // Canvas kept clear of tiles and legend, [left, top, right, bottom] CSS px.
+  layoutInset?: [number, number, number, number]
   attachToCanvas(canvas: HTMLCanvasElement): Promise<unknown>
   loadVolumes(volumes: NiiVueVolumeOptions[]): Promise<unknown>
-  setColormapLabel?(volumeIndex: number, cmap: ColorMap | null): Promise<void>
+  // Registers a colormap; one with a `labels` array is a label table. Returns
+  // the canonical name to pass as a volume's colormap.
+  addColormap?(name: string, cmap: ColorMap): string
   setVolume?(
     volumeIndex: number,
     options: {
@@ -154,6 +179,8 @@ interface NiiVueLike {
   // Move the crosshair to an absolute RAS+ world position (mm). Fires
   // locationChange, so the readout updates like a click.
   setCrosshairPos?(pos: [number, number, number]): void
+  // Re-emits locationChange for the current crosshair.
+  createOnLocationChange?(): void
   // Slice layout: SLICE_TYPE.{AXIAL:0, CORONAL:1, SAGITTAL:2, MULTIPLANAR:3, RENDER:4}.
   sliceType?: number
   isOrientationTextVisible?: boolean
@@ -162,10 +189,30 @@ interface NiiVueLike {
     listener: (event: CustomEvent<NiiVueLocation>) => void,
     options?: boolean | AddEventListenerOptions,
   ): void
+  addEventListener?(
+    type: 'sliceTypeChange',
+    listener: (event: CustomEvent<{ sliceType: number }>) => void,
+  ): void
+  addEventListener?(
+    type: 'change',
+    listener: (
+      event: CustomEvent<{ property: string; value: unknown }>,
+    ) => void,
+  ): void
   removeEventListener?(
     type: 'locationChange',
     listener: (event: CustomEvent<NiiVueLocation>) => void,
     options?: boolean | EventListenerOptions,
+  ): void
+  removeEventListener?(
+    type: 'sliceTypeChange',
+    listener: (event: CustomEvent<{ sliceType: number }>) => void,
+  ): void
+  removeEventListener?(
+    type: 'change',
+    listener: (
+      event: CustomEvent<{ property: string; value: unknown }>,
+    ) => void,
   ): void
   // Vector annotations (the measure tool). Shapes are drawn by our uikit
   // overlay from annotationScreenShapes, with isAnnotationDrawn off.
@@ -176,12 +223,23 @@ interface NiiVueLike {
   clearAnnotations?(): void
   // Returns the unregister function.
   registerOverlayRenderer?(renderer: UIKitOverlayRenderer): () => void
+  // Raster drawing (the draw tool). Pen value 0 erases.
+  drawIsEnabled?: boolean
+  drawPenValue?: number
+  drawPenSize?: number
+  drawPenShape?: number
+  readonly drawingVolume?: unknown
+  createEmptyDrawing?(): void
+  closeDrawing?(): void
+  drawUndo?(): void
+  // An empty filename returns the NIfTI bytes instead of downloading them.
+  saveDrawing?(filename: string): Promise<boolean | Uint8Array>
   azimuth?: number
   elevation?: number
   volumeIllumination?: number
   volumeGradientOpacity?: number
   volumeSilhouette?: number
-  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection.
+  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection, 3 cinematic.
   volumeRenderMode?: number
   model?: {
     scene?: {
@@ -212,6 +270,8 @@ interface NiiVueVolumeOptions {
   colormapNegative?: string
   opacity?: number
   isColorbarVisible?: boolean
+  // Whether a label colormap's names join NiiVue's legend.
+  isLegendVisible?: boolean
   calMin?: number
   calMax?: number
 }
@@ -255,7 +315,19 @@ type VoxelStep = readonly [di: number, dj: number, dk: number]
 const CLIP_DEPTH_WHEEL_STEP = 0.0015
 const NIVUE_SLICE_TYPE_RENDER = 4
 const NIVUE_SHOW_RENDER_ALWAYS = 1
-const NIVUE_RENDER_MODE_MAXIMUM = 1
+// NiiVue VOLUME_RENDER_MODE for each shading render mode.
+const NIVUE_RENDER_MODES: Record<RenderShading['renderMode'], number> = {
+  composite: 0,
+  mip: 1,
+  cinematic: 3,
+}
+// NiiVue `change` properties that make up a RenderShading.
+const SHADING_PROPERTIES = new Set([
+  'volumeIllumination',
+  'volumeGradientOpacity',
+  'volumeSilhouette',
+  'volumeRenderMode',
+])
 
 // NiiVue SLICE_TYPE values for each selectable view mode.
 export type ViewModeId =
@@ -281,6 +353,53 @@ const VIEW_MODES: Array<{
     sliceType: NIVUE_SLICE_TYPE_RENDER,
   },
 ]
+// NiiVue's drawing palette (its `_draw` colormap): a pen's label value is
+// its color, on the iPad and on the Mac the drawing goes back to.
+const DRAW_COLORS = [
+  { value: 1, name: 'Red', css: '#ff0000' },
+  { value: 2, name: 'Green', css: '#00ff00' },
+  { value: 3, name: 'Blue', css: '#0000ff' },
+  { value: 4, name: 'Yellow', css: '#ffff00' },
+  { value: 5, name: 'Cyan', css: '#00ffff' },
+  { value: 6, name: 'Magenta', css: '#ff00ff' },
+  { value: 7, name: 'White', css: '#ffffff' },
+] as const
+
+// The same palette as a label map, for a drawing sent back to this Mac.
+const DRAW_LABEL_COLORMAP: ColorMap = {
+  R: [0, 255, 0, 0, 255, 0, 255, 255],
+  G: [0, 0, 255, 0, 255, 255, 0, 255],
+  B: [0, 0, 0, 255, 0, 255, 255, 255],
+  A: [0, 255, 255, 255, 255, 255, 255, 255],
+  I: [0, 1, 2, 3, 4, 5, 6, 7],
+  labels: ['', ...DRAW_COLORS.map((color) => color.name)],
+}
+
+// Brush widths in voxels; a pencil varies each with pressure and tilt.
+const DRAW_SIZES = [
+  { size: 1, name: 'Fine', shortName: 'Fine' },
+  { size: 3, name: 'Medium', shortName: 'Med' },
+  { size: 7, name: 'Broad', shortName: 'Broad' },
+] as const
+
+// PEN_SHAPE.CIRCLE: a round brush, as a pencil makes.
+const PEN_SHAPE_CIRCLE = 1
+
+/**
+ * The brush for one point of a pencil stroke: from a third of `size` at the
+ * lightest touch to twice it pressed hard, and up to twice that again with
+ * the pencil laid on its side (altitude 0; upright is π/2).
+ */
+function pencilBrushSize(size: number, event: PointerEvent): number {
+  const pressure = event.pressure > 0 ? event.pressure : 0.5
+  const altitude =
+    (event as PointerEvent & { altitudeAngle?: number }).altitudeAngle ??
+    Math.PI / 2
+  const tilt = 1 - Math.min(1, Math.max(0, altitude / (Math.PI / 2)))
+  const scaled = size * (0.35 + 1.65 * pressure) * (1 + tilt)
+  return Math.max(1, Math.round(scaled))
+}
+
 // Researchers expect orthogonal slices first; the 3D render is one click away.
 export const DEFAULT_VIEW_MODE: ViewModeId = 'multiplanar'
 const VIEW_MODE_KEY = 'neurovue.viewMode.v1'
@@ -402,6 +521,7 @@ export function NiivueStage({
   viewMode,
   blocks,
   shading,
+  onShadingChange,
   meshes,
   crosshairTarget,
   onClipPlaneDepthChange,
@@ -411,10 +531,13 @@ export function NiivueStage({
   onLayerExtents,
   onViewModeChange,
   onRenderStatus,
+  onViewer,
+  onSendDrawing,
 }: NiivueStageProps): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const nvRef = useRef<NiiVueLike | null>(null)
+  const isApplyingShadingRef = useRef(false)
   // `chunkVolumeGrid` from the active backend module, captured at attach so the
   // block effect can (re)tile volumes without a second dynamic import.
   const chunkVolumeGridRef = useRef<ChunkVolumeGridFn | null>(null)
@@ -426,6 +549,13 @@ export function NiivueStage({
   // display-only re-applies (which run on a possibly-reordered `layers`) still
   // target the correct volume. `volumeIndexOfLayer` is the single lookup.
   const loadedLayerIdsRef = useRef<string[]>([])
+  // The registered label colormap of each loaded layer that has one, by item
+  // id: it stands in for the layer's own colormap (registerLabelColormaps).
+  const loadedLabelColormapsRef = useRef<Record<string, string>>({})
+  // A loaded viewer not yet passed to onViewer. The display effect passes it
+  // once the layers' windows are applied, so an agent never sees a stat
+  // overlay before its threshold.
+  const unannouncedViewerRef = useRef<NiiVueLike | null>(null)
   // Mesh ids in NiiVue's mesh order, and the queue mesh updates run through so
   // a quick add-then-recolor can't interleave with the add.
   const loadedMeshIdsRef = useRef<string[]>([])
@@ -436,6 +566,13 @@ export function NiivueStage({
   // Two-finger pinch tracking for render-view zoom (see handlePinch*).
   const pinchPointers = useRef<Map<number, { x: number; y: number }>>(new Map())
   const pinchDistance = useRef<number | null>(null)
+  // The canvas-drawn controls (view mode, tools, sliders) for the current
+  // viewer, and the state they last showed, for one made after it changed.
+  const stageControlsRef = useRef<StageControls | null>(null)
+  const stageControlsInputRef = useRef<{
+    state: StageControlsState
+    actions: StageControlsActions
+  } | null>(null)
   const [status, setStatus] = useState('Waiting for a dataset selection.')
   // True only when the volume failed to load; routine progress stays hidden.
   const [isStatusError, setIsStatusError] = useState(false)
@@ -457,6 +594,14 @@ export function NiivueStage({
   const [measureUnavailable, setMeasureUnavailable] = useState<string | null>(
     'Loading measure tool.',
   )
+  // Draw tool: a pen (or eraser) on 2D slices, painting a label map over the
+  // base volume. Like measuring, off by default so a tap moves the crosshair.
+  const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | null>(null)
+  // The pen's label value (its color in DRAW_COLORS) and brush size.
+  const [penValue, setPenValue] = useState(1)
+  const [brushSize, setBrushSize] = useState<number>(DRAW_SIZES[1].size)
+  // Whether the current viewer holds a drawing, for Undo/Clear/Send.
+  const [hasDrawing, setHasDrawing] = useState(false)
   const primaryItem = layers[0]?.item ?? item
   // Meshes with no volume still need a viewer; with volumes, adding a mesh
   // goes through the in-place mesh effect instead of a reload.
@@ -504,8 +649,17 @@ export function NiivueStage({
     let locationListener:
       | ((event: CustomEvent<NiiVueLocation>) => void)
       | null = null
+    let sliceTypeListener:
+      | ((event: CustomEvent<{ sliceType: number }>) => void)
+      | null = null
+    let shadingListener:
+      | ((event: CustomEvent<{ property: string; value: unknown }>) => void)
+      | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
+    let detachPointLabels: (() => void) | null = null
+    let stageControls: StageControls | null = null
+    let detachStageControls: (() => void) | null = null
 
     // Draw annotations with uikit once its font is in. Core's own annotation
     // draw stays on until then, and stays as the fallback if the font fails.
@@ -525,6 +679,23 @@ export function NiivueStage({
           unregisterAnnotationLayer = register.call(nv, annotationLayer)
           nv.isAnnotationDrawn = false
           setMeasureUnavailable(null)
+          detachPointLabels = attachPointLabels(nv, font)
+          // The stage's controls go last, so they draw over everything.
+          const clientToCanvas = nv.clientToCanvas
+          if (clientToCanvas) {
+            stageControls = new StageControls(font)
+            detachStageControls = stageControls.attach(
+              {
+                canvas: nv.canvas ?? null,
+                clientToCanvas: (x, y) => clientToCanvas.call(nv, x, y),
+                drawScene: () => nv.drawScene(),
+              },
+              (renderer) => register.call(nv, renderer),
+            )
+            stageControlsRef.current = stageControls
+            const input = stageControlsInputRef.current
+            if (input) stageControls.update(input.state, input.actions)
+          }
           nv.drawScene()
         })
         .catch((error: unknown) => {
@@ -565,7 +736,10 @@ export function NiivueStage({
           clipPlaneColor: [0.95, 0.2, 0.12, 0.7],
           isResizeCanvas: true,
           isColorbarVisible: true,
-          isLegendVisible: false,
+          // An atlas's regions, listed at the right; tapping a swatch hides
+          // or shows that region, tapping its name moves the crosshair there.
+          isLegendVisible: true,
+          isLegendToggleEnabled: true,
           isOrientCubeVisible: true,
           isOrientationTextVisible: viewMode !== 'render',
           show3Dcrosshair: false,
@@ -587,13 +761,42 @@ export function NiivueStage({
             onLocationChange?.(event.detail)
           }
           nv.addEventListener('locationChange', locationListener)
+          // An agent's set_view changes NiiVue's layout directly. Follow it,
+          // or the next new viewer (any layer change) brings the old one back.
+          sliceTypeListener = (event) => {
+            const mode = VIEW_MODES.find(
+              (candidate) => candidate.sliceType === event.detail.sliceType,
+            )
+            if (!cancelled && mode) onViewModeChange(mode.id)
+          }
+          nv.addEventListener('sliceTypeChange', sliceTypeListener)
+          // Same for an agent's set_options on the 3D look, so the Look
+          // control shows it and the next viewer keeps it.
+          shadingListener = (event) => {
+            if (cancelled || isApplyingShadingRef.current) return
+            if (!SHADING_PROPERTIES.has(event.detail.property)) return
+            const renderMode = (
+              Object.keys(NIVUE_RENDER_MODES) as RenderShading['renderMode'][]
+            ).find((mode) => NIVUE_RENDER_MODES[mode] === nv.volumeRenderMode)
+            if (!renderMode) return
+            onShadingChange({
+              illumination: nv.volumeIllumination ?? 0,
+              gradientOpacity: nv.volumeGradientOpacity ?? 0,
+              silhouette: nv.volumeSilhouette ?? 0,
+              renderMode,
+            })
+          }
+          nv.addEventListener('change', shadingListener)
         }
         attachAnnotationLayer(nv)
         const attachedCanvas = activeCanvasFor(nv, canvas)
         canvasRef.current = attachedCanvas
         resizeNiiVue(nv, attachedCanvas, stage)
+        const labelColormaps = await registerLabelColormaps(nv, layers)
+        if (cancelled) return
         await loadRenderVolumeLods({
           layers,
+          labelColormaps,
           nv,
           clipPlanes,
           canvas: attachedCanvas,
@@ -602,10 +805,28 @@ export function NiivueStage({
           isCancelled: () => cancelled,
           setStatus,
         })
+        // A cancelled load returns normally; don't let it clobber the newer stack's ids.
+        if (cancelled) return
         applyActiveClipPlane(nv, clipPlanes, activeClipPlaneId)
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
+        loadedLabelColormapsRef.current = labelColormaps
+        // The views start below the floating title bar (it hid the 2D "A"
+        // label), and an atlas legend below the view modes, not under them.
+        const hasLegend = layers.some(
+          (layer) => layer.isAtlas && labelColormaps[layer.item.id],
+        )
+        nv.layoutInset = [
+          0,
+          hasLegend ? TOP_RIGHT_CLEARANCE : TITLE_CLEARANCE,
+          0,
+          0,
+        ]
+        if (!cancelled) {
+          if (nv.setVolume) unannouncedViewerRef.current = nv
+          else onViewer?.(nv)
+        }
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
@@ -628,13 +849,31 @@ export function NiivueStage({
       // Release the overlay's GPU resources before the instance goes.
       unregisterAnnotationLayer?.()
       annotationLayer?.destroy()
-      if (localNv && nvRef.current === localNv) {
+      detachPointLabels?.()
+      detachStageControls?.()
+      stageControls?.destroy()
+      if (stageControlsRef.current === stageControls) {
+        stageControlsRef.current = null
+      }
+      // Always free this instance, even if a failed load already nulled nvRef.
+      if (localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
         }
+        if (sliceTypeListener) {
+          localNv.removeEventListener?.('sliceTypeChange', sliceTypeListener)
+        }
+        if (shadingListener) {
+          localNv.removeEventListener?.('change', shadingListener)
+        }
         localNv.destroy?.()
+      }
+      if (localNv && nvRef.current === localNv) {
+        unannouncedViewerRef.current = null
+        onViewer?.(null)
         nvRef.current = null
         loadedLayerIdsRef.current = []
+        loadedLabelColormapsRef.current = {}
         loadedMeshIdsRef.current = []
       }
       onLocationChange?.(null)
@@ -678,7 +917,8 @@ export function NiivueStage({
         }
         return (
           nv.setVolume?.(index, {
-            colormap: layer.colormap,
+            colormap:
+              loadedLabelColormapsRef.current[layer.item.id] ?? layer.colormap,
             colormapNegative: layer.colormapNegative ?? '',
             opacity: layer.opacity,
             ...windowOption,
@@ -697,8 +937,13 @@ export function NiivueStage({
         // No volume loaded yet (or backend lacks setVolume); the attach effect
         // already loads with current display options, so this is safe to ignore.
       })
+      .finally(() => {
+        if (unannouncedViewerRef.current !== nv) return
+        unannouncedViewerRef.current = null
+        onViewer?.(nv)
+      })
     onResolvedWindows?.(resolved)
-  }, [layers, loadedVersion, onResolvedWindows])
+  }, [layers, loadedVersion, onResolvedWindows, onViewer])
 
   // Report each layer's world-space bounding box once loaded, so the panel can
   // flag overlays that don't share the base's space.
@@ -750,6 +995,124 @@ export function NiivueStage({
     nv.annotationTool = 'measureLine'
     nv.annotationIsEnabled = isMeasureActive
   }, [isMeasureActive, loadedVersion])
+
+  // Draw mode, once the volumes have loaded: refinement swaps in a finer
+  // volume, and a drawing must match the volume it was started on. A new
+  // viewer (another volume, or a layer added) starts without one.
+  const isDrawActive = drawTool !== null && !isRenderMode && loadedVersion > 0
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion re-applies on a fresh instance.
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv || nv.drawIsEnabled === undefined) return
+    if (isDrawActive && !nv.drawingVolume) nv.createEmptyDrawing?.()
+    nv.drawIsEnabled = isDrawActive
+    if (isDrawActive) {
+      nv.drawPenValue = drawTool === 'eraser' ? 0 : penValue
+      nv.drawPenSize = brushSize
+      nv.drawPenShape = PEN_SHAPE_CIRCLE
+    }
+    setHasDrawing(Boolean(nv.drawingVolume))
+  }, [isDrawActive, drawTool, penValue, brushSize, loadedVersion])
+
+  // Apple Pencil: pressure and tilt set the brush for each point of a stroke
+  // (NiiVue reads the size per move), like pressing harder or shading with
+  // the side of a pencil. Once a pencil is used, a finger moves around the
+  // image instead of drawing, so a resting palm leaves no marks.
+  useEffect(() => {
+    const nv = nvRef.current
+    const stage = stageRef.current
+    if (!isDrawActive || !nv || !stage) return
+    let isPencil = false
+    let isFingerDown = false
+    // Capture on the stage runs before NiiVue's own canvas listeners.
+    function onPointer(event: PointerEvent): void {
+      if (!nv) return
+      if (event.pointerType === 'pen') {
+        isPencil = true
+        nv.drawPenSize = pencilBrushSize(brushSize, event)
+      } else if (event.pointerType === 'touch' && isPencil) {
+        if (event.type === 'pointerdown') isFingerDown = true
+        if (isFingerDown) nv.drawIsEnabled = event.type !== 'pointerdown'
+      }
+    }
+    function onPointerEnd(event: PointerEvent): void {
+      if (!nv) return
+      // A stroke done: a Pencil Pro taps once in the hand.
+      if (
+        event.pointerType === 'pen' &&
+        event.type === 'pointerup' &&
+        stage?.contains(event.target as Node) &&
+        !stageControlsRef.current?.isOverControl(event.clientX, event.clientY)
+      ) {
+        pencilFeedback('path', { x: event.clientX, y: event.clientY })
+      }
+      if (event.pointerType !== 'touch' || !isFingerDown) return
+      isFingerDown = false
+      nv.drawIsEnabled = true
+    }
+    const options = { capture: true }
+    stage.addEventListener('pointerdown', onPointer, options)
+    stage.addEventListener('pointermove', onPointer, options)
+    window.addEventListener('pointerup', onPointerEnd, options)
+    window.addEventListener('pointercancel', onPointerEnd, options)
+    return () => {
+      stage.removeEventListener('pointerdown', onPointer, options)
+      stage.removeEventListener('pointermove', onPointer, options)
+      window.removeEventListener('pointerup', onPointerEnd, options)
+      window.removeEventListener('pointercancel', onPointerEnd, options)
+    }
+  }, [isDrawActive, brushSize])
+
+  // A double-tap or squeeze of the pencil does what the person chose for it
+  // in Settings: the eraser switch toggles pen and eraser, and a palette
+  // steps to the next pen color, since there's no palette here to show.
+  useEffect(() => {
+    if (!isDrawActive) return
+    return listenToPencil((action, at) => {
+      if (action === 'switchEraser' || action === 'switchPrevious') {
+        setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser'))
+      } else if (
+        action === 'showColorPalette' ||
+        action === 'showInkAttributes' ||
+        action === 'showContextualPalette'
+      ) {
+        setDrawTool('pen')
+        setPenValue((current) => (current % DRAW_COLORS.length) + 1)
+      } else {
+        return
+      }
+      pencilFeedback('alignment', at)
+    })
+  }, [isDrawActive])
+
+  // From the 3D render, drawing starts on one big axial slice.
+  function toggleDrawing(): void {
+    setIsMeasuring(false)
+    if (isRenderMode) {
+      onViewModeChange('axial')
+      setDrawTool('pen')
+      return
+    }
+    setDrawTool((current) => (current ? null : 'pen'))
+  }
+
+  function undoDrawing(): void {
+    nvRef.current?.drawUndo?.()
+  }
+
+  function clearDrawing(): void {
+    const nv = nvRef.current
+    if (!nv) return
+    nv.closeDrawing?.()
+    if (isDrawActive) nv.createEmptyDrawing?.()
+    setHasDrawing(Boolean(nv.drawingVolume))
+    nv.drawScene()
+  }
+
+  async function sendDrawing(): Promise<void> {
+    const drawing = await nvRef.current?.saveDrawing?.('')
+    if (drawing instanceof Uint8Array) onSendDrawing?.(drawing)
+  }
 
   // Escape leaves measure mode, like finishing with any other tool.
   useEffect(() => {
@@ -811,10 +1174,16 @@ export function NiivueStage({
   useEffect(() => {
     const nv = nvRef.current
     if (!nv) return
-    nv.volumeIllumination = shading.illumination
-    nv.volumeGradientOpacity = shading.gradientOpacity
-    nv.volumeSilhouette = shading.silhouette
-    nv.volumeRenderMode = shading.isMip ? NIVUE_RENDER_MODE_MAXIMUM : 0
+    // Our own sets emit change events too; mid-apply they'd report a half-set look.
+    isApplyingShadingRef.current = true
+    try {
+      nv.volumeIllumination = shading.illumination
+      nv.volumeGradientOpacity = shading.gradientOpacity
+      nv.volumeSilhouette = shading.silhouette
+      nv.volumeRenderMode = NIVUE_RENDER_MODES[shading.renderMode]
+    } finally {
+      isApplyingShadingRef.current = false
+    }
     nv.drawScene()
   }, [shading, loadedVersion])
 
@@ -1064,8 +1433,13 @@ export function NiivueStage({
   function pageToSlice(target: number): void {
     const nv = nvRef.current
     if (sliceAxis === undefined || !nv?.moveCrosshairInVox) return
-    const delta = clamp(Math.round(target), 0, sliceMax) - sliceValue
-    if (delta === 0) return
+    // Step from the exact (often fractional) crosshair voxel, not the rounded
+    // slider value, or the move lands one slice off.
+    const from = Number.isFinite(currentVox)
+      ? (currentVox as number)
+      : sliceValue
+    const delta = clamp(Math.round(target), 0, sliceMax) - from
+    if (Math.abs(delta) < 1e-6) return
     const step: [number, number, number] = [0, 0, 0]
     step[sliceAxis] = delta
     nv.moveCrosshairInVox(...step)
@@ -1083,6 +1457,112 @@ export function NiivueStage({
   // is picked; dragging it makes that plane active (as clicking its chip does).
   const sliderClip = activeClip ?? enabledClipPlanes[0] ?? null
   const showClipControl = isRenderMode && enabledClipPlanes.length > 0
+
+  const stageControlsState: StageControlsState = {
+    viewModes: VIEW_MODES.map((mode) => ({
+      id: mode.id,
+      label: mode.shortLabel,
+    })),
+    viewMode,
+    hasVolume: Boolean(primaryItem),
+    look:
+      isRenderMode && primaryItem
+        ? {
+            presets: SHADING_PRESETS.map(({ id, label }) => ({ id, label })),
+            value: matchingShadingPreset(shading),
+          }
+        : null,
+    measure:
+      isRenderMode || !primaryItem
+        ? null
+        : { active: isMeasureActive, enabled: measureUnavailable === null },
+    draw: primaryItem
+      ? {
+          active: isDrawActive,
+          enabled: loadedVersion > 0,
+          eraser: drawTool === 'eraser',
+          hasDrawing,
+          canSend: Boolean(onSendDrawing) && hasDrawing,
+        }
+      : null,
+    palette: isDrawActive
+      ? {
+          colors: DRAW_COLORS,
+          penValue,
+          sizes: DRAW_SIZES.map((option) => ({
+            size: option.size,
+            name: option.shortName,
+          })),
+          brushSize,
+          eraser: drawTool === 'eraser',
+        }
+      : null,
+    slice: showSliceSlider
+      ? {
+          label: currentViewLabel.replace(/ slice$/, ''),
+          value: sliceValue,
+          max: sliceMax,
+        }
+      : null,
+    clip: showClipControl
+      ? {
+          planes: enabledClipPlanes.map((plane) => ({
+            id: plane.id,
+            label: plane.label,
+          })),
+          activeId: activeClip?.id ?? null,
+          slider: sliderClip
+            ? {
+                id: sliderClip.id,
+                label: sliderClip.label,
+                depth: sliderClip.depth,
+              }
+            : null,
+        }
+      : null,
+  }
+  const stageControlsActions: StageControlsActions = {
+    viewMode: (id) => {
+      const mode = VIEW_MODES.find((candidate) => candidate.id === id)
+      if (mode) changeViewMode(mode.id)
+    },
+    look: (id) => {
+      const preset = SHADING_PRESETS.find((candidate) => candidate.id === id)
+      if (preset) onShadingChange(preset.shading)
+    },
+    measure: () => {
+      setDrawTool(null)
+      setIsMeasuring((current) => !current)
+    },
+    clearMeasurements,
+    draw: toggleDrawing,
+    erase: () =>
+      setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser')),
+    undo: undoDrawing,
+    clearDrawing,
+    send: () => void sendDrawing(),
+    pen: (value) => {
+      setPenValue(value)
+      setDrawTool('pen')
+    },
+    brush: setBrushSize,
+    slice: pageToSlice,
+    clipPlane: (id) => onClipPlaneActivate?.(id),
+    clipDepth: (id, depth) => {
+      // Dragging the slider makes its plane active, as clicking its chip does.
+      if (!activeClip) onClipPlaneActivate?.(id)
+      onClipPlaneDepthChange(id, depth)
+    },
+  }
+  stageControlsInputRef.current = {
+    state: stageControlsState,
+    actions: stageControlsActions,
+  }
+  // Every render: the controls skip a redraw when nothing they show changed.
+  useEffect(() => {
+    const input = stageControlsInputRef.current
+    if (input) stageControlsRef.current?.update(input.state, input.actions)
+  })
 
   return (
     <div
@@ -1105,110 +1585,6 @@ export function NiivueStage({
             : 'NiiVue viewer — no volume selected'
         }
       />
-      <fieldset className="nv-render-snap-controls" aria-label="View mode">
-        {VIEW_MODES.map((mode) => (
-          <button
-            aria-label={`Show ${mode.label}`}
-            aria-pressed={viewMode === mode.id}
-            className={viewMode === mode.id ? 'is-active' : ''}
-            disabled={!primaryItem}
-            key={mode.id}
-            onClick={() => changeViewMode(mode.id)}
-            title={`Show ${mode.label}`}
-            type="button"
-          >
-            {mode.shortLabel}
-          </button>
-        ))}
-      </fieldset>
-      {isRenderMode ? null : (
-        <fieldset className="nv-measure-tools" aria-label="Measure">
-          <button
-            aria-label="Measure distance"
-            aria-pressed={isMeasureActive}
-            className={isMeasureActive ? 'is-active' : ''}
-            disabled={!primaryItem || measureUnavailable !== null}
-            onClick={() => setIsMeasuring((current) => !current)}
-            title={
-              measureUnavailable ??
-              (isMeasureActive
-                ? 'Stop measuring (Esc)'
-                : 'Measure distance: drag across a slice')
-            }
-            type="button"
-          >
-            <Ruler aria-hidden="true" size={14} />
-          </button>
-          <button
-            aria-label="Clear measurements"
-            disabled={!primaryItem || measureUnavailable !== null}
-            onClick={clearMeasurements}
-            title="Clear measurements"
-            type="button"
-          >
-            <Eraser aria-hidden="true" size={14} />
-          </button>
-        </fieldset>
-      )}
-      {showSliceSlider ? (
-        <fieldset className="nv-slice-slider" aria-label="Slice position">
-          <input
-            aria-label={`${currentViewLabel} slice`}
-            max={sliceMax}
-            min={0}
-            step={1}
-            type="range"
-            value={sliceValue}
-            onChange={(event) => pageToSlice(Number(event.target.value))}
-          />
-          <span className="nv-slice-slider-value">
-            {sliceValue + 1} / {sliceMax + 1}
-          </span>
-        </fieldset>
-      ) : null}
-      {showClipControl ? (
-        <fieldset className="nv-clip-slider" aria-label="Clip plane">
-          <div className="nv-clip-slider-chips">
-            {enabledClipPlanes.map((plane) => (
-              <button
-                aria-pressed={clipIsActive && plane.id === activeClipPlaneId}
-                className={
-                  clipIsActive && plane.id === activeClipPlaneId
-                    ? 'is-active'
-                    : ''
-                }
-                key={plane.id}
-                onClick={() => onClipPlaneActivate?.(plane.id)}
-                title={`Move the ${plane.label} clip plane`}
-                type="button"
-              >
-                {plane.label}
-              </button>
-            ))}
-          </div>
-          <input
-            aria-label={
-              sliderClip ? `${sliderClip.label} clip depth` : 'Clip depth'
-            }
-            disabled={!sliderClip}
-            max={1}
-            min={-1}
-            step={0.02}
-            type="range"
-            value={sliderClip?.depth ?? 0}
-            onChange={(event) => {
-              if (!sliderClip) return
-              if (!activeClip) onClipPlaneActivate?.(sliderClip.id)
-              onClipPlaneDepthChange(sliderClip.id, Number(event.target.value))
-            }}
-          />
-          {sliderClip ? (
-            <span className="nv-slice-slider-value nv-clip-slider-value">
-              {sliderClip.label} {sliderClip.depth.toFixed(2)}
-            </span>
-          ) : null}
-        </fieldset>
-      ) : null}
       {isStatusError ? (
         <div className="nv-render-status is-error" role="alert">
           {status}
@@ -1492,6 +1868,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 async function loadRenderVolumeLods({
   layers,
+  labelColormaps,
   nv,
   clipPlanes,
   canvas,
@@ -1501,6 +1878,7 @@ async function loadRenderVolumeLods({
   setStatus,
 }: {
   layers: NiivueRenderLayer[]
+  labelColormaps: Record<string, string>
   nv: NiiVueLike
   clipPlanes: ClipPlane[]
   canvas: HTMLCanvasElement
@@ -1515,9 +1893,6 @@ async function loadRenderVolumeLods({
     layer,
     levels: renderVolumeLevels(layer.item),
   }))
-  const atlasMaps = await resolveAtlasColorMaps(layers)
-  if (isCancelled()) return
-
   const levels = stackLevels[0].levels
   let loadedLevel: RenderVolumeLevel | null = null
   let lastError: unknown = null
@@ -1549,10 +1924,12 @@ async function loadRenderVolumeLods({
         return {
           url: source,
           name: `${layer.item.label} L${layerLevel.level}`,
-          colormap: layer.colormap,
+          colormap: labelColormaps[layer.item.id] ?? layer.colormap,
           colormapNegative: layer.colormapNegative ?? '',
           opacity: layer.opacity,
           isColorbarVisible: layerIndex === 0,
+          // The drawing's pens are not regions.
+          isLegendVisible: layer.item.derivation?.operation !== 'drawing',
           ...(layer.calMin !== undefined ? { calMin: layer.calMin } : {}),
           ...(layer.calMax !== undefined ? { calMax: layer.calMax } : {}),
         }
@@ -1562,8 +1939,6 @@ async function loadRenderVolumeLods({
 
     try {
       await nv.loadVolumes(volumes)
-      if (isCancelled()) return
-      await applyAtlasLabelMaps(nv, atlasMaps)
     } catch (error) {
       lastError = error
       if (!loadedLevel) {
@@ -1583,6 +1958,9 @@ async function loadRenderVolumeLods({
       return
     }
     if (isCancelled()) return
+    // A new viewer starts at its own crosshair; report it so the slice slider
+    // and readout don't keep the previous viewer's location.
+    nv.createOnLocationChange?.()
 
     loadedLevel = level
     applyClipPlanes(nv, clipPlanes)
@@ -1639,6 +2017,9 @@ async function resolveAtlasColorMaps(
 ): Promise<Array<ColorMap | null>> {
   return Promise.all(
     layers.map((layer) => {
+      if (layer.item.derivation?.operation === 'drawing') {
+        return Promise.resolve(DRAW_LABEL_COLORMAP)
+      }
       if (!layer.isAtlas) return Promise.resolve(null)
       return atlasColorMapForItem(layer.item).catch(() => null)
     }),
@@ -1667,24 +2048,30 @@ function extractAtlasColorMap(metadata: VolumeMetadata): ColorMap | null {
   return null
 }
 
-// `atlasMaps` is built by `resolveAtlasColorMaps(layers)` in layer order and
-// applied here immediately after `nv.loadVolumes(volumes)` (also layer order),
-// so the array index IS the freshly-loaded volume index — safe by construction,
-// unlike the display re-applies which run later against a possibly-reordered
-// `layers` and therefore go through `loadedLayerIdsRef`.
-async function applyAtlasLabelMaps(
+// A layer's label colormap (a drawing's pens, an atlas's sidecar LUT),
+// registered with NiiVue under a name of its own: NiiVue picks a label
+// colormap by name, like any other. Keyed by item id; a layer without one keeps
+// its own colormap.
+async function registerLabelColormaps(
   nv: NiiVueLike,
-  atlasMaps: Array<ColorMap | null>,
-): Promise<void> {
-  if (!nv.setColormapLabel) return
-  await Promise.all(
-    atlasMaps.map((colorMap, volumeIndex) => {
-      if (!colorMap) return Promise.resolve()
-      return (
-        nv.setColormapLabel?.(volumeIndex, colorMap) ?? Promise.resolve()
-      ).catch(() => undefined)
-    }),
-  )
+  layers: NiivueRenderLayer[],
+): Promise<Record<string, string>> {
+  const colorMaps = await resolveAtlasColorMaps(layers)
+  const names: Record<string, string> = {}
+  for (const [index, colorMap] of colorMaps.entries()) {
+    if (!colorMap || !nv.addColormap) continue
+    const { id } = layers[index].item
+    try {
+      // A `labels` array, even an empty one, makes it a label table.
+      names[id] = nv.addColormap(`neurovue-labels-${id}`, {
+        ...colorMap,
+        labels: colorMap.labels ?? [],
+      })
+    } catch {
+      // A malformed LUT leaves the layer on its own colormap.
+    }
+  }
+  return names
 }
 
 function normalizeLabelColorMap(value: JsonValue): ColorMap | null {
@@ -1875,34 +2262,4 @@ function syncCanvasSize(
 
   if (canvas.width !== width) canvas.width = width
   if (canvas.height !== height) canvas.height = height
-  if (stage) syncOverlayClearance(stage, width, height, density)
-}
-
-// Keep the bottom overlays (slice slider, clip control) clear of NiiVue's
-// colorbar and orientation cube. Neither is exposed by NiiVue, so this mirrors
-// its layout math: colorbarTotalHeight (packages/niivue/src/view/NVColorbar.ts,
-// one row — only the base layer shows a colorbar — default margin 20 and
-// heightRatio 1.2, font from estimateFontSize in NVUILayout.ts) and
-// orientCubePosition (NVUILayout.ts: size 5% of the tile, centred 1.8 sizes in).
-// Inputs are device pixels; the CSS vars are CSS pixels.
-function syncOverlayClearance(
-  stage: HTMLDivElement,
-  width: number,
-  height: number,
-  density: number,
-): void {
-  const fontSize = 13 * Math.max((width * height) / (800 * 600), 1) ** 0.4
-  const colorbar =
-    20 +
-    Math.ceil(1.2 * fontSize) +
-    Math.ceil(0.7 * fontSize + Math.max(1, 0.1 * fontSize))
-  const cubeEdge = 2.8 * 0.05 * Math.min(width, height - colorbar)
-  stage.style.setProperty(
-    '--nv-colorbar-clearance',
-    `${Math.ceil(colorbar / density)}px`,
-  )
-  stage.style.setProperty(
-    '--nv-cube-clearance',
-    `${Math.ceil(Math.max(0, cubeEdge) / density)}px`,
-  )
 }

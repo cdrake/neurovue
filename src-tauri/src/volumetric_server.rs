@@ -39,8 +39,10 @@ pub struct ServerHandle {
     preview_cache: Arc<Mutex<PreviewCache>>,
     decoded_level_cache: Arc<Mutex<DecodedLevelCache>>,
     pyramid_locks: PyramidLocks,
+    patch: Arc<Mutex<Option<Value>>>,
     warm_generation: Arc<AtomicU64>,
     warm_progress: Arc<Mutex<WarmProgress>>,
+    shutdown: Arc<tokio::sync::Notify>,
 }
 
 type VolumeStore = Arc<Mutex<Vec<VolumeEntry>>>;
@@ -303,8 +305,71 @@ struct RawPath {
     sig: String,
 }
 
+/// The launch window's server: opens whatever discovery finds (env vars,
+/// NeuroFlow's session, developer checkouts).
 pub fn spawn_default() -> ServerHandle {
+    spawn(discover_volumes())
+}
+
+/// A server with no dataset, for a window opened after launch: it must not
+/// reopen the dataset the launch window was given.
+pub fn spawn_empty() -> ServerHandle {
+    spawn(VolumeDiscovery {
+        root: None,
+        volumes: Vec::new(),
+        stats: DiscoveryStats::default(),
+    })
+}
+
+/// Stops the server's listener and its runtime once the window it serves is
+/// gone. Requests already running finish first.
+pub fn shutdown(server: &ServerHandle) {
+    server.warm_generation.fetch_add(1, Ordering::SeqCst);
+    server.shutdown.notify_one();
+}
+
+/// A handle on `discovery`'s dataset that no listener serves yet.
+fn new_handle(discovery: VolumeDiscovery) -> ServerHandle {
+    ServerHandle {
+        url: String::new(),
+        port: 0,
+        volume_count: discovery.volumes.len(),
+        volumes: Arc::new(Mutex::new(discovery.volumes)),
+        dataset_root: Arc::new(Mutex::new(discovery.root)),
+        discovery_stats: Arc::new(Mutex::new(discovery.stats)),
+        preview_cache: Arc::new(Mutex::new(PreviewCache::default())),
+        decoded_level_cache: Arc::new(Mutex::new(DecodedLevelCache::default())),
+        pyramid_locks: Arc::new(Mutex::new(HashMap::new())),
+        patch: Arc::new(Mutex::new(None)),
+        warm_generation: Arc::new(AtomicU64::new(0)),
+        warm_progress: Arc::new(Mutex::new(WarmProgress::default())),
+        shutdown: Arc::new(tokio::sync::Notify::new()),
+    }
+}
+
+fn spawn(discovery: VolumeDiscovery) -> ServerHandle {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind NeuroVue local server");
+    let warm_volumes = discovery.volumes.clone();
+    let warm_root = discovery.root.clone();
+    let server = new_handle(discovery);
+
+    // Warm pyramid levels for the startup dataset (if any) in the background.
+    let my_gen = server.warm_generation.load(Ordering::SeqCst);
+    spawn_pyramid_warm(
+        warm_volumes,
+        warm_root,
+        server.pyramid_locks.clone(),
+        server.warm_generation.clone(),
+        server.warm_progress.clone(),
+        my_gen,
+    );
+
+    serve(listener, server)
+}
+
+/// Serves `server`'s dataset on `listener`, and returns the handle with the
+/// address it now answers at.
+fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
     let addr = listener
         .local_addr()
         .expect("read NeuroVue local server addr");
@@ -313,41 +378,20 @@ pub fn spawn_default() -> ServerHandle {
         .expect("set NeuroVue listener nonblocking");
 
     let base_url = format!("http://{}", addr);
-    let discovery = discover_volumes();
-    let volume_count = discovery.volumes.len();
-    let warm_volumes = discovery.volumes.clone();
-    let warm_root = discovery.root.clone();
-    let volumes = Arc::new(Mutex::new(discovery.volumes));
-    let dataset_root = Arc::new(Mutex::new(discovery.root));
-    let discovery_stats = Arc::new(Mutex::new(discovery.stats));
-    let preview_cache = Arc::new(Mutex::new(PreviewCache::default()));
-    let decoded_level_cache = Arc::new(Mutex::new(DecodedLevelCache::default()));
-    let pyramid_locks: PyramidLocks = Arc::new(Mutex::new(HashMap::new()));
-    let warm_generation = Arc::new(AtomicU64::new(0));
-    let warm_progress = Arc::new(Mutex::new(WarmProgress::default()));
+    let shutdown = Arc::new(tokio::sync::Notify::new());
     let state = AppState {
         base_url: base_url.clone(),
-        volumes: volumes.clone(),
-        dataset_root: dataset_root.clone(),
-        discovery_stats: discovery_stats.clone(),
-        preview_cache: preview_cache.clone(),
-        decoded_level_cache: decoded_level_cache.clone(),
-        pyramid_locks: pyramid_locks.clone(),
-        patch: Arc::new(Mutex::new(None)),
+        volumes: server.volumes.clone(),
+        dataset_root: server.dataset_root.clone(),
+        discovery_stats: server.discovery_stats.clone(),
+        preview_cache: server.preview_cache.clone(),
+        decoded_level_cache: server.decoded_level_cache.clone(),
+        pyramid_locks: server.pyramid_locks.clone(),
+        patch: server.patch.clone(),
         render_semaphore: Arc::new(tokio::sync::Semaphore::new(render_permits())),
     };
 
-    // Warm pyramid levels for the startup dataset (if any) in the background.
-    let my_gen = warm_generation.load(Ordering::SeqCst);
-    spawn_pyramid_warm(
-        warm_volumes,
-        warm_root,
-        pyramid_locks.clone(),
-        warm_generation.clone(),
-        warm_progress.clone(),
-        my_gen,
-    );
-
+    let stop = shutdown.clone();
     std::thread::spawn(move || {
         let runtime = Builder::new_multi_thread()
             .enable_all()
@@ -360,7 +404,11 @@ pub fn spawn_default() -> ServerHandle {
                 tokio::net::TcpListener::from_std(listener).expect("adopt NeuroVue listener");
             let app = build_router(state, addr.port());
 
-            if let Err(error) = axum::serve(listener, app).await {
+            let stopped = async move { stop.notified().await };
+            if let Err(error) = axum::serve(listener, app)
+                .with_graceful_shutdown(stopped)
+                .await
+            {
                 eprintln!("NeuroVue local server stopped: {error}");
             }
         });
@@ -369,16 +417,26 @@ pub fn spawn_default() -> ServerHandle {
     ServerHandle {
         url: base_url,
         port: addr.port(),
-        volume_count,
-        volumes,
-        dataset_root,
-        discovery_stats,
-        preview_cache,
-        decoded_level_cache,
-        pyramid_locks,
-        warm_generation,
-        warm_progress,
+        shutdown,
+        ..server
     }
+}
+
+/// A server listening again, when `server` no longer answers: iOS can take a
+/// suspended app's listening socket. It keeps the dataset and, when the port
+/// is still free, the address, so the page's URLs stay good.
+#[cfg(target_os = "ios")]
+pub fn revive(server: &ServerHandle) -> Option<ServerHandle> {
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, server.port));
+    if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok()
+    {
+        return None;
+    }
+    server.shutdown.notify_one();
+    let listener = TcpListener::bind(address)
+        .or_else(|_| TcpListener::bind("127.0.0.1:0"))
+        .ok()?;
+    Some(serve(listener, server.clone()))
 }
 
 fn build_router(state: AppState, port: u16) -> Router {
@@ -894,8 +952,26 @@ pub fn export_bundle(
         return Err("export_bundle: none of the selected volumes have a source file".to_string());
     }
 
-    // The bundle is a single zip file. Replace anything already at `dest` — a
-    // stale file, or a legacy directory bundle from an older build.
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("export_bundle: create {}: {error}", parent.display()))?;
+    }
+    // Write beside `dest` and swap in only on success: the sources may live inside
+    // an existing (legacy directory) bundle at `dest`, and a failed export must not
+    // destroy the previous one.
+    let partial = dest.with_file_name(format!(
+        "{}.partial",
+        dest.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
+    ));
+    let written = write_bundle_zip(handle, &partial, &selected, view, created_at);
+    let total_bytes = match written {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
+    };
+    // Replace anything already at `dest`: a stale file, or a legacy directory bundle.
     if dest.is_dir() {
         fs::remove_dir_all(dest)
             .map_err(|error| format!("export_bundle: replace {}: {error}", dest.display()))?;
@@ -903,11 +979,23 @@ pub fn export_bundle(
         fs::remove_file(dest)
             .map_err(|error| format!("export_bundle: overwrite {}: {error}", dest.display()))?;
     }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("export_bundle: create {}: {error}", parent.display()))?;
-    }
+    fs::rename(&partial, dest)
+        .map_err(|error| format!("export_bundle: finalize {}: {error}", dest.display()))?;
 
+    Ok(BundleExportResult {
+        bundle_path: dest.display().to_string(),
+        volume_count: selected.len(),
+        total_bytes,
+    })
+}
+
+fn write_bundle_zip(
+    handle: &ServerHandle,
+    dest: &FsPath,
+    selected: &[VolumeEntry],
+    view: &Value,
+    created_at: &str,
+) -> Result<u64, String> {
     let zip_file = File::create(dest)
         .map_err(|error| format!("export_bundle: create {}: {error}", dest.display()))?;
     let mut zip = ZipWriter::new(zip_file);
@@ -921,7 +1009,7 @@ pub fn export_bundle(
     let mut total_bytes: u64 = 0;
     let mut manifest_volumes: Vec<Value> = Vec::with_capacity(selected.len());
 
-    for entry in &selected {
+    for entry in selected {
         let source = entry
             .source_path
             .as_ref()
@@ -982,12 +1070,106 @@ pub fn export_bundle(
         .map_err(|error| format!("export_bundle: write manifest.json: {error}"))?;
     zip.finish()
         .map_err(|error| format!("export_bundle: finalize {}: {error}", dest.display()))?;
+    Ok(total_bytes)
+}
 
-    Ok(BundleExportResult {
-        bundle_path: dest.display().to_string(),
-        volume_count: selected.len(),
-        total_bytes,
-    })
+/// A drawing made on another device (the iPad's draw tool), as a bundle of one
+/// label map that names the volume it was drawn on: `base` is that volume's
+/// `{ id, sha256, label }` from the bundle it arrived in, so the Mac that sent
+/// it can find the original and lay the drawing over it.
+pub fn export_drawing_bundle(
+    dest: &FsPath,
+    drawing: &[u8],
+    base: &Value,
+    created_at: &str,
+) -> Result<(), String> {
+    let base_id = base["id"].as_str().unwrap_or_default();
+    let base_label = base["label"].as_str().unwrap_or("the volume");
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("export_drawing_bundle: {}: {error}", parent.display()))?;
+    }
+    let zip_file = File::create(dest)
+        .map_err(|error| format!("export_drawing_bundle: {}: {error}", dest.display()))?;
+    let mut zip = ZipWriter::new(zip_file);
+    // Unlike a volume, an uncompressed label map is mostly zeros.
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let data = "data/drawing.nii";
+    let manifest = json!({
+        "nvbundle": "1",
+        "kind": "drawing",
+        "createdAt": created_at,
+        "tool": { "name": "NeuroVue", "version": env!("CARGO_PKG_VERSION") },
+        "base": base,
+        "volumes": [{
+            "id": "drawing",
+            "role": "drawing",
+            "label": format!("Drawing on {base_label}"),
+            "data": data,
+            "sha256": format!("{:x}", Sha256::digest(drawing)),
+            "bytes": drawing.len(),
+            "derivedFrom": base_id,
+            "derivation": "drawing",
+        }],
+    });
+    let manifest_text = serde_json::to_string_pretty(&manifest)
+        .map_err(|error| format!("export_drawing_bundle: manifest: {error}"))?;
+    for (name, bytes) in [(data, drawing), ("manifest.json", manifest_text.as_bytes())] {
+        zip.start_file(name, options)
+            .and_then(|()| zip.write_all(bytes).map_err(Into::into))
+            .map_err(|error| format!("export_drawing_bundle: {name}: {error}"))?;
+    }
+    zip.finish()
+        .map_err(|error| format!("export_drawing_bundle: {}: {error}", dest.display()))?;
+    Ok(())
+}
+
+/// Lays a returned drawing (`drawing`, a NIfTI label map from a drawing
+/// bundle) over the volume it was drawn on, as a volume derived from it. The
+/// base must be the very file sent: same id in this dataset, same bytes.
+/// Returns the new volume's id; the error is a sentence for the status line.
+pub fn attach_drawing(
+    handle: &ServerHandle,
+    drawing: &FsPath,
+    base_id: &str,
+    base_sha256: &str,
+    base_label: &str,
+) -> Result<String, String> {
+    let source = lock_recover(&handle.volumes)
+        .iter()
+        .find(|volume| volume.id == base_id)
+        .and_then(|volume| volume.source_path.clone())
+        .ok_or_else(|| {
+            format!("Open the dataset with {base_label} to add the drawing made on it.")
+        })?;
+    let actual = sha256_file(&source)
+        .map_err(|error| format!("attach_drawing: {}: {error}", source.display()))?;
+    if actual != base_sha256 {
+        return Err(format!(
+            "The drawing was made on a different copy of {base_label}, so it isn't added."
+        ));
+    }
+
+    // Kept with other user work, since the received bundle is a temp extraction.
+    let dir = data_root().join("drawings");
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("attach_drawing: {}: {error}", dir.display()))?;
+    let stem = strip_nifti_file_suffix(
+        source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("volume"),
+    );
+    let dest = (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{stem}_drawing.nii")),
+            n => dir.join(format!("{stem}_drawing_{n}.nii")),
+        })
+        .find(|path| !path.exists())
+        .expect("an unused name");
+    fs::copy(drawing, &dest)
+        .map_err(|error| format!("attach_drawing: {}: {error}", dest.display()))?;
+    register_derived_volume(handle, &source, &dest, "drawing")
 }
 
 /// Stream `source` into the bundle zip under a unique `data/<name>` entry,
@@ -1259,6 +1441,322 @@ fn verify_bundle_entry(
         "actual": actual,
         "status": status,
     }));
+}
+
+/// Read a NiiVue document (`.nvd`, JSON, maybe gzipped) as if it were a
+/// bundle. Each volume it embeds (a NIfTI header object plus the raw voxel
+/// bytes) is written out as a `.nii` into a fresh imports dir, and the result
+/// has `read_bundle`'s shape, so the frontend opens it the same way. The
+/// document's own urls point at the server that saved it, long gone, so only
+/// the embedded data is used. Meshes aren't read yet.
+pub fn read_document(path: &FsPath) -> Result<Value, String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("read_document: {}: {error}", path.display()))?;
+    let raw = fs::read(&canonical)
+        .map_err(|error| format!("read_document: read {}: {error}", canonical.display()))?;
+    let text = if raw.starts_with(&[0x1f, 0x8b]) {
+        // Same bomb guard as bundles: a document holds compressed voxels, so a
+        // real one inflates a few times over, not hundreds.
+        let limit = (raw.len() as u64).saturating_mul(50).max(256 * 1024 * 1024);
+        let mut inflated = Vec::new();
+        copy_within_budget(&mut GzDecoder::new(raw.as_slice()), &mut inflated, &mut {
+            limit
+        })
+        .map_err(|error| format!("read_document: inflate {}: {error}", canonical.display()))?;
+        inflated
+    } else {
+        raw
+    };
+    let not_a_document = || {
+        format!(
+            "read_document: {} is not a NiiVue document",
+            canonical.display()
+        )
+    };
+    // NiiVue writes JSON when asked, CBOR otherwise; JSON starts with `{`.
+    let document: Value = if text.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{') {
+        serde_json::from_slice(&text).map_err(|_| not_a_document())?
+    } else {
+        let value: ciborium::Value =
+            ciborium::from_reader(text.as_slice()).map_err(|_| not_a_document())?;
+        cbor_to_document_json(value)
+    };
+    let doc_volumes = document
+        .get("volumes")
+        .and_then(Value::as_array)
+        .filter(|volumes| !volumes.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "read_document: {} has no volumes to open",
+                canonical.display()
+            )
+        })?;
+
+    let imports_dir = data_root().join("imports");
+    let out_root = imports_dir.join(bundle_import_dir_name(&canonical));
+    if out_root.parent() != Some(imports_dir.as_path()) {
+        return Err(format!(
+            "read_document: refusing to write to {}",
+            out_root.display()
+        ));
+    }
+    let data_dir = out_root.join("data");
+    let _ = fs::remove_dir_all(&out_root);
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("read_document: create {}: {error}", data_dir.display()))?;
+
+    let mut manifest_volumes = Vec::new();
+    let mut view_volumes = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    for (index, volume) in doc_volumes.iter().enumerate() {
+        let name = volume.get("name").and_then(Value::as_str).unwrap_or("");
+        let stem = document_volume_stem(name, index);
+        let mut id = stem.clone();
+        let mut copy = 2;
+        while !taken.insert(id.clone()) {
+            id = format!("{stem}-{copy}");
+            copy += 1;
+        }
+        let file_name = format!("{id}.nii");
+        let nifti = document_volume_nifti(volume)
+            .map_err(|error| format!("read_document: volume {name:?}: {error}"))?;
+        fs::write(data_dir.join(&file_name), nifti)
+            .map_err(|error| format!("read_document: write {file_name}: {error}"))?;
+
+        // NiiVue draws volume 0 under the rest, so it is the base.
+        let role = if index == 0 { "base" } else { "overlay" };
+        manifest_volumes.push(json!({
+            "id": id,
+            "role": role,
+            "label": name,
+            "data": format!("data/{file_name}"),
+        }));
+        let mut view = json!({ "id": id, "role": role });
+        for key in ["colormap", "opacity", "calMin", "calMax"] {
+            // A number NiiVue couldn't write as JSON (NaN) comes as an object; skip it.
+            if let Some(value) = volume.get(key).filter(|v| v.is_string() || v.is_number()) {
+                view[key] = value.clone();
+            }
+        }
+        view_volumes.push(view);
+    }
+
+    let label = canonical
+        .file_stem()
+        .map(|name| name.to_string_lossy().into_owned());
+    // The dataset takes its name from here, so the window says "Motor Demo",
+    // not "data".
+    let description = json!({ "Name": label, "BIDSVersion": "1.8.0" });
+    fs::write(
+        data_dir.join("dataset_description.json"),
+        description.to_string(),
+    )
+    .map_err(|error| format!("read_document: write dataset_description.json: {error}"))?;
+    Ok(json!({
+        "manifest": {
+            "nvbundle": "nvd",
+            "source": { "datasetName": label },
+            "volumes": manifest_volumes,
+            "view": {
+                "version": 1,
+                // The document's crosshair is a fraction of NiiVue's resliced
+                // volume, which doesn't map back to millimetres here.
+                "scene": { "crosshairPos": null, "clipPlanes": [] },
+                "volumes": view_volumes,
+                "viewMode": "",
+            },
+        },
+        "bundlePath": out_root.display().to_string(),
+        "dataDir": data_dir.display().to_string(),
+        "verification": [],
+        "allVerified": true,
+    }))
+}
+
+/// A CBOR document as the JSON NiiVue would have written for it: typed arrays
+/// (plain bytes, or RFC 8746 tags 64-87) become `{ $ta, b64 }` and numbers JSON
+/// can't hold become `{ $num }`. Only the raw bytes of a typed array are used
+/// here, so every one is called a Uint8Array.
+fn cbor_to_document_json(value: ciborium::Value) -> Value {
+    use base64::Engine;
+    use ciborium::Value as Cbor;
+    let bytes = |bytes: Vec<u8>| {
+        json!({
+            "$ta": "Uint8Array",
+            "b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    };
+    match value {
+        Cbor::Integer(integer) => {
+            let integer = i128::from(integer);
+            i64::try_from(integer)
+                .map(Value::from)
+                .unwrap_or_else(|_| Value::from(integer as f64))
+        }
+        Cbor::Float(float) if float.is_finite() => Value::from(float),
+        Cbor::Float(float) => {
+            json!({ "$num": if float.is_nan() { "NaN" } else if float > 0.0 { "Infinity" } else { "-Infinity" } })
+        }
+        Cbor::Text(text) => Value::String(text),
+        Cbor::Bool(flag) => Value::Bool(flag),
+        Cbor::Null => Value::Null,
+        Cbor::Bytes(raw) => bytes(raw),
+        Cbor::Tag(64..=87, inner) => match *inner {
+            Cbor::Bytes(raw) => bytes(raw),
+            other => cbor_to_document_json(other),
+        },
+        Cbor::Tag(_, inner) => cbor_to_document_json(*inner),
+        Cbor::Array(items) => Value::Array(items.into_iter().map(cbor_to_document_json).collect()),
+        Cbor::Map(entries) => Value::Object(
+            entries
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    let key = match key {
+                        Cbor::Text(text) => text,
+                        Cbor::Integer(integer) => i128::from(integer).to_string(),
+                        _ => return None,
+                    };
+                    Some((key, cbor_to_document_json(value)))
+                })
+                .collect(),
+        ),
+        _ => Value::Null,
+    }
+}
+
+/// A file stem for a document volume: NiiVue names them like
+/// `Overlay / spmMotor.nii.gz L0`, which comes back as `spmMotor`.
+fn document_volume_stem(name: &str, index: usize) -> String {
+    let name = name.rsplit(" / ").next().unwrap_or(name);
+    let name = match name.rsplit_once(" L") {
+        Some((head, frame)) if !frame.is_empty() && frame.bytes().all(|b| b.is_ascii_digit()) => {
+            head
+        }
+        _ => name,
+    };
+    let name = name.trim_end_matches(".gz").trim_end_matches(".nii");
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = stem.trim_matches('-');
+    if stem.is_empty() {
+        format!("volume-{index}")
+    } else {
+        stem.to_string()
+    }
+}
+
+/// A NIfTI-1 file (header, empty extension, voxels) from a document volume's
+/// `data`: NiiVue's parsed header object and the voxel bytes in file order.
+fn document_volume_nifti(volume: &Value) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let data = volume.get("data").ok_or("it has no embedded data")?;
+    let hdr = data.get("hdr").ok_or("it has no header")?;
+    let b64 = data
+        .pointer("/img/b64")
+        .and_then(Value::as_str)
+        .ok_or("it has no voxels")?;
+    let img = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|error| format!("bad voxel data: {error}"))?;
+
+    let num = |key: &str| hdr.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    let nums = |key: &str| -> Vec<f64> {
+        hdr.get(key)
+            .and_then(Value::as_array)
+            .map(|values| values.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect())
+            .unwrap_or_default()
+    };
+    let text = |key: &str| {
+        hdr.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let dims = nums("dims");
+    if dims.len() < 4 {
+        return Err("its header has no dimensions".into());
+    }
+    // Little-endian throughout: NiiVue holds the voxels as native typed arrays,
+    // so a big-endian source was already swapped when it was read.
+    let mut out = vec![0u8; 352];
+    let put_i16 = |out: &mut Vec<u8>, at: usize, value: f64| {
+        out[at..at + 2].copy_from_slice(&(value as i16).to_le_bytes())
+    };
+    let put_f32 = |out: &mut Vec<u8>, at: usize, value: f64| {
+        out[at..at + 4].copy_from_slice(&(value as f32).to_le_bytes())
+    };
+    let put_text = |out: &mut Vec<u8>, at: usize, len: usize, value: &str| {
+        let bytes = value.as_bytes();
+        let n = bytes.len().min(len - 1);
+        out[at..at + n].copy_from_slice(&bytes[..n]);
+    };
+    out[0..4].copy_from_slice(&348i32.to_le_bytes());
+    out[38] = b'r';
+    out[39] = num("dim_info") as u8;
+    for (i, value) in dims.iter().take(8).enumerate() {
+        put_i16(&mut out, 40 + 2 * i, *value);
+    }
+    put_f32(&mut out, 56, num("intent_p1"));
+    put_f32(&mut out, 60, num("intent_p2"));
+    put_f32(&mut out, 64, num("intent_p3"));
+    put_i16(&mut out, 68, num("intent_code"));
+    put_i16(&mut out, 70, num("datatypeCode"));
+    put_i16(&mut out, 72, num("numBitsPerVoxel"));
+    put_i16(&mut out, 74, num("slice_start"));
+    for (i, value) in nums("pixDims").iter().take(8).enumerate() {
+        put_f32(&mut out, 76 + 4 * i, *value);
+    }
+    put_f32(&mut out, 108, 352.0);
+    put_f32(&mut out, 112, num("scl_slope"));
+    put_f32(&mut out, 116, num("scl_inter"));
+    put_i16(&mut out, 120, num("slice_end"));
+    out[122] = num("slice_code") as u8;
+    out[123] = num("xyzt_units") as u8;
+    put_f32(&mut out, 124, num("cal_max"));
+    put_f32(&mut out, 128, num("cal_min"));
+    put_f32(&mut out, 132, num("slice_duration"));
+    put_f32(&mut out, 136, num("toffset"));
+    put_text(&mut out, 148, 80, &text("description"));
+    put_text(&mut out, 228, 24, &text("aux_file"));
+    put_i16(&mut out, 252, num("qform_code"));
+    put_i16(&mut out, 254, num("sform_code"));
+    for (i, key) in [
+        "quatern_b",
+        "quatern_c",
+        "quatern_d",
+        "qoffset_x",
+        "qoffset_y",
+        "qoffset_z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        put_f32(&mut out, 256 + 4 * i, num(key));
+    }
+    if let Some(rows) = hdr.get("affine").and_then(Value::as_array) {
+        for (r, row) in rows.iter().take(3).enumerate() {
+            for (c, value) in row.as_array().into_iter().flatten().take(4).enumerate() {
+                put_f32(
+                    &mut out,
+                    280 + 16 * r + 4 * c,
+                    value.as_f64().unwrap_or(0.0),
+                );
+            }
+        }
+    }
+    put_text(&mut out, 328, 16, &text("intent_name"));
+    out[344..348].copy_from_slice(b"n+1\0");
+    out.extend_from_slice(&img);
+    Ok(out)
 }
 
 async fn api_info(State(state): State<AppState>) -> Json<Value> {
@@ -1735,7 +2233,7 @@ async fn write_patch(
     let mut patch = lock_recover(&state.patch);
     *patch = Some(payload.clone());
     // Best-effort persistence under NeuroFlow: never fail the HTTP response.
-    let persisted_path = persist_correction_patch(&payload);
+    let persisted_path = persist_correction_patch(&state, &payload);
     Ok(Json(json!({
         "ok": true,
         "path": persisted_path.unwrap_or_else(|| "session://neurovue/correction.patch.json".to_string()),
@@ -1744,12 +2242,12 @@ async fn write_patch(
 }
 
 /// Resolved NeuroFlow launch context, present only when running under a session.
-struct NeuroflowContext {
-    session_dir: PathBuf,
-    output_dir: PathBuf,
-    step: String,
-    tool: String,
-    context: Value,
+pub(crate) struct NeuroflowContext {
+    pub(crate) session_dir: PathBuf,
+    pub(crate) output_dir: PathBuf,
+    pub(crate) step: String,
+    pub(crate) tool: String,
+    pub(crate) context: Value,
 }
 
 /// Read the NeuroFlow session context from the environment, if any.
@@ -1757,7 +2255,14 @@ struct NeuroflowContext {
 /// Returns `None` when `NEUROFLOW_SESSION` is unset, preserving the legacy
 /// in-memory-only behavior.
 fn neuroflow_context() -> Option<NeuroflowContext> {
-    let session_dir = PathBuf::from(std::env::var_os("NEUROFLOW_SESSION")?);
+    Some(neuroflow_context_at(PathBuf::from(std::env::var_os(
+        "NEUROFLOW_SESSION",
+    )?)))
+}
+
+/// The NeuroFlow context of the session at `session_dir`. The NEUROFLOW_STEP
+/// and NEUROFLOW_OUTPUT_DIR variables still override what context.json says.
+pub(crate) fn neuroflow_context_at(session_dir: PathBuf) -> NeuroflowContext {
     let context = fs::read(session_dir.join("context.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -1787,13 +2292,13 @@ fn neuroflow_context() -> Option<NeuroflowContext> {
         .unwrap_or("neuroflow.gallery.tools/neurovue")
         .to_string();
 
-    Some(NeuroflowContext {
+    NeuroflowContext {
         session_dir,
         output_dir,
         step,
         tool,
         context,
-    })
+    }
 }
 
 /// Dataset roots declared by the NeuroFlow launch context (`inputs.bids_dir`
@@ -1832,8 +2337,9 @@ fn neuroflow_dataset_roots() -> Vec<PathBuf> {
 
 /// Persist a saved correction patch to disk and append a provenance line when
 /// running under NeuroFlow. Returns the disk path written, if any. All failures
-/// are swallowed so HTTP saves never break.
-fn persist_correction_patch(payload: &Value) -> Option<String> {
+/// are swallowed so HTTP saves never break. When the page sent its `view`, the
+/// review state of the volumes in it is written beside the patch.
+fn persist_correction_patch(state: &AppState, payload: &Value) -> Option<String> {
     let ctx = neuroflow_context()?;
 
     let patch_path = ctx.output_dir.join("correction.patch.json");
@@ -1845,12 +2351,43 @@ fn persist_correction_patch(payload: &Value) -> Option<String> {
         .and_then(|bytes| fs::write(&patch_path, bytes).ok())
         .is_some();
 
+    let mut outputs = json!({ "correction.patch.json": "correction.patch.json" });
+    if let Some(view) = payload.get("view") {
+        let in_view: HashSet<&str> = view["volumes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|volume| volume["id"].as_str())
+            .collect();
+        let volumes: Vec<VolumeEntry> = lock_recover(&state.volumes)
+            .iter()
+            .filter(|volume| in_view.contains(volume.id.as_str()))
+            .cloned()
+            .collect();
+        let root = lock_recover(&state.dataset_root).clone();
+        let review = review_state(&volumes, root.as_deref(), view);
+        if serde_json::to_vec_pretty(&review)
+            .ok()
+            .and_then(|bytes| fs::write(ctx.output_dir.join("review.state.json"), bytes).ok())
+            .is_some()
+        {
+            outputs["review.state.json"] = json!("review.state.json");
+        }
+    }
+    append_provenance(&ctx, "correction.save", outputs);
+
+    written.then(|| patch_path.display().to_string())
+}
+
+/// Append one line to the session's provenance.jsonl. Best effort: a session
+/// that can't take it doesn't fail the save that wrote the outputs.
+pub(crate) fn append_provenance(ctx: &NeuroflowContext, action: &str, outputs: Value) {
     let provenance = json!({
         "ts": iso8601_utc_now(),
         "step": ctx.step,
         "tool": ctx.tool,
-        "action": "correction.save",
-        "outputs": { "correction.patch.json": "correction.patch.json" },
+        "action": action,
+        "outputs": outputs,
         "agent": "neurovue@neuroflow-aware"
     });
     if let Ok(mut line) = serde_json::to_vec(&provenance) {
@@ -1863,13 +2400,136 @@ fn persist_correction_patch(payload: &Value) -> Option<String> {
             let _ = std::io::Write::write_all(&mut file, &line);
         }
     }
+}
 
-    written.then(|| patch_path.display().to_string())
+/// `review.state.json`: the dataset, the reviewed volumes and the view. One
+/// builder for the window's Save and for `neurovue-cli`.
+pub(crate) fn review_state_of(handle: &ServerHandle, view: &Value) -> Value {
+    let volumes = lock_recover(&handle.volumes).clone();
+    review_state(&volumes, dataset_root(handle).as_deref(), view)
+}
+
+fn review_state(volumes: &[VolumeEntry], root: Option<&FsPath>, view: &Value) -> Value {
+    let bids = root.and_then(read_bids_dataset_info);
+    json!({
+        "neurovue": env!("CARGO_PKG_VERSION"),
+        "savedAt": iso8601_utc_now(),
+        "dataset": {
+            "root": root.map(|path| path.display().to_string()),
+            "name": bids.as_ref().and_then(|info| info.name.clone()),
+            "bidsVersion": bids.as_ref().and_then(|info| info.bids_version.clone()),
+            "datasetDoi": bids.as_ref().and_then(|info| info.dataset_doi.clone()),
+        },
+        "volumes": volumes,
+        "view": view,
+    })
+}
+
+/// A handle on the dataset a NeuroFlow session's `inputs` name, for
+/// `neurovue-cli`: no port, no pyramid warming, no cache sweep and none of the
+/// window's working derivatives. `bids_dir` opens every volume under it, and
+/// `volumes` opens just those files; `match` keeps the volumes whose file name
+/// it matches.
+pub(crate) fn open_offline(inputs: &Value) -> Result<ServerHandle, String> {
+    let max_volumes = max_volume_count();
+    let mut root = None;
+    let mut volumes = Vec::new();
+    if let Some(bids_dir) = inputs["bids_dir"].as_str() {
+        let dir =
+            fs::canonicalize(bids_dir).map_err(|error| format!("bids_dir {bids_dir}: {error}"))?;
+        volumes = discover_volumes_in_root(&dir, max_volumes).volumes;
+        root = Some(dir);
+    }
+    for path in inputs["volumes"].as_array().into_iter().flatten() {
+        let path = path.as_str().ok_or("volumes: expected file paths")?;
+        let file = fs::canonicalize(path).map_err(|error| format!("volume {path}: {error}"))?;
+        let parent = file
+            .parent()
+            .unwrap_or_else(|| FsPath::new(""))
+            .to_path_buf();
+        let entry = volume_entry(&file, root.as_deref().unwrap_or(&parent))
+            .ok_or_else(|| format!("volume {path}: not a readable NIfTI file"))?;
+        if !volumes
+            .iter()
+            .any(|volume: &VolumeEntry| volume.id == entry.id)
+        {
+            volumes.push(entry);
+        }
+        root.get_or_insert(parent);
+    }
+    // shortcut: match filters after discovery's max_volume_count() cap, so a dataset past the cap
+    // can hide matches; filter during discovery if that bites.
+    if let Some(pattern) = inputs["match"].as_str() {
+        volumes.retain(|volume| {
+            volume
+                .source_path
+                .as_deref()
+                .and_then(FsPath::file_name)
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| glob_match(pattern, name))
+        });
+    }
+    if volumes.is_empty() {
+        return Err(
+            "no volumes to review: give inputs.bids_dir or inputs.volumes (and check match)"
+                .to_string(),
+        );
+    }
+    Ok(new_handle(VolumeDiscovery {
+        root,
+        stats: DiscoveryStats {
+            total_discovered: volumes.len(),
+            truncated: false,
+        },
+        volumes,
+    }))
+}
+
+/// The source file of the handle's volume `id`, if it has one.
+pub(crate) fn volume_source_path(handle: &ServerHandle, id: &str) -> Option<String> {
+    lock_recover(&handle.volumes)
+        .iter()
+        .find(|volume| volume.id == id)
+        .and_then(|volume| volume.source_path.as_ref())
+        .map(|path| path.display().to_string())
+}
+
+/// The ids of the handle's volumes, in order.
+pub(crate) fn volume_ids(handle: &ServerHandle) -> Vec<String> {
+    lock_recover(&handle.volumes)
+        .iter()
+        .map(|volume| volume.id.clone())
+        .collect()
+}
+
+/// A shell-style match of `name` against `pattern`: `*` is any run of
+/// characters and `?` one character.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let (pattern, name): (Vec<char>, Vec<char>) =
+        (pattern.chars().collect(), name.chars().collect());
+    let (mut p, mut n, mut star, mut mark) = (0, 0, None, 0);
+    while n < name.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
+            p += 1;
+            n += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            mark = n;
+            p += 1;
+        } else if let Some(s) = star {
+            p = s + 1;
+            mark += 1;
+            n = mark;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
 }
 
 /// Format the current time as an ISO-8601 UTC timestamp (e.g.
 /// `2026-06-02T18:30:00Z`) without pulling in a date/time dependency.
-fn iso8601_utc_now() -> String {
+pub(crate) fn iso8601_utc_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3960,6 +4620,141 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn glob_match_handles_stars_and_question_marks() {
+        assert!(glob_match("*_T1w.nii*", "sub-01_T1w.nii.gz"));
+        assert!(glob_match("sub-0?_*", "sub-07_bold.nii"));
+        assert!(!glob_match("*_T1w.nii*", "sub-01_bold.nii.gz"));
+        assert!(!glob_match("sub-0?", "sub-010"));
+    }
+
+    #[test]
+    fn headless_review_writes_patch_state_bundle_and_provenance() {
+        let dir = scratch_dir("headless-review");
+        let bids = dir.join("ds");
+        fs::create_dir_all(&bids).unwrap();
+        fs::write(
+            bids.join("dataset_description.json"),
+            r#"{"Name":"Tiny","BIDSVersion":"1.9.0"}"#,
+        )
+        .unwrap();
+        write_nifti(&bids.join("sub-01/anat/sub-01_T1w.nii.gz"), [4, 4, 4], 7);
+        write_nifti(&bids.join("sub-01/func/sub-01_bold.nii.gz"), [4, 4, 4], 9);
+        let session = dir.join("session");
+        fs::create_dir_all(&session).unwrap();
+        let plane = json!({"id": "a", "label": "A", "enabled": true, "depth": 0.2, "azimuth": 0, "elevation": 0});
+        let context = json!({
+            "step": "review",
+            "inputs": {
+                "bids_dir": bids,
+                "match": "*_T1w.nii*",
+                "clip_planes": [plane, {"id": "b", "enabled": false}],
+                "bundle": true,
+            },
+        });
+        fs::write(session.join("context.json"), context.to_string()).unwrap();
+
+        let outputs = crate::headless::review(session.clone()).unwrap();
+
+        let out = session.join("outputs/review");
+        assert_eq!(outputs.as_object().unwrap().len(), 3);
+        let patch: Value =
+            serde_json::from_slice(&fs::read(out.join("correction.patch.json")).unwrap()).unwrap();
+        assert_eq!(patch["backend"], "headless");
+        assert_eq!(patch["clipPlanes"], json!([plane]));
+        assert!(patch["asset"]["manifest"]
+            .as_str()
+            .unwrap()
+            .ends_with("sub-01_T1w.nii.gz"));
+        let state: Value =
+            serde_json::from_slice(&fs::read(out.join("review.state.json")).unwrap()).unwrap();
+        assert_eq!(state["dataset"]["name"], "Tiny");
+        assert_eq!(state["volumes"].as_array().unwrap().len(), 1);
+        assert_eq!(state["view"]["volumes"][0]["id"], patch["asset"]["id"]);
+        assert!(out.join("review.nvbundle").metadata().unwrap().len() > 0);
+        let provenance = fs::read_to_string(session.join("provenance.jsonl")).unwrap();
+        let line: Value = serde_json::from_str(provenance.lines().last().unwrap()).unwrap();
+        assert_eq!(line["action"], "review.headless");
+        assert_eq!(line["step"], "review");
+        assert_eq!(line["outputs"], outputs);
+    }
+
+    #[test]
+    fn document_volume_stem_strips_niivue_decorations() {
+        assert_eq!(document_volume_stem("mni152.nii.gz L0", 0), "mni152");
+        assert_eq!(
+            document_volume_stem("Overlay / spmMotor.nii.gz L0", 1),
+            "spmMotor"
+        );
+        assert_eq!(document_volume_stem("brain L1x.nii", 0), "brain-L1x");
+        assert_eq!(document_volume_stem(" / ", 3), "volume-3");
+    }
+
+    #[test]
+    fn cbor_documents_read_like_json_ones() {
+        use ciborium::Value as Cbor;
+        let cbor = Cbor::Map(vec![
+            (Cbor::Text("calMin".into()), Cbor::Float(3.0)),
+            (Cbor::Text("calMinNeg".into()), Cbor::Float(f64::NAN)),
+            (
+                Cbor::Text("dims".into()),
+                Cbor::Array(vec![Cbor::Integer(3.into())]),
+            ),
+            (Cbor::Text("img".into()), Cbor::Bytes(vec![1, 2])),
+            (
+                Cbor::Text("lut".into()),
+                Cbor::Tag(85, Box::new(Cbor::Bytes(vec![0, 0, 128, 63]))),
+            ),
+        ]);
+        assert_eq!(
+            cbor_to_document_json(cbor),
+            json!({
+                "calMin": 3.0,
+                "calMinNeg": { "$num": "NaN" },
+                "dims": [3],
+                "img": { "$ta": "Uint8Array", "b64": "AQI=" },
+                "lut": { "$ta": "Uint8Array", "b64": "AACAPw==" },
+            })
+        );
+    }
+
+    #[test]
+    fn document_volume_nifti_writes_a_nifti1_header() {
+        use base64::Engine;
+        let volume = json!({
+            "data": {
+                "hdr": {
+                    "dims": [3, 2, 1, 1, 1, 1, 1, 1],
+                    "pixDims": [1, 2, 2, 2, 0, 0, 0, 0],
+                    "datatypeCode": 2,
+                    "numBitsPerVoxel": 8,
+                    "scl_slope": 1,
+                    "sform_code": 2,
+                    "affine": [[2, 0, 0, -1], [0, 2, 0, -2], [0, 0, 2, -3], [0, 0, 0, 1]],
+                },
+                "img": {
+                    "$ta": "Uint8Array",
+                    "b64": base64::engine::general_purpose::STANDARD.encode([7u8, 9]),
+                },
+            },
+        });
+        let nifti = document_volume_nifti(&volume).unwrap();
+        assert_eq!(nifti.len(), 354);
+        assert_eq!(i32::from_le_bytes(nifti[0..4].try_into().unwrap()), 348);
+        assert_eq!(i16::from_le_bytes(nifti[42..44].try_into().unwrap()), 2);
+        assert_eq!(i16::from_le_bytes(nifti[70..72].try_into().unwrap()), 2);
+        assert_eq!(
+            f32::from_le_bytes(nifti[108..112].try_into().unwrap()),
+            352.0
+        );
+        assert_eq!(
+            f32::from_le_bytes(nifti[292..296].try_into().unwrap()),
+            -1.0
+        );
+        assert_eq!(&nifti[344..348], b"n+1\0");
+        assert_eq!(&nifti[352..], &[7, 9]);
     }
 
     #[cfg(unix)]

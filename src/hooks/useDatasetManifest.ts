@@ -7,6 +7,7 @@ import type {
   WarmProgress,
 } from '../domain/desktop'
 import {
+  closeDataset as closeDatasetOnHost,
   fetchDesktopManifest,
   fetchDesktopManifestVersion,
   manifestLoadedStatus,
@@ -29,6 +30,8 @@ export interface DatasetManifestState {
   /** The launch-time server/manifest lookup has finished (even if it failed). */
   isStartupResolved: boolean
   items: DesktopItem[]
+  /** The status as last set, ahead of the render that shows it. */
+  latestStatus: () => { text: string; tone: StatusTone }
   manifest: DesktopManifest | null
   selected: DesktopItem | null
   selectedId: string | null
@@ -48,6 +51,7 @@ export interface DatasetManifestState {
   ) => Promise<boolean>
   /** Open the bundled MNI152 sample (never recorded in recents). */
   openSampleDataset: () => Promise<boolean>
+  closeDataset: () => Promise<void>
   /** Empty when the build ships no sample (e.g. a plain browser). */
   samplePath: string
   refreshDesktopManifest: (selectId?: string) => Promise<void>
@@ -89,12 +93,17 @@ export function useDatasetManifest({
     text: string
     tone: StatusTone
   }>({ text: 'Starting NeuroVue.', tone: 'info' })
+  // The status as last set, readable before the render that shows it: an
+  // agent's open_path reports the error the moment opening fails.
+  const latestStatusRef = useRef(statusLine)
   const setStatus = useCallback(
     (text: string, tone: StatusTone = 'info'): void => {
+      latestStatusRef.current = { text, tone }
       setStatusLine({ text, tone })
     },
     [],
   )
+  const latestStatus = useCallback(() => latestStatusRef.current, [])
   // Routine refreshes (the manifest poll, re-reads after an action) must not
   // wipe an error or success the user hasn't acted on yet; the next real
   // action replaces it.
@@ -223,7 +232,12 @@ export function useDatasetManifest({
         manifestLoadedStatus(nextManifest, result.datasetRoot),
         'success',
       )
-      if (remember) promoteRecentRef.current(promoteAs ?? result.datasetRoot)
+      // A single volume is remembered as itself: its folder may hold others
+      // (Received collects every file handed over on iOS).
+      if (remember)
+        promoteRecentRef.current(
+          promoteAs ?? result.openedFile ?? result.datasetRoot,
+        )
     },
     [setStatus],
   )
@@ -309,6 +323,22 @@ export function useDatasetManifest({
     if (opened) setStatus('Opened the MNI152 sample template.', 'success')
     return opened
   }, [openRecentDataset, samplePath, setStatus])
+
+  const closeDataset = useCallback(async (): Promise<void> => {
+    await closeDatasetOnHost()
+    // An empty serverUrl stops the manifest poll until the next open.
+    manifestVersionRef.current = null
+    setManifest(null)
+    setSelectedId(null)
+    setServerUrl('')
+    setDatasetRoot('')
+    setBidsName('')
+    setBidsDatasetDoi('')
+    setCacheRoot('')
+    setWarmProgress(null)
+    setDatasetRevision((revision) => revision + 1)
+    setStatus('Cleared.')
+  }, [setStatus])
 
   useEffect(() => {
     if (!serverUrl) return
@@ -409,6 +439,7 @@ export function useDatasetManifest({
     isOpeningDataset,
     isStartupResolved,
     items,
+    latestStatus,
     manifest,
     samplePath,
     selected,
@@ -421,6 +452,7 @@ export function useDatasetManifest({
     openLocalVolumeFile,
     openRecentDataset,
     openSampleDataset,
+    closeDataset,
     refreshDesktopManifest,
     refreshDesktopManifestData,
     setSelectedId,

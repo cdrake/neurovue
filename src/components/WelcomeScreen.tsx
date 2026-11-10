@@ -9,7 +9,7 @@ import {
   X,
 } from 'lucide-react'
 import type { JSX, ReactNode } from 'react'
-import { isBundlePath } from '../domain/bundle'
+import { isBundlePath, isDocumentPath } from '../domain/bundle'
 import { recentDatasetLabel } from '../hooks/useRecentDatasets'
 
 // Shown in place of the workbench whenever no dataset is open: at launch
@@ -62,7 +62,7 @@ export function WelcomeScreen({
       <div className="nv-welcome-inner">
         <header className="nv-welcome-header">
           <h2 id="nv-welcome-title">Welcome to NeuroVue</h2>
-          <p>Open a NIfTI file or a BIDS dataset folder to start.</p>
+          <p>Open a NIfTI volume or a BIDS dataset to start.</p>
         </header>
 
         <div className="nv-welcome-columns">
@@ -194,7 +194,8 @@ function WelcomeAction({
 }
 
 function RecentIcon({ path }: { path: string }): JSX.Element {
-  if (isBundlePath(path)) return <PackageOpen aria-hidden="true" size={15} />
+  if (isBundlePath(path) || isDocumentPath(path))
+    return <PackageOpen aria-hidden="true" size={15} />
   if (/\.nii(\.gz)?$/i.test(path)) {
     return <FileJson aria-hidden="true" size={15} />
   }

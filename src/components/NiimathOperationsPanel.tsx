@@ -34,7 +34,7 @@ const NIIMATH_OPERATIONS: Array<{
   },
   {
     id: 'upperThreshold',
-    label: 'Upper Threshold',
+    label: 'Upper threshold',
     needsOperand: true,
     needsMask: false,
     operandLabel: 'Upper threshold (intensity)',
@@ -50,7 +50,7 @@ const NIIMATH_OPERATIONS: Array<{
   },
   {
     id: 'mask',
-    label: 'Apply Mask',
+    label: 'Apply mask',
     needsOperand: false,
     needsMask: true,
     operandLabel: 'Value',
@@ -189,7 +189,7 @@ export function NiimathOperationsPanel({
 
         {selectedOperation.needsMask ? (
           <label className="nv-field nv-field-wide">
-            <span>Mask Volume</span>
+            <span>Mask volume</span>
             <span className="nv-path-picker">
               <input
                 aria-label="Selected mask volume"

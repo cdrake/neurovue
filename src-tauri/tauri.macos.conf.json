@@ -1,6 +1,6 @@
 {
   "build": {
-    "beforeBuildCommand": "bun run ensure-niimath && bun run build-quicklook && bun run build"
+    "beforeBuildCommand": "bun run ensure-niimath && bun run build-mcp-server && bun run build-quicklook && bun run build"
   },
   "bundle": {
     "macOS": {

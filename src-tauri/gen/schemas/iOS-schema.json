@@ -2257,6 +2257,48 @@
           "type": "string",
           "const": "dialog:deny-save",
           "markdownDescription": "Denies the save command without any pre-configured scope."
+        },
+        {
+          "description": "Pencil double-tap and squeeze events, and haptic feedback.\n#### This default permission set includes:\n\n- `allow-feedback`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "type": "string",
+          "const": "pencil:default",
+          "markdownDescription": "Pencil double-tap and squeeze events, and haptic feedback.\n#### This default permission set includes:\n\n- `allow-feedback`\n- `allow-register-listener`\n- `allow-remove-listener`"
+        },
+        {
+          "description": "Enables the feedback command without any pre-configured scope.",
+          "type": "string",
+          "const": "pencil:allow-feedback",
+          "markdownDescription": "Enables the feedback command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "pencil:allow-register-listener",
+          "markdownDescription": "Enables the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "pencil:allow-remove-listener",
+          "markdownDescription": "Enables the remove_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the feedback command without any pre-configured scope.",
+          "type": "string",
+          "const": "pencil:deny-feedback",
+          "markdownDescription": "Denies the feedback command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "pencil:deny-register-listener",
+          "markdownDescription": "Denies the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "pencil:deny-remove-listener",
+          "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         }
       ]
     },

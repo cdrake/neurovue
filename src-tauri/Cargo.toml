@@ -1,19 +1,37 @@
 [package]
 name = "neurovue"
-version = "0.1.0"
+version = "0.2.0"
 description = "NeuroVue desktop viewer"
 edition = "2021"
+license = "BSD-2-Clause"
+# tauri dev runs the window, not neurovue-cli
+default-run = "neurovue"
 
 [lib]
 name = "neurovue_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# neurovue-cli builds only with --features cli, so tauri's bundler (which copies
+# every enabled bin) leaves it out of the app.
+[features]
+cli = []
+
+[[bin]]
+name = "neurovue-cli"
+required-features = ["cli"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 axum = "0.7"
+base64 = "0.22"
+# NiiVue saves documents (.nvd) as CBOR by default.
+ciborium = "0.2"
 flate2 = "1"
+futures-util = { version = "0.3", default-features = false }
+# The receive tokens; the OS generator on every platform, Windows included.
+getrandom = { version = "0.3", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -22,7 +40,9 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.1"
-tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync"] }
+# Apple Pencil double-tap, squeeze and haptics on iPad; empty elsewhere.
+tauri-plugin-pencil = { path = "plugins/pencil" }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
@@ -37,6 +57,8 @@ portable-pty = "0.8"
 # Native share sheet (src/share.rs) — Apple platforms. macOS uses AppKit's
 # NSSharingService; iOS uses UIKit's UIActivityViewController.
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# poll() for Bonjour discovery (src/bonjour.rs).
+libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray"] }
 

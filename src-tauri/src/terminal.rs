@@ -67,6 +67,7 @@ pub struct PythonInterpreter {
 #[tauri::command]
 pub fn terminal_start(
     app: tauri::AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, TerminalState>,
     server_state: tauri::State<'_, NeuroVueState>,
     options: TerminalStartOptions,
@@ -91,9 +92,9 @@ pub fn terminal_start(
         cmd.arg("-l");
     }
 
-    let dataset_root = volumetric_server::dataset_root(&server_state.server);
+    let dataset_root = volumetric_server::dataset_root(&server_state.server(window.label()));
     let cache_root = volumetric_server::cache_root();
-    let server_url = server_state.server.url.clone();
+    let server_url = server_state.server(window.label()).url.clone();
 
     let working_dir = dataset_root
         .clone()
@@ -230,9 +231,10 @@ pub fn terminal_kill(state: tauri::State<'_, TerminalState>, id: String) -> Resu
 /// never runs on, and freezes, the main thread.
 #[tauri::command]
 pub async fn discover_python_interpreters(
+    window: tauri::Window,
     server_state: tauri::State<'_, NeuroVueState>,
 ) -> Result<Vec<PythonInterpreter>, String> {
-    let dataset_root = volumetric_server::dataset_root(&server_state.server);
+    let dataset_root = volumetric_server::dataset_root(&server_state.server(window.label()));
     tauri::async_runtime::spawn_blocking(move || discover_interpreters(dataset_root.as_deref()))
         .await
         .map_err(|error| format!("discover_python_interpreters: join error: {error}"))
