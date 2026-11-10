@@ -19,7 +19,7 @@ against the open dataset:
   volumes or the selected one.
 
 Outputs load back into the viewer. The view is a single React component,
-`PipelineView`, published from the neuroflow repo as `@cdrake/neuroflow-react`.
+`PipelineView`, published from the neuroflow repo as `@medview/neuroflow-react`.
 
 ## Constraints
 
@@ -28,14 +28,14 @@ Outputs load back into the viewer. The view is a single React component,
   absent. Nothing in the shared iOS path depends on it.
 - NeuroVue uses local installs. It doesn't bundle `neuroflow-mcp` or the gallery,
   so there is no new signing or notarization work.
-- `@cdrake/neuroflow-react` is published by npm user `christopher.drake`, who
+- `@medview/neuroflow-react` is published by npm user `christopher.drake`, who
   owns the `@cdrake` org. The `@neuroflow` scope belongs to someone else.
 - NeuroFlow uses React 18 and NeuroVue uses React 19. The package must work with
   both.
 - `neuroflow-mcp` handles requests one at a time, in order (`server.rs`
   `serve`). Batches therefore run serially on one process.
 
-## Part 1 — `@cdrake/neuroflow-react` (neuroflow repo)
+## Part 1 — `@medview/neuroflow-react` (neuroflow repo)
 
 ### 1.1 Cut the leaks
 
@@ -127,7 +127,7 @@ The entry must not import anything from `src/data/gallery.ts`, `host.ts`,
 ### 1.5 Package folder `packages/neuroflow-react/`
 
 - `package.json`:
-  - `name: @cdrake/neuroflow-react`, `version: 0.1.0`, `type: module`;
+  - `name: @medview/neuroflow-react`, `version: 0.1.0`, `type: module`;
   - `exports`: `"."` (ESM and types) and `"./style.css"`;
   - `peerDependencies`: `react` and `react-dom` at `^18.3 || ^19`, and
     `@xyflow/react` at `^12`;
@@ -153,7 +153,7 @@ The app keeps importing from `src/`, and its layout doesn't change.
   layout rules go here too.
 - `app.css` imports `components.css`, and the app shell adds `nf-root` to its
   root element so the app looks the same as before.
-- The package ships the file as `@cdrake/neuroflow-react/style.css`. Consumers
+- The package ships the file as `@medview/neuroflow-react/style.css`. Consumers
   also import `@xyflow/react/dist/style.css`.
 
 ### 1.7 Pre-publish check
@@ -349,7 +349,7 @@ This is NeuroVue's wrapper around `PipelineView`:
 - it shows the setup state when NeuroVue isn't configured, and the process
   error state with Restart (see Error handling);
 - it imports `@xyflow/react/dist/style.css` and
-  `@cdrake/neuroflow-react/style.css`.
+  `@medview/neuroflow-react/style.css`.
 
 `src/domain/neuroflowHostState.ts` has
 `reduceRunState(prev: HostRunState | null, ev: RunEv): HostRunState`, which
@@ -398,7 +398,7 @@ maps start, progress, done, error and cancelled events to `HostRunState`. On
 
 ## Order of work
 
-1. neuroflow repo, Part 1, then publish `@cdrake/neuroflow-react@0.1.0`.
+1. neuroflow repo, Part 1, then publish `@medview/neuroflow-react@0.1.0`.
 2. NeuroVue Part 2, the backend, client, target input and batch reducer.
 3. NeuroVue Part 3, the Dataset | Pipelines switch and `PipelineViewHost`.
 4. The Operations button, and output grouping in Layers.

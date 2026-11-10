@@ -1,4 +1,4 @@
-import type { RunStructured } from '@cdrake/neuroflow-react'
+import type { RunStructured } from '@medview/neuroflow-react'
 import type { NiiVueLocation } from '@niivue/niivue'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {

@@ -6,7 +6,7 @@
 workflow once on the dataset root, or once per filtered volume, and loads the
 outputs back into the viewer.
 
-**Architecture:** The neuroflow repo publishes `@cdrake/neuroflow-react`. Its
+**Architecture:** The neuroflow repo publishes `@medview/neuroflow-react`. Its
 `PipelineView` combines the existing library, diagram and run panel and is
 driven entirely by props. NeuroVue's Rust side spawns a locally installed
 `neuroflow-mcp` and relays JSON-RPC over stdio. A TS client and pure reducers
@@ -28,7 +28,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
   app config dir, next to `mcp.json`.
 - `--data-root` = `mcp.json` `roots`, falling back to the home folder. Do not add
   a separate roots setting.
-- Package: `@cdrake/neuroflow-react@0.1.0`, ESM only.
+- Package: `@medview/neuroflow-react@0.1.0`, ESM only.
   - Peer dependencies: `react` and `react-dom` at `^18.3 || ^19`, and
     `@xyflow/react` at `^12`.
   - Dependency: `lucide-react`.
@@ -232,7 +232,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
 **Interfaces:**
 - Consumes: Task 1 `runTypes.ts`; Task 3 `PipelineView`, `PipelineViewProps` and
   `wrapToolAsWorkflow`; `toolFromDocument` from `src/data/documents.ts`.
-- Produces, as the `@cdrake/neuroflow-react` exports:
+- Produces, as the `@medview/neuroflow-react` exports:
   - the components `PipelineView`, `WorkflowDiagram`, `WorkflowLibrary` and
     `RunPanel`, with the prop types `PipelineViewProps`,
     `WorkflowDiagramProps`, `WorkflowLibraryProps` and `RunPanelProps`;
@@ -244,7 +244,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
     `ParameterDef`;
   - all of `runTypes.ts`.
 
-  It also produces `@cdrake/neuroflow-react/style.css`, built from
+  It also produces `@medview/neuroflow-react/style.css`, built from
   `src/styles/components.css`.
 
   `WorkflowDiagramProps`, `WorkflowLibraryProps` and `RunPanelProps` need
@@ -290,7 +290,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
 - [ ] **Step 4: Verify.** Run `npm run lib:check`. Expected: exits 0. Fix leaks
   at their source, not by loosening the check.
 
-- [ ] **Step 5: Commit.** Message: `feat: publishable @cdrake/neuroflow-react package`.
+- [ ] **Step 5: Commit.** Message: `feat: publishable @medview/neuroflow-react package`.
   Add `packages/neuroflow-react/dist` and `test/consumer/node_modules` to
   `.gitignore`.
 
@@ -300,7 +300,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
 - [ ] **Step 2: Publish.** Ask the owner to run
   `! cd ~/Dev/neuroflow/packages/neuroflow-react && npm publish --access public`.
   It needs their npm login and 2FA, so don't run it yourself.
-- [ ] **Step 3: Verify.** Run `npm view @cdrake/neuroflow-react version`.
+- [ ] **Step 3: Verify.** Run `npm view @medview/neuroflow-react version`.
   Expected: `0.1.0`.
 - [ ] **Step 4: Push the branch and open a PR in `cdrake/neuroflow`.**
 
@@ -418,7 +418,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
 
 **Files:**
 - Create: `src/domain/neuroflowClient.ts`
-- Modify: `package.json`: `bun add @cdrake/neuroflow-react@^0.1.0 @xyflow/react@^12`.
+- Modify: `package.json`: `bun add @medview/neuroflow-react@^0.1.0 @xyflow/react@^12`.
   This needs Task 5's publish. Until then, a `file:` path to the Task 4
   tarball is an acceptable stand-in, switched to `^0.1.0` before the PR.
   Task 6 doesn't need the package.
@@ -426,7 +426,7 @@ pipeline view design). Read it first. Section numbers (§) below refer to it.
 
 **Interfaces:**
 - Consumes the Task 6 commands and events, and the run types from
-  `@cdrake/neuroflow-react` (Task 5).
+  `@medview/neuroflow-react` (Task 5).
 - Produces:
 
 ```ts
@@ -449,7 +449,7 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
 ```
 
   `RunStructured`, `RunRecord` and `ArtifactDescriptor` are imported (as types)
-  from `@cdrake/neuroflow-react`.
+  from `@medview/neuroflow-react`.
 
   Look up the exact `neuroflow_list` / `neuroflow_describe` argument names and
   result shapes in `~/Dev/neuroflow/crates/neuroflow-mcp/src/server.rs` (around
@@ -493,7 +493,7 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
 
 **Interfaces:**
 - Consumes the Task 7 client types, plus `HostRunState`, `RunStructured` and
-  `RunRecord` from `@cdrake/neuroflow-react`, and `DesktopItem` from
+  `RunRecord` from `@medview/neuroflow-react`, and `DesktopItem` from
   `src/domain/desktop.ts`.
 - Produces, in `pipelineTargets.ts`:
   - `targetInput(inputSchema: JsonSchema): { name: string; kind: 'dataset' | 'volume' } | null`
@@ -637,7 +637,7 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[]  // flat
   - back on Dataset, the dataset desktop still draws, pans and resizes. If
     OpenSeadragon needs it, trigger a redraw when it's shown again.
 
-- [ ] **Step 3: Commit.** Message: `feat: Pipelines view hosting @cdrake/neuroflow-react PipelineView`.
+- [ ] **Step 3: Commit.** Message: `feat: Pipelines view hosting @medview/neuroflow-react PipelineView`.
 
 ### Task 10: Outputs, run headers in Layers, and the Operations button
 

@@ -1,4 +1,4 @@
-import type { HostRunState } from '@cdrake/neuroflow-react'
+import type { HostRunState } from '@medview/neuroflow-react'
 import { type RunEv, reduceRunState } from './neuroflowHostState'
 import type { BatchTarget } from './pipelineTargets'
 

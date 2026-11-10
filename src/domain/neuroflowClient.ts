@@ -3,7 +3,7 @@ import type {
   ArtifactDescriptor,
   RunRecord,
   RunStructured,
-} from '@cdrake/neuroflow-react'
+} from '@medview/neuroflow-react'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen } from '@tauri-apps/api/event'
 

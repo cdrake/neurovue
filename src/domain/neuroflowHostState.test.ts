@@ -3,7 +3,7 @@ import type {
   HostRunState,
   RunRecord,
   RunStructured,
-} from '@cdrake/neuroflow-react'
+} from '@medview/neuroflow-react'
 import { type RunEv, reduceRunState } from './neuroflowHostState'
 
 const run = (evs: RunEv[]) =>

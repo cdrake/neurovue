@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { RunStructured } from '@cdrake/neuroflow-react'
+import type { RunStructured } from '@medview/neuroflow-react'
 import type { RunEv } from './neuroflowHostState'
 import {
   isActive,

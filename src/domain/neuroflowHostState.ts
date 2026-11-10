@@ -2,7 +2,7 @@ import type {
   HostRunState,
   RunRecord,
   RunStructured,
-} from '@cdrake/neuroflow-react'
+} from '@medview/neuroflow-react'
 
 export type RunEv =
   | { type: 'start'; workflowId: string }

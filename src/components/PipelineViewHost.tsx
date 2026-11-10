@@ -1,5 +1,5 @@
 import '@xyflow/react/dist/style.css'
-import '@cdrake/neuroflow-react/style.css'
+import '@medview/neuroflow-react/style.css'
 import {
   PipelineView,
   type RunStructured,
@@ -7,7 +7,7 @@ import {
   toolFromDocument,
   type WorkflowDocument,
   wrapToolAsWorkflow,
-} from '@cdrake/neuroflow-react'
+} from '@medview/neuroflow-react'
 import { type JSX, useEffect, useRef, useState } from 'react'
 import { type DesktopItem, fetchVolumeMetadata } from '../domain/desktop'
 import {
