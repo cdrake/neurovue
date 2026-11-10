@@ -14,10 +14,10 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         do {
             image = try NIfTIReader.read(url: url)
         } catch {
-            // Also the decline path for .gz files that aren't NIfTI: Quick Look falls back
-            // to its generic preview.
+            // We claim every .gz (macOS types .nii.gz as plain gzip). Throwing leaves the panel
+            // blank rather than falling back to Quick Look's generic preview, so show file info.
             log.info("no preview for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
-            throw error
+            return PreviewPage.fileInfoReply(url)
         }
 
         let slices = [View.axial, .coronal, .sagittal].compactMap { SliceRenderer.slice(image, view: $0) }
@@ -85,6 +85,25 @@ enum PreviewPage {
             rows.append(("File size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))
         }
         return rows
+    }
+
+    /// Plain name/kind/size/date page for files the NIfTI reader declines.
+    static func fileInfoReply(_ url: URL) -> QLPreviewReply {
+        let values = try? url.resourceValues(forKeys: [.localizedTypeDescriptionKey, .fileSizeKey, .contentModificationDateKey])
+        var rows: [(String, String)] = []
+        if let kind = values?.localizedTypeDescription { rows.append(("Kind", kind)) }
+        if let size = values?.fileSize {
+            rows.append(("Size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))
+        }
+        if let date = values?.contentModificationDate {
+            rows.append(("Modified", date.formatted(date: .abbreviated, time: .shortened)))
+        }
+        let html = html(title: url.lastPathComponent, figures: [], rows: rows)
+        let reply = QLPreviewReply(dataOfContentType: .html, contentSize: CGSize(width: 480, height: 200)) { _ in
+            Data(html.utf8)
+        }
+        reply.title = url.lastPathComponent
+        return reply
     }
 
     static func format(_ v: Double) -> String {
