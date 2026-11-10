@@ -30,6 +30,19 @@
         <string>org.gnu.gnu-zip-archive</string>
       </array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FreeSurfer MGH image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>org.freesurfer.mgz</string>
+        <string>org.freesurfer.mgh</string>
+      </array>
+    </dict>
   </array>
   <key>UTImportedTypeDeclarations</key>
   <array>
@@ -49,6 +62,44 @@
         <key>public.filename-extension</key>
         <array>
           <string>nii</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.freesurfer.mgz</string>
+      <key>UTTypeDescription</key>
+      <string>Compressed FreeSurfer MGH image</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeReferenceURL</key>
+      <string>https://surfer.nmr.mgh.harvard.edu/fswiki/FsTutorial/MghFormat</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>mgz</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>org.freesurfer.mgh</string>
+      <key>UTTypeDescription</key>
+      <string>FreeSurfer MGH image</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeReferenceURL</key>
+      <string>https://surfer.nmr.mgh.harvard.edu/fswiki/FsTutorial/MghFormat</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>mgh</string>
         </array>
       </dict>
     </dict>

@@ -63,7 +63,7 @@ enum PreviewPage {
         let h = image.header
         let n = h.shape
         var rows: [(String, String)] = []
-        rows.append(("Format", "NIfTI-\(h.version)\(h.gzipped ? ", gzip-compressed" : "")"))
+        rows.append(("Format", "\(h.format)\(h.gzipped ? ", gzip-compressed" : "")"))
         var dims = "\(n[0]) × \(n[1]) × \(n[2])"
         if h.volumes > 1 { dims += " × \(h.volumes) volumes (showing the first)" }
         rows.append(("Dimensions", dims))

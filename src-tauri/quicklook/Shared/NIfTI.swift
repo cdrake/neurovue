@@ -26,7 +26,10 @@ enum NIfTIError: Error, CustomStringConvertible {
 }
 
 struct NIfTIHeader {
-    var version = 1
+    /// Shown in the preview's Format row: "NIfTI-1", "NIfTI-2" or "MGH".
+    var format = "NIfTI-1"
+    /// Bytes readHeader consumed; voxels start at voxOffset.
+    var headerSize = 348
     var gzipped = false
     /// Written on a machine of the other byte order; applies to voxels too.
     var swapped = false
@@ -147,7 +150,8 @@ enum NIfTIReader {
     /// 1 = coronal, 2 = axial) of the first volume.
     static func read(url: URL, world: Set<Int> = [0, 1, 2]) throws -> NIfTIImage {
         let source = try openSource(url: url)
-        let header = try readHeader(source)
+        let mgh = ["mgz", "mgh"].contains(url.pathExtension.lowercased())
+        let header = try mgh ? MGH.readHeader(source) : readHeader(source)
         guard let bpv = header.bytesPerVoxel else {
             throw NIfTIError.unsupportedDatatype(header.datatype)
         }
@@ -160,8 +164,7 @@ enum NIfTIReader {
         }
         guard n[0] <= maxPlanePixels else { throw NIfTIError.tooLarge }
 
-        let headerBytes = header.version == 1 ? 348 : 540
-        try source.skip(max(header.voxOffset - headerBytes, 0))
+        try source.skip(max(header.voxOffset - header.headerSize, 0))
 
         let mid = n.map { $0 / 2 }
         var p0 = wanted.contains(0) ? [Float](repeating: 0, count: n[1] * n[2]) : []
@@ -240,7 +243,8 @@ enum NIfTIReader {
 
         let r = HeaderBytes(bytes: bytes, swapped: swapped)
         var h = NIfTIHeader()
-        h.version = version
+        h.format = "NIfTI-\(version)"
+        h.headerSize = total
         h.swapped = swapped
         h.gzipped = source is GzipSource
         if version == 1 {
@@ -285,7 +289,7 @@ enum NIfTIReader {
     }
 }
 
-private struct HeaderBytes {
+struct HeaderBytes {
     let bytes: [UInt8]
     let swapped: Bool
 
