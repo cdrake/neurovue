@@ -52,7 +52,7 @@ const MENU_EXPRESS_VIEW: &str = "view-express-view";
 #[cfg(desktop)]
 const MENU_PIPELINES: &str = "view-pipelines";
 #[cfg(desktop)]
-const MENU_CLEAR_LAYERS: &str = "view-clear-layers";
+const MENU_CLEAR_ALL: &str = "view-clear-all";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,6 +226,16 @@ fn percent_decode(input: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Drops this window's dataset: its server stops, and the next request gets an empty one.
+#[tauri::command]
+async fn close_dataset(
+    window: tauri::Window,
+    state: tauri::State<'_, NeuroVueState>,
+) -> Result<(), String> {
+    state.close(window.label());
+    Ok(())
 }
 
 #[tauri::command]
@@ -677,10 +687,10 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         Some("CmdOrCtrl+Alt+V"),
     )?;
     let pipelines = MenuItem::with_id(handle, MENU_PIPELINES, "Pipelines", true, None::<&str>)?;
-    let clear_layers = MenuItem::with_id(
+    let clear_all = MenuItem::with_id(
         handle,
-        MENU_CLEAR_LAYERS,
-        "Clear Layers",
+        MENU_CLEAR_ALL,
+        "Clear All",
         true,
         Some("CmdOrCtrl+Shift+K"),
     )?;
@@ -703,7 +713,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         Some(view_menu) => view_menu.prepend_items(&[
             &express_view,
             &pipelines,
-            &clear_layers,
+            &clear_all,
             &allow_agents,
             &PredefinedMenuItem::separator(handle)?,
         ])?,
@@ -712,7 +722,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
                 handle,
                 "View",
                 true,
-                &[&express_view, &pipelines, &clear_layers, &allow_agents],
+                &[&express_view, &pipelines, &clear_all, &allow_agents],
             )?;
             menu.append(&view_menu)?;
         }
@@ -819,6 +829,7 @@ pub fn run() {
             neurovue_runtime_capabilities,
             neurovue_server_info,
             open_dataset_path,
+            close_dataset,
             add_overlay_volume_path,
             read_mesh_file,
             export_dataset_bundle,

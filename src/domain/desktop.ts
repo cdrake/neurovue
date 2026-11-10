@@ -356,6 +356,10 @@ export async function openDatasetByPath(
   }
 }
 
+export async function closeDataset(): Promise<void> {
+  await invoke('close_dataset')
+}
+
 export async function addOverlayVolumeByPath(
   path: string,
 ): Promise<OverlayAddResult> {

@@ -12,7 +12,7 @@ export type NativeMenuAction =
   | 'export-bundle'
   | 'share'
   | 'pipelines'
-  | 'clear-layers'
+  | 'clear-all'
 
 export type NativeMenuHandlers = Record<
   NativeMenuAction,

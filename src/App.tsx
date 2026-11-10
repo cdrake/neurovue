@@ -338,6 +338,7 @@ export function App(): JSX.Element {
     openLocalVolumeFile,
     openRecentDataset,
     openSampleDataset,
+    closeDataset,
     samplePath,
     refreshDesktopManifest,
     refreshDesktopManifestData,
@@ -812,13 +813,17 @@ export function App(): JSX.Element {
     setSelectedId(itemId)
   }
 
-  /** Back to the base volume alone: drops every overlay, the atlas and all meshes. */
-  function clearLayers(): void {
+  /** View ▸ Clear All: closes the dataset, overlays and meshes, back to the welcome screen. */
+  async function clearAll(): Promise<void> {
     setOverlayIds(new Set())
     setAtlasId(null)
     setMeshes([])
     setNeuroflowRuns({})
-    setStatus('Layers cleared.', 'success')
+    try {
+      await closeDataset()
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    }
   }
 
   function toggleOverlayLayer(itemId: string): void {
@@ -1178,7 +1183,7 @@ export function App(): JSX.Element {
       showDatasetPane()
       showLeftPane('pipelines')
     },
-    'clear-layers': clearLayers,
+    'clear-all': clearAll,
   })
 
   // The live NiiVue instance for agent tools, set once its volumes load.

@@ -7,6 +7,7 @@ import type {
   WarmProgress,
 } from '../domain/desktop'
 import {
+  closeDataset as closeDatasetOnHost,
   fetchDesktopManifest,
   fetchDesktopManifestVersion,
   manifestLoadedStatus,
@@ -50,6 +51,7 @@ export interface DatasetManifestState {
   ) => Promise<boolean>
   /** Open the bundled MNI152 sample (never recorded in recents). */
   openSampleDataset: () => Promise<boolean>
+  closeDataset: () => Promise<void>
   /** Empty when the build ships no sample (e.g. a plain browser). */
   samplePath: string
   refreshDesktopManifest: (selectId?: string) => Promise<void>
@@ -322,6 +324,22 @@ export function useDatasetManifest({
     return opened
   }, [openRecentDataset, samplePath, setStatus])
 
+  const closeDataset = useCallback(async (): Promise<void> => {
+    await closeDatasetOnHost()
+    // An empty serverUrl stops the manifest poll until the next open.
+    manifestVersionRef.current = null
+    setManifest(null)
+    setSelectedId(null)
+    setServerUrl('')
+    setDatasetRoot('')
+    setBidsName('')
+    setBidsDatasetDoi('')
+    setCacheRoot('')
+    setWarmProgress(null)
+    setDatasetRevision((revision) => revision + 1)
+    setStatus('Cleared.')
+  }, [setStatus])
+
   useEffect(() => {
     if (!serverUrl) return
     let cancelled = false
@@ -434,6 +452,7 @@ export function useDatasetManifest({
     openLocalVolumeFile,
     openRecentDataset,
     openSampleDataset,
+    closeDataset,
     refreshDesktopManifest,
     refreshDesktopManifestData,
     setSelectedId,
