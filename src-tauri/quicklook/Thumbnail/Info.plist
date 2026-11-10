@@ -32,7 +32,7 @@
     <dict>
       <key>QLSupportedContentTypes</key>
       <array>
-        <string>gov.nih.nifti-1</string>
+        <string>org.nifti.nii</string>
         <string>org.gnu.gnu-zip-archive</string>
       </array>
       <key>QLThumbnailMinimumDimension</key>

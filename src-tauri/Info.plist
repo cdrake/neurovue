@@ -6,9 +6,9 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>gov.nih.nifti-1</string>
+      <string>org.nifti.nii</string>
       <key>UTTypeDescription</key>
-      <string>NIfTI image</string>
+      <string>NIfTI Volume</string>
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
