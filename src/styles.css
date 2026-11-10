@@ -1099,15 +1099,6 @@ button {
   background: var(--panel-2);
 }
 
-.nv-zoom-readout {
-  margin-left: auto;
-  border: 1px solid rgba(215, 166, 66, 0.32);
-  background: rgba(17, 17, 15, 0.78);
-  color: var(--muted);
-  font-size: 11px;
-  padding: 4px 7px;
-}
-
 .nv-wheel-mode-select {
   grid-template-columns: auto minmax(0, 1fr) auto;
   width: 100%;
@@ -2404,6 +2395,25 @@ button {
   padding: 0;
 }
 
+/* Different-subject candidates, collapsed under the same-subject ones. */
+.nv-layer-add-other {
+  display: grid;
+  gap: 6px;
+}
+.nv-layer-add-other > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+.nv-layer-add-other > summary em {
+  color: var(--green);
+  font-style: normal;
+}
+.nv-layer-add-other[open] > summary {
+  margin-bottom: 0;
+}
+
 /* Click-to-add rows in the "Add overlay" pool. */
 .nv-layer-add-option {
   display: flex;
@@ -3003,6 +3013,11 @@ button {
 @media (max-width: 700px) {
   .nv-workbench {
     grid-template-columns: 1fr;
+  }
+
+  /* The dataset grid is hidden on phones; so are its zoom controls. */
+  .nv-inspector-tools {
+    display: none;
   }
 
   .nv-workbench.is-file-list-collapsed,

@@ -35,6 +35,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Scan,
   Send,
   Shapes,
   Share2,
@@ -165,7 +166,7 @@ import {
 import { useAgentClient } from './hooks/useAgentClient'
 import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
-import { useNativeMenu } from './hooks/useNativeMenu'
+import { useExpressMenuLabel, useNativeMenu } from './hooks/useNativeMenu'
 import {
   isInContainerTemp,
   rebaseContainerPath,
@@ -529,6 +530,7 @@ export function App(): JSX.Element {
     else if (!isBusyOpening) setIsWorkspaceVisible(false)
   }, [items.length, meshes.length, isBusyOpening])
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
+  const [isNiimathAvailable, setIsNiimathAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
@@ -560,6 +562,7 @@ export function App(): JSX.Element {
     void resolveRuntimeCapabilities().then((capabilities) => {
       if (cancelled) return
       setIsTerminalAvailable(capabilities.terminalAvailable)
+      setIsNiimathAvailable(capabilities.nativeNiimathAvailable)
       setIsAirdropAvailable(capabilities.airdropAvailable)
     })
     return () => {
@@ -632,6 +635,19 @@ export function App(): JSX.Element {
     clearFilters,
     setFilters,
   } = useVolumeFilters(items)
+
+  // Dataset view re-fits whenever the shown set changes (open or filter); a
+  // user/agent zoom only lasts until then. Adjusted during render so the new
+  // layout commits once at the fit size, which the tile animation relies on.
+  const shownKey = useMemo(
+    () => filteredItems.map((item) => item.id).join('\n'),
+    [filteredItems],
+  )
+  const [fittedKey, setFittedKey] = useState(shownKey)
+  if (fittedKey !== shownKey) {
+    setFittedKey(shownKey)
+    setDesktopZoom(1)
+  }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: datasetRevision is the trigger; dataset-scoped filters reset only when the backing dataset changes.
   useEffect(() => {
@@ -910,7 +926,7 @@ export function App(): JSX.Element {
         next.add(result.id)
         return next
       })
-      setStatus(`Overlay ${result.label} added to every volume.`, 'success')
+      setStatus(`${result.label} added to every volume.`, 'success')
     }
   }
 
@@ -1178,6 +1194,7 @@ export function App(): JSX.Element {
     rememberUiMode(next)
   }
 
+  useExpressMenuLabel(isExpress)
   useNativeMenu({
     'express-view': toggleUiMode,
     'open-file': openLocalVolumeFile,
@@ -1765,10 +1782,7 @@ export function App(): JSX.Element {
                 ? 'No dataset open'
                 : isSampleDataset
                   ? datasetName
-                  : bidsName ||
-                    datasetRoot ||
-                    serverUrl ||
-                    'Resolving local server'}
+                  : bidsName || datasetRoot || 'Untitled workspace'}
             </p>
             {datasetNotice && !showWelcome ? (
               <p className="nv-dataset-notice" role="status">
@@ -1952,7 +1966,7 @@ export function App(): JSX.Element {
                     }}
                     title={
                       selected
-                        ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                        ? 'Export dataset bundle (volumes + this view) — one file you can share'
                         : 'Select a volume to export a bundle'
                     }
                     type="button"
@@ -2062,7 +2076,7 @@ export function App(): JSX.Element {
               onClick={handleExportBundle}
               title={
                 selected
-                  ? 'Export dataset bundle (volumes + this view) — the shareable/AirDrop payload'
+                  ? 'Export dataset bundle (volumes + this view) — one file you can share'
                   : 'Select a volume to export a bundle'
               }
               type="button"
@@ -2228,7 +2242,7 @@ export function App(): JSX.Element {
             >
               <section
                 className={`nv-dataset-pane ${mouseContext === 'desktop' ? 'is-context-active' : ''}`}
-                aria-label="OSD dataset viewer"
+                aria-label="Dataset view"
                 onPointerEnter={() => setMouseContext('desktop')}
                 onPointerLeave={() => setMouseContext(null)}
               >
@@ -2287,6 +2301,19 @@ export function App(): JSX.Element {
                 onPointerDown={(event) =>
                   beginSplitDrag(event, splitRef, setSplitPercent)
                 }
+                onKeyDown={(event) => {
+                  const step =
+                    event.key === 'ArrowLeft'
+                      ? -2
+                      : event.key === 'ArrowRight'
+                        ? 2
+                        : 0
+                  if (!step) return
+                  event.preventDefault()
+                  setSplitPercent((value) =>
+                    clamp(value + step, MIN_SPLIT, MAX_SPLIT),
+                  )
+                }}
                 role="separator"
                 title="Resize panes"
                 type="button"
@@ -2368,6 +2395,7 @@ export function App(): JSX.Element {
                   }
                   renderWheelMode={renderWheelMode}
                   shading={shading}
+                  onShadingChange={setShading}
                   viewMode={viewMode}
                 />
               </section>
@@ -2414,7 +2442,7 @@ export function App(): JSX.Element {
               {isExpress ? null : (
                 <fieldset
                   className="nv-inspector-tools"
-                  aria-label="Desktop controls"
+                  aria-label="Dataset grid zoom"
                 >
                   <DesktopZoomControls
                     zoom={desktopZoom}
@@ -2426,13 +2454,10 @@ export function App(): JSX.Element {
                       setDesktopZoom((zoom) => zoomBy(zoom, 0.8))
                     }
                   />
-                  <span className="nv-zoom-readout">
-                    {Math.round(desktopZoom * 100)}%
-                  </span>
                 </fieldset>
               )}
 
-              {isExpress ? null : (
+              {isExpress || !isNiimathAvailable ? null : (
                 <SidePanelTabs
                   activeTab={sidePanelTab}
                   onChange={setSidePanelTab}
@@ -2440,7 +2465,9 @@ export function App(): JSX.Element {
               )}
 
               <div className="nv-sidepanel-content">
-                {isExpress || sidePanelTab === 'inspect' ? (
+                {isExpress ||
+                !isNiimathAvailable ||
+                sidePanelTab === 'inspect' ? (
                   <>
                     <LayerPanel
                       atlasId={atlasId}
@@ -2868,10 +2895,11 @@ function DesktopZoomControls({
         className="nv-pane-icon-button"
         disabled={zoom === 1}
         onClick={onFit}
-        title="Reset zoom"
+        title="Fit to pane"
+        aria-label="Fit to pane"
         type="button"
       >
-        <Maximize2 size={15} />
+        <Scan size={15} />
       </button>
     </>
   )
@@ -3076,6 +3104,45 @@ function LayerPanel({
     )
   }
 
+  // Only the subject check is available before the volume loads (the
+  // world-space check needs post-load extents), so a different-subject
+  // candidate is flagged right in the pool. In a large BIDS dataset those are
+  // most of the pool, so they sit behind a disclosure under the same-subject ones.
+  const sameSubjectCandidates: DesktopItem[] = []
+  const otherSubjectCandidates: DesktopItem[] = []
+  for (const item of addCandidates) {
+    ;(layerSubjectWarning(selected, item)
+      ? otherSubjectCandidates
+      : sameSubjectCandidates
+    ).push(item)
+  }
+  const renderAddOption = (item: DesktopItem): JSX.Element => {
+    const warn = layerSubjectWarning(selected, item)
+    return (
+      <button
+        className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
+        disabled={!selected}
+        key={item.id}
+        onClick={() => onOverlayToggle(item.id)}
+        title={warn ? `${item.label} — ${warn}` : item.label}
+        type="button"
+      >
+        <Plus size={13} />
+        <span>
+          <strong>{item.label}</strong>
+          <small>{layerOptionMeta(item)}</small>
+        </span>
+        {warn ? (
+          <AlertTriangle
+            aria-label="Different subject than base"
+            className="nv-layer-add-warn"
+            size={13}
+          />
+        ) : null}
+      </button>
+    )
+  }
+
   return (
     <section className="nv-control-section nv-layer-panel">
       <div className="nv-panel-heading">
@@ -3182,36 +3249,15 @@ function LayerPanel({
         <em>{addCandidates.length}</em>
       </div>
       <div className="nv-layer-list">
-        {addCandidates.map((item) => {
-          // Only the subject check is available before the volume loads (the
-          // world-space check needs post-load extents), so surface a
-          // different-subject candidate right in the pool — the mismatch is
-          // cheapest to catch before it's blended onto the base.
-          const warn = layerSubjectWarning(selected, item)
-          return (
-            <button
-              className={`nv-layer-add-option${warn ? ' is-warning' : ''}`}
-              disabled={!selected}
-              key={item.id}
-              onClick={() => onOverlayToggle(item.id)}
-              title={warn ? `${item.label} — ${warn}` : item.label}
-              type="button"
-            >
-              <Plus size={13} />
-              <span>
-                <strong>{item.label}</strong>
-                <small>{layerOptionMeta(item)}</small>
-              </span>
-              {warn ? (
-                <AlertTriangle
-                  aria-label="Different subject than base"
-                  className="nv-layer-add-warn"
-                  size={13}
-                />
-              ) : null}
-            </button>
-          )
-        })}
+        {sameSubjectCandidates.map(renderAddOption)}
+        {otherSubjectCandidates.length > 0 ? (
+          <details className="nv-layer-add-other">
+            <summary>
+              Other subjects <em>{otherSubjectCandidates.length}</em>
+            </summary>
+            {otherSubjectCandidates.map(renderAddOption)}
+          </details>
+        ) : null}
         {addCandidates.length === 0 ? (
           <div className="nv-filter-empty">No overlay candidates.</div>
         ) : null}

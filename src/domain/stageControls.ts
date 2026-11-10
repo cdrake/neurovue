@@ -13,6 +13,7 @@ import {
   UIKitSegmentedOverlay,
   UIKitSliderOverlay,
 } from '@niivue/uikit'
+import { provideStageControls } from './stageControlSurface'
 
 type RGBA = readonly [number, number, number, number]
 
@@ -86,7 +87,11 @@ const SLIDER_STYLE: Partial<SliderStyle> = {
 // Where the controls sit, in CSS pixels, as the HTML ones did.
 const EDGE = 14
 const TOP = 56
+/** Below the stage's floating title bar, where the controls start. */
+export const TITLE_CLEARANCE = TOP
 const ROW_GAP = 6
+/** Below the view-mode control, the only one at the top right. */
+export const TOP_RIGHT_CLEARANCE = TOP + CONTROL_HEIGHT + ROW_GAP
 const GAP = 2
 const GROUP_GAP = 10
 const SWATCH = 28
@@ -104,6 +109,11 @@ export interface StageControlsState {
   viewMode: string
   /** False before a volume is selected: the view modes show, dimmed. */
   hasVolume: boolean
+  /** The 3D render's shading presets; value is null for custom shading. */
+  look: {
+    presets: readonly { id: string; label: string }[]
+    value: string | null
+  } | null
   measure: { active: boolean; enabled: boolean } | null
   draw: {
     active: boolean
@@ -131,6 +141,7 @@ export interface StageControlsState {
 /** What the controls do; NiivueStage passes fresh closures each render. */
 export interface StageControlsActions {
   viewMode(id: string): void
+  look(id: string): void
   measure(): void
   clearMeasurements(): void
   draw(): void
@@ -192,7 +203,14 @@ export class StageControls implements UIKitOverlayRenderer {
     this.host = host
     const unregister = register(this)
     const unwire = this.controls.attach(host)
+    // Let an agent's list_controls / set_control reach these same controls.
+    const unprovide = provideStageControls(() =>
+      this.state && this.actions
+        ? { state: this.state, actions: this.actions }
+        : null,
+    )
     return () => {
+      unprovide()
       unwire()
       unregister()
       this.host = null
@@ -262,7 +280,24 @@ export class StageControls implements UIKitOverlayRenderer {
       },
     })
 
-    // Measure, then draw, along the top left.
+    // The render's look, then measure, then draw, along the top left.
+    const { look } = state
+    if (look) {
+      segmenteds.push({
+        id: 'look',
+        x: EDGE,
+        y: TOP,
+        segments: look.presets.map((preset) => ({
+          value: preset.id,
+          label: preset.label,
+        })),
+        value: look.value,
+        onChange: (value) => {
+          this.segmenteds.blur()
+          this.actions?.look(value)
+        },
+      })
+    }
     const row: ButtonSpec[] = []
     if (state.measure) {
       row.push(
@@ -270,7 +305,7 @@ export class StageControls implements UIKitOverlayRenderer {
           on: state.measure.active,
           click: () => this.actions?.measure(),
         }),
-        this.toolButton('clear-measure', 'Clear', state.measure.enabled, {
+        this.toolButton('clear-measure', 'Clear ruler', state.measure.enabled, {
           click: () => this.actions?.clearMeasurements(),
         }),
       )
@@ -293,7 +328,7 @@ export class StageControls implements UIKitOverlayRenderer {
           this.toolButton('undo', 'Undo', draw.hasDrawing, {
             click: () => this.actions?.undo(),
           }),
-          this.toolButton('clear-drawing', 'Clear', draw.hasDrawing, {
+          this.toolButton('clear-drawing', 'Clear ink', draw.hasDrawing, {
             click: () => this.actions?.clearDrawing(),
           }),
         )
@@ -419,14 +454,24 @@ export class StageControls implements UIKitOverlayRenderer {
         x: Math.max(EDGE, width - EDGE - modes.width),
       })
     }
-    let x = EDGE
+    const rowX: number[] = []
+    const lookWidth = look ? (this.segmenteds.getLayout('look')?.width ?? 0) : 0
+    let x = look ? EDGE + lookWidth + GROUP_GAP : EDGE
     for (const spec of row) {
       if (spec.id === 'draw' && row[0] !== spec) x += GROUP_GAP - GAP
-      this.buttons.updateButton(spec.id, { x, y: TOP })
+      rowX.push(x)
       x += (this.buttons.getLayout(spec.id)?.width ?? 0) + GAP
     }
+    // A row that would run into the view modes (a narrow pane) drops below them.
+    const modesLeft = width - EDGE - (modes?.width ?? 0)
+    const rowY =
+      x - GAP + GROUP_GAP > modesLeft ? TOP + CONTROL_HEIGHT + ROW_GAP : TOP
+    for (const [index, spec] of row.entries()) {
+      this.buttons.updateButton(spec.id, { x: rowX[index], y: rowY })
+    }
+    if (look) this.segmenteds.updateSegmented('look', { x: EDGE, y: rowY })
     if (palette) {
-      const y = TOP + CONTROL_HEIGHT + ROW_GAP
+      const y = rowY + CONTROL_HEIGHT + ROW_GAP
       let px = EDGE
       for (const color of palette.colors) {
         this.buttons.updateButton(`pen-${color.value}`, { x: px, y })

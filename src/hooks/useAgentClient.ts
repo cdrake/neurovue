@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useRef, useState } from 'react'
 import { setPointLabels } from '../domain/pointLabels'
+import { stageControlSurface } from '../domain/stageControlSurface'
 import type { VolumeFilterValues } from './useVolumeFilters'
 
 /** The agent server's state, as `mcp_status` and the `neurovue-mcp` event report it. */
@@ -134,6 +135,7 @@ export function useAgentClient(options: {
               handlers: coreHandlers({
                 view: view as HostView,
                 labels: setPointLabels,
+                controls: stageControlSurface,
               }),
             }
           }
