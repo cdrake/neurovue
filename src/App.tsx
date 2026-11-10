@@ -812,6 +812,15 @@ export function App(): JSX.Element {
     setSelectedId(itemId)
   }
 
+  /** Back to the base volume alone: drops every overlay, the atlas and all meshes. */
+  function clearLayers(): void {
+    setOverlayIds(new Set())
+    setAtlasId(null)
+    setMeshes([])
+    setNeuroflowRuns({})
+    setStatus('Layers cleared.', 'success')
+  }
+
   function toggleOverlayLayer(itemId: string): void {
     setOverlayIds((current) => {
       const next = new Set(current)
@@ -1169,6 +1178,7 @@ export function App(): JSX.Element {
       showDatasetPane()
       showLeftPane('pipelines')
     },
+    'clear-layers': clearLayers,
   })
 
   // The live NiiVue instance for agent tools, set once its volumes load.

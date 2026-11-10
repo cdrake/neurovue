@@ -51,6 +51,8 @@ const MENU_SHARE: &str = "file-share";
 const MENU_EXPRESS_VIEW: &str = "view-express-view";
 #[cfg(desktop)]
 const MENU_PIPELINES: &str = "view-pipelines";
+#[cfg(desktop)]
+const MENU_CLEAR_LAYERS: &str = "view-clear-layers";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -675,6 +677,13 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         Some("CmdOrCtrl+Alt+V"),
     )?;
     let pipelines = MenuItem::with_id(handle, MENU_PIPELINES, "Pipelines", true, None::<&str>)?;
+    let clear_layers = MenuItem::with_id(
+        handle,
+        MENU_CLEAR_LAYERS,
+        "Clear Layers",
+        true,
+        Some("CmdOrCtrl+Shift+K"),
+    )?;
     let allow_agents = CheckMenuItem::with_id(
         handle,
         mcp::MENU_ALLOW_AGENTS,
@@ -694,6 +703,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         Some(view_menu) => view_menu.prepend_items(&[
             &express_view,
             &pipelines,
+            &clear_layers,
             &allow_agents,
             &PredefinedMenuItem::separator(handle)?,
         ])?,
@@ -702,7 +712,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
                 handle,
                 "View",
                 true,
-                &[&express_view, &pipelines, &allow_agents],
+                &[&express_view, &pipelines, &clear_layers, &allow_agents],
             )?;
             menu.append(&view_menu)?;
         }
