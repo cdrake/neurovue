@@ -49,6 +49,18 @@ export interface NeuroVueAgentActions {
   }): Promise<{ state: string; device: string }>
   /** How the send started last is going; throws if it failed. */
   sendStatus(): Record<string, unknown>
+  /** The NeuroFlow pipelines the Pipelines view can run. */
+  listPipelines(): Promise<Record<string, unknown>>
+  /** Starts a pipeline in the Pipelines view and returns at once. */
+  runPipeline(options: PipelineRunRequest): Promise<Record<string, unknown>>
+  /** The batch started last: whether it's running, and each row's outcome. */
+  pipelineStatus(): Record<string, unknown>
+}
+
+export type PipelineRunRequest = {
+  pipeline: string
+  inputs: Record<string, unknown>
+  target: 'selected' | 'filtered'
 }
 
 type HostView = NiiVueHost['view']
@@ -246,6 +258,27 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
         wholeDataset: params.whole_dataset === true,
       }),
     'neurovue.send_status': async () => actions().sendStatus(),
+    'neurovue.list_pipelines': async () => actions().listPipelines(),
+    'neurovue.run_pipeline': async (params) => {
+      const { inputs, target = 'selected' } = params
+      if (target !== 'selected' && target !== 'filtered') {
+        throw new Error(
+          `target must be "selected" or "filtered", not "${target}".`,
+        )
+      }
+      if (
+        inputs !== undefined &&
+        (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs))
+      ) {
+        throw new Error('inputs must be an object of input values by name.')
+      }
+      return actions().runPipeline({
+        pipeline: stringParam(params, 'pipeline'),
+        inputs: (inputs ?? {}) as Record<string, unknown>,
+        target,
+      })
+    },
+    'neurovue.pipeline_status': async () => actions().pipelineStatus(),
     'neurovue.focus_window': async () => {
       const focused = await invoke<string>('focus_window')
       await untilVisible()

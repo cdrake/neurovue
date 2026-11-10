@@ -304,6 +304,8 @@ interface AgentSend {
   error?: string
 }
 
+import type { PipelineAgent } from './components/PipelineViewHost'
+
 // Lazy: keeps @xyflow/react and the package CSS out of the initial (and iOS) bundle.
 const PipelineViewHost = lazy(() =>
   import('./components/PipelineViewHost').then((m) => ({
@@ -483,6 +485,19 @@ export function App(): JSX.Element {
   function showLeftPane(pane: 'dataset' | 'pipelines'): void {
     setLeftPane(pane)
     if (pane === 'pipelines') setPipelinesMounted(true)
+  }
+  const pipelineAgentRef = useRef<PipelineAgent | null>(null)
+  /** Shows the Pipelines view (agents drive it visibly) and waits for its handle. */
+  async function pipelineAgent(): Promise<PipelineAgent> {
+    if (!hasPipelines) throw new Error('Pipelines need the desktop app.')
+    showDatasetPane()
+    showLeftPane('pipelines')
+    // ~10 s at 60 fps: the view is lazy-loaded on first use.
+    for (let i = 0; i < 600 && !pipelineAgentRef.current; i++)
+      await nextFrames(1)
+    if (!pipelineAgentRef.current)
+      throw new Error('The Pipelines view did not open.')
+    return pipelineAgentRef.current
   }
   // On a phone both side panels start collapsed (off-screen drawers) so the
   // viewer is the landing surface; on desktop/iPad they start open.
@@ -1405,6 +1420,15 @@ export function App(): JSX.Element {
         showMeshes(added)
         return added.map((mesh) => mesh.name)
       },
+      listPipelines: async () => (await pipelineAgent()).list(),
+      runPipeline: async (request) => (await pipelineAgent()).run(request),
+      pipelineStatus: () => {
+        if (!pipelineAgentRef.current)
+          throw new Error(
+            'No pipeline has run in this window; start one with run_pipeline.',
+          )
+        return pipelineAgentRef.current.status()
+      },
     },
   })
   const agentError = agent.status?.error
@@ -2225,6 +2249,7 @@ export function App(): JSX.Element {
                 {pipelinesMounted ? (
                   <Suspense fallback={null}>
                     <PipelineViewHost
+                      agentRef={pipelineAgentRef}
                       hidden={leftPane !== 'pipelines'}
                       ctx={{
                         datasetRoot,

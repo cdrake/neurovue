@@ -136,6 +136,7 @@ NiiVue repo maintains, plus NeuroVue's own:
 | `open_window` | Opens another window and returns its tab id |
 | `focus_window` | Brings a window to the front, which `screenshot` needs |
 | `list_devices`, `send_to_device` | Find NeuroVue on an iPad on the same network and send it the volume shown (or the dataset) to draw on; the person there accepts each send |
+| `list_pipelines`, `run_pipeline`, `pipeline_status` | Desktop only: list the NeuroFlow pipelines this window can run, run one on the selected (or every filtered) volume in the visible Pipelines view, and follow it; masks and label maps load as overlays |
 
 Agents open files by path, with no file picker, but only inside the allowed
 data roots: the home folder unless `roots` in `mcp.json` (next to the on/off

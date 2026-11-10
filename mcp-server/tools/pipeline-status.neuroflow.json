@@ -1,0 +1,42 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.1",
+  "kind": "tool",
+  "id": "org.neurovue/pipeline-status",
+  "version": "1.0.0",
+  "description": "Reports on the pipeline runs started last in this window (by run_pipeline or by the person): whether any are still running, and each run's target, status, error and output files.",
+  "inputs": {},
+  "outputs": {
+    "batch": {
+      "type": "core:json",
+      "description": "The pipeline, running (true while any run is queued or going), and each run's target, status, error and output files."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "pipeline_status",
+      "title": "Pipeline status",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Check on runs that outlasted run_pipeline, or that the person started from the Pipelines view."
+      ],
+      "failures": [
+        {
+          "match": {
+            "contains": "No pipeline has run"
+          },
+          "meaning": "Nothing has run in this window yet.",
+          "remedy": "Start one with run_pipeline.",
+          "retry": "never"
+        }
+      ]
+    }
+  }
+}

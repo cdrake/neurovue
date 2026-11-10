@@ -14,6 +14,7 @@ import {
   type CatalogEntry,
   createNeuroflowClient,
   type NeuroflowStatus,
+  outputArtifacts,
   type RunHandle,
 } from '../domain/neuroflowClient'
 import type { RunTag } from '../domain/overlayRuns'
@@ -32,6 +33,7 @@ import {
   resolveTargets,
   targetInput,
 } from '../domain/pipelineTargets'
+import type { PipelineRunRequest } from '../hooks/useAgentClient'
 
 const client = createNeuroflowClient()
 const SHOWN_NAMES = 3
@@ -53,6 +55,14 @@ export type PipelineViewHostProps = {
   ) => Promise<string[]>
   onShowTarget: (target: BatchTarget) => Promise<void>
   onReveal: (path: string) => void
+  /** Filled while mounted: how agents list, start and follow runs in this view. */
+  agentRef?: { current: PipelineAgent | null }
+}
+
+export type PipelineAgent = {
+  list(): Promise<Record<string, unknown>>
+  run(request: PipelineRunRequest): Promise<Record<string, unknown>>
+  status(): Record<string, unknown>
 }
 
 // WorkflowLibrary reads only id/label/description; the active document is described on demand.
@@ -356,6 +366,156 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
       )
       .catch(() => {})
   }
+
+  // The agent side: the same catalog, targets and runner as the Run button.
+  const batchRef = useRef(batch)
+  batchRef.current = batch
+  const loadCatalog = async (): Promise<CatalogEntry[]> => {
+    const s = await client.status()
+    if (!s.configured)
+      throw new Error(
+        `NeuroFlow isn't set up; its settings file is ${s.settingsPath}.`,
+      )
+    return client.catalog()
+  }
+  const agent: PipelineAgent = {
+    async list() {
+      const list = await loadCatalog()
+      return {
+        pipelines: list.map((e) => {
+          const ti = targetInput(e.inputSchema)
+          const { [ti?.name ?? '']: _, ...properties } =
+            (e.inputSchema.properties as Record<string, unknown>) ?? {}
+          return {
+            id: e.id,
+            title: e.title,
+            description: e.description,
+            kind: e.kind,
+            target: ti && { input: ti.name, kind: ti.kind },
+            inputs: {
+              ...e.inputSchema,
+              properties,
+              required: ((e.inputSchema.required as string[]) ?? []).filter(
+                (n) => n !== ti?.name,
+              ),
+            },
+          }
+        }),
+      }
+    },
+    async run({ pipeline, inputs, target }) {
+      if (isActive(batchRef.current))
+        throw new Error(
+          'A batch is running in this window; wait for it with pipeline_status.',
+        )
+      const e = (await loadCatalog()).find(
+        (x) => x.id === pipeline || x.mcpName === pipeline,
+      )
+      if (!e)
+        throw new Error(`No pipeline ${pipeline}; list_pipelines names them.`)
+      const ti = targetInput(e.inputSchema)
+      if (ti && ti.name in inputs)
+        throw new Error(`Leave out ${ti.name}; the dataset fills it.`)
+      setActiveId(e.id)
+      const { ctx: c } = latest.current
+      const only = target === 'selected'
+      let targets: BatchTarget[] = [
+        {
+          key: 'run',
+          label: e.title,
+          path: '',
+          itemId: c.selected?.id ?? null,
+        },
+      ]
+      if (ti) {
+        const pool =
+          ti.kind === 'volume'
+            ? only
+              ? c.selected
+                ? [c.selected]
+                : []
+              : c.filtered
+            : []
+        const found = Object.fromEntries(
+          await Promise.all(
+            pool.map((i) =>
+              i.id in paths
+                ? ([i.id, paths[i.id]] as const)
+                : fetchVolumeMetadata(i).then(
+                    (m) => [i.id, m.sourcePath ?? null] as const,
+                    () => [i.id, null] as const,
+                  ),
+            ),
+          ),
+        )
+        const withFound = (i: DesktopItem) => ({
+          ...i,
+          sourcePath: found[i.id] ?? null,
+        })
+        const r = resolveTargets(ti.kind, {
+          datasetRoot: c.datasetRoot,
+          bidsName: c.bidsName,
+          filtered: c.filtered.map(withFound),
+          selected: c.selected && withFound(c.selected),
+          selectedOnly: only,
+        })
+        if (r.blocker) throw new Error(`${e.title} ${r.blocker}.`)
+        if (!r.targets.length)
+          throw new Error(
+            `${e.title}: no volumes match; none has a source file on disk.`,
+          )
+        targets = r.targets
+        if (ti.kind === 'volume') setSelectedOnly(only)
+      }
+      begin(startBatch(e.id, e.title, inputs, targets, Date.now()), e)
+      return { pipeline: e.title, targets: targets.map((t) => t.label) }
+    },
+    status() {
+      const b = batchRef.current
+      if (!b)
+        throw new Error(
+          'No pipeline has run in this window; start one with run_pipeline.',
+        )
+      return {
+        pipeline: b.title,
+        running: isActive(b),
+        rows: b.rows.map((r) => {
+          const f = r.run?.finished
+          const s = f && 'structured' in f ? f.structured : null
+          return {
+            target: r.target.label,
+            status: r.status,
+            ...(r.run?.error ? { error: r.run.error } : {}),
+            ...(r.status === 'failed' && r.run?.stderrTail
+              ? {
+                  stderrTail: r.run.stderrTail
+                    .split('\n')
+                    .slice(-20)
+                    .join('\n'),
+                }
+              : {}),
+            ...(s
+              ? {
+                  runId: s.runId,
+                  outputs: outputArtifacts(s).map(({ type, path }) => ({
+                    type,
+                    path,
+                  })),
+                }
+              : {}),
+          }
+        }),
+      }
+    },
+  }
+  useEffect(() => {
+    const ref = props.agentRef
+    if (!ref) return
+    ref.current = agent
+    return () => {
+      ref.current = null
+    }
+  })
 
   if (status && !status.configured)
     return (

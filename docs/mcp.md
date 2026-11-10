@@ -158,6 +158,12 @@ locally installed `neuroflow-mcp`. Nothing is bundled.
   of a single run, or of the row for the shown volume, load as overlays under
   a "Run: …" header in Layers; Show on another row swaps them. Other outputs,
   including intensity volumes, get a Reveal button.
+- **Agents**: `list_pipelines`, `run_pipeline` and `pipeline_status` drive the
+  same view, and the window shows it while they do. `run_pipeline` targets the
+  selected volume (or `target: "filtered"` for every filtered one), fills the
+  target input itself, and waits up to 15 minutes, reporting progress, before
+  returning each row's status and output paths. One batch runs at a time; a
+  run still going after the wait is followed with `pipeline_status`.
 - **Desktop only**: none of this exists on iOS.
 
 ## Platform notes

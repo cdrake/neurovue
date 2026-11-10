@@ -1,0 +1,43 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.1",
+  "kind": "tool",
+  "id": "org.neurovue/list-pipelines",
+  "version": "1.0.0",
+  "description": "Lists the NeuroFlow pipelines (tools and workflows) this window can run from its Pipelines view, with each one's inputs and what it runs on: the selected volume(s) or the dataset root.",
+  "inputs": {},
+  "outputs": {
+    "pipelines": {
+      "type": "core:json",
+      "description": "Each pipeline's id, title, description, target (the input the dataset fills, and whether it is a volume or the dataset) and its other inputs as JSON Schema."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "list_pipelines",
+      "title": "List pipelines",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "Find which analysis pipelines (e.g. FreeSurfer SynthSeg or SynthStrip) can run on the open dataset before calling run_pipeline."
+      ],
+      "effects": ["Opens the Pipelines view in the window's left pane."],
+      "failures": [
+        {
+          "match": {
+            "contains": "NeuroFlow isn't set up"
+          },
+          "meaning": "The app has no neuroflow-mcp configured.",
+          "remedy": "Ask the person to fill in neuroflow.json (Pipelines view > Reveal settings file), then press Check again.",
+          "retry": "after-fix"
+        }
+      ]
+    }
+  }
+}
