@@ -74,6 +74,31 @@ xcrun stapler staple "$DMG"
 spctl -a -vv -t open --context context:primary-signature "$DMG"  # "Notarized Developer ID"
 ```
 
+### Finder Quick Look
+
+The macOS app ships two Quick Look extensions (`src-tauri/quicklook/`). One is
+a Space-bar preview showing the axial, coronal and sagittal mid-slices plus a
+header summary. The other draws Finder icon thumbnails from the axial mid-slice.
+Both work on `.nii` and `.nii.gz` (NIfTI-1 and NIfTI-2) and read only the first
+volume's three mid-planes, so large files preview quickly.
+
+- `bun run build-quicklook` compiles them with `swiftc` into
+  `src-tauri/target/quicklook/`. `tauri build` runs this automatically on macOS
+  (`tauri.macos.conf.json`) and copies them into `Contents/PlugIns/`. They are
+  signed with `APPLE_SIGNING_IDENTITY` when it's set, and ad hoc otherwise.
+- `tauri dev` doesn't load them. Build the app, then launch it once (or copy it
+  to /Applications) so macOS registers the extensions.
+- macOS keys file types on the last extension only, so `.nii.gz` arrives as
+  generic gzip. The extensions claim gzip, check the header, and decline
+  anything that isn't NIfTI.
+- To test from a terminal:
+
+  ```sh
+  qlmanage -r                                   # reset the Quick Look cache
+  qlmanage -x -t -s 256 -o /tmp/thumbs file.nii.gz
+  /usr/bin/log stream --predicate 'subsystem == "org.neurovue.app.quicklook"' --level debug
+  ```
+
 ### iOS (TestFlight)
 
 ```sh
