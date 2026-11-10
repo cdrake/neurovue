@@ -25,11 +25,17 @@ import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
-import type { RenderShading } from '../domain/shading'
+import {
+  matchingShadingPreset,
+  type RenderShading,
+  SHADING_PRESETS,
+} from '../domain/shading'
 import {
   StageControls,
   type StageControlsActions,
   type StageControlsState,
+  TITLE_CLEARANCE,
+  TOP_RIGHT_CLEARANCE,
 } from '../domain/stageControls'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
@@ -54,8 +60,10 @@ interface NiivueStageProps {
   // Block (volume-chunk explode) settings, applied to every loaded layer: tile
   // each volume into a grid of bricks and separate them in the 3D render.
   blocks: BlockSettings
-  // 3D render look (lighting, gradient opacity, silhouette, MIP).
+  // 3D render look (lighting, gradient opacity, silhouette, MIP, cinematic).
   shading: RenderShading
+  // Picks a shading preset from the on-canvas Look control.
+  onShadingChange: (shading: RenderShading) => void
   // Surface meshes shown with the volumes, or on their own when no volume is
   // open (the Surfice case).
   meshes: MeshLayer[]
@@ -148,9 +156,13 @@ interface NiiVueLike {
   // chunkPlan change). Chunked/exploded rendering needs this to take effect.
   updateGLVolume?(): Promise<void>
   activeClipPlaneIndex?: number
+  // Canvas kept clear of tiles and legend, [left, top, right, bottom] CSS px.
+  layoutInset?: [number, number, number, number]
   attachToCanvas(canvas: HTMLCanvasElement): Promise<unknown>
   loadVolumes(volumes: NiiVueVolumeOptions[]): Promise<unknown>
-  setColormapLabel?(volumeIndex: number, cmap: ColorMap | null): Promise<void>
+  // Registers a colormap; one with a `labels` array is a label table. Returns
+  // the canonical name to pass as a volume's colormap.
+  addColormap?(name: string, cmap: ColorMap): string
   setVolume?(
     volumeIndex: number,
     options: {
@@ -167,6 +179,8 @@ interface NiiVueLike {
   // Move the crosshair to an absolute RAS+ world position (mm). Fires
   // locationChange, so the readout updates like a click.
   setCrosshairPos?(pos: [number, number, number]): void
+  // Re-emits locationChange for the current crosshair.
+  createOnLocationChange?(): void
   // Slice layout: SLICE_TYPE.{AXIAL:0, CORONAL:1, SAGITTAL:2, MULTIPLANAR:3, RENDER:4}.
   sliceType?: number
   isOrientationTextVisible?: boolean
@@ -179,6 +193,12 @@ interface NiiVueLike {
     type: 'sliceTypeChange',
     listener: (event: CustomEvent<{ sliceType: number }>) => void,
   ): void
+  addEventListener?(
+    type: 'change',
+    listener: (
+      event: CustomEvent<{ property: string; value: unknown }>,
+    ) => void,
+  ): void
   removeEventListener?(
     type: 'locationChange',
     listener: (event: CustomEvent<NiiVueLocation>) => void,
@@ -187,6 +207,12 @@ interface NiiVueLike {
   removeEventListener?(
     type: 'sliceTypeChange',
     listener: (event: CustomEvent<{ sliceType: number }>) => void,
+  ): void
+  removeEventListener?(
+    type: 'change',
+    listener: (
+      event: CustomEvent<{ property: string; value: unknown }>,
+    ) => void,
   ): void
   // Vector annotations (the measure tool). Shapes are drawn by our uikit
   // overlay from annotationScreenShapes, with isAnnotationDrawn off.
@@ -213,7 +239,7 @@ interface NiiVueLike {
   volumeIllumination?: number
   volumeGradientOpacity?: number
   volumeSilhouette?: number
-  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection.
+  // VOLUME_RENDER_MODE: 0 composite, 1 maximum-intensity projection, 3 cinematic.
   volumeRenderMode?: number
   model?: {
     scene?: {
@@ -244,6 +270,8 @@ interface NiiVueVolumeOptions {
   colormapNegative?: string
   opacity?: number
   isColorbarVisible?: boolean
+  // Whether a label colormap's names join NiiVue's legend.
+  isLegendVisible?: boolean
   calMin?: number
   calMax?: number
 }
@@ -287,7 +315,19 @@ type VoxelStep = readonly [di: number, dj: number, dk: number]
 const CLIP_DEPTH_WHEEL_STEP = 0.0015
 const NIVUE_SLICE_TYPE_RENDER = 4
 const NIVUE_SHOW_RENDER_ALWAYS = 1
-const NIVUE_RENDER_MODE_MAXIMUM = 1
+// NiiVue VOLUME_RENDER_MODE for each shading render mode.
+const NIVUE_RENDER_MODES: Record<RenderShading['renderMode'], number> = {
+  composite: 0,
+  mip: 1,
+  cinematic: 3,
+}
+// NiiVue `change` properties that make up a RenderShading.
+const SHADING_PROPERTIES = new Set([
+  'volumeIllumination',
+  'volumeGradientOpacity',
+  'volumeSilhouette',
+  'volumeRenderMode',
+])
 
 // NiiVue SLICE_TYPE values for each selectable view mode.
 export type ViewModeId =
@@ -481,6 +521,7 @@ export function NiivueStage({
   viewMode,
   blocks,
   shading,
+  onShadingChange,
   meshes,
   crosshairTarget,
   onClipPlaneDepthChange,
@@ -496,6 +537,7 @@ export function NiivueStage({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const nvRef = useRef<NiiVueLike | null>(null)
+  const isApplyingShadingRef = useRef(false)
   // `chunkVolumeGrid` from the active backend module, captured at attach so the
   // block effect can (re)tile volumes without a second dynamic import.
   const chunkVolumeGridRef = useRef<ChunkVolumeGridFn | null>(null)
@@ -507,6 +549,9 @@ export function NiivueStage({
   // display-only re-applies (which run on a possibly-reordered `layers`) still
   // target the correct volume. `volumeIndexOfLayer` is the single lookup.
   const loadedLayerIdsRef = useRef<string[]>([])
+  // The registered label colormap of each loaded layer that has one, by item
+  // id: it stands in for the layer's own colormap (registerLabelColormaps).
+  const loadedLabelColormapsRef = useRef<Record<string, string>>({})
   // A loaded viewer not yet passed to onViewer. The display effect passes it
   // once the layers' windows are applied, so an agent never sees a stat
   // overlay before its threshold.
@@ -607,6 +652,9 @@ export function NiivueStage({
     let sliceTypeListener:
       | ((event: CustomEvent<{ sliceType: number }>) => void)
       | null = null
+    let shadingListener:
+      | ((event: CustomEvent<{ property: string; value: unknown }>) => void)
+      | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
     let detachPointLabels: (() => void) | null = null
@@ -688,7 +736,10 @@ export function NiivueStage({
           clipPlaneColor: [0.95, 0.2, 0.12, 0.7],
           isResizeCanvas: true,
           isColorbarVisible: true,
-          isLegendVisible: false,
+          // An atlas's regions, listed at the right; tapping a swatch hides
+          // or shows that region, tapping its name moves the crosshair there.
+          isLegendVisible: true,
+          isLegendToggleEnabled: true,
           isOrientCubeVisible: true,
           isOrientationTextVisible: viewMode !== 'render',
           show3Dcrosshair: false,
@@ -719,13 +770,33 @@ export function NiivueStage({
             if (!cancelled && mode) onViewModeChange(mode.id)
           }
           nv.addEventListener('sliceTypeChange', sliceTypeListener)
+          // Same for an agent's set_options on the 3D look, so the Look
+          // control shows it and the next viewer keeps it.
+          shadingListener = (event) => {
+            if (cancelled || isApplyingShadingRef.current) return
+            if (!SHADING_PROPERTIES.has(event.detail.property)) return
+            const renderMode = (
+              Object.keys(NIVUE_RENDER_MODES) as RenderShading['renderMode'][]
+            ).find((mode) => NIVUE_RENDER_MODES[mode] === nv.volumeRenderMode)
+            if (!renderMode) return
+            onShadingChange({
+              illumination: nv.volumeIllumination ?? 0,
+              gradientOpacity: nv.volumeGradientOpacity ?? 0,
+              silhouette: nv.volumeSilhouette ?? 0,
+              renderMode,
+            })
+          }
+          nv.addEventListener('change', shadingListener)
         }
         attachAnnotationLayer(nv)
         const attachedCanvas = activeCanvasFor(nv, canvas)
         canvasRef.current = attachedCanvas
         resizeNiiVue(nv, attachedCanvas, stage)
+        const labelColormaps = await registerLabelColormaps(nv, layers)
+        if (cancelled) return
         await loadRenderVolumeLods({
           layers,
+          labelColormaps,
           nv,
           clipPlanes,
           canvas: attachedCanvas,
@@ -734,10 +805,24 @@ export function NiivueStage({
           isCancelled: () => cancelled,
           setStatus,
         })
+        // A cancelled load returns normally; don't let it clobber the newer stack's ids.
+        if (cancelled) return
         applyActiveClipPlane(nv, clipPlanes, activeClipPlaneId)
         // Record the loaded volume order (== this stack's layer order) so the
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
+        loadedLabelColormapsRef.current = labelColormaps
+        // The views start below the floating title bar (it hid the 2D "A"
+        // label), and an atlas legend below the view modes, not under them.
+        const hasLegend = layers.some(
+          (layer) => layer.isAtlas && labelColormaps[layer.item.id],
+        )
+        nv.layoutInset = [
+          0,
+          hasLegend ? TOP_RIGHT_CLEARANCE : TITLE_CLEARANCE,
+          0,
+          0,
+        ]
         if (!cancelled) {
           if (nv.setVolume) unannouncedViewerRef.current = nv
           else onViewer?.(nv)
@@ -770,18 +855,25 @@ export function NiivueStage({
       if (stageControlsRef.current === stageControls) {
         stageControlsRef.current = null
       }
-      if (localNv && nvRef.current === localNv) {
+      // Always free this instance, even if a failed load already nulled nvRef.
+      if (localNv) {
         if (locationListener) {
           localNv.removeEventListener?.('locationChange', locationListener)
         }
         if (sliceTypeListener) {
           localNv.removeEventListener?.('sliceTypeChange', sliceTypeListener)
         }
+        if (shadingListener) {
+          localNv.removeEventListener?.('change', shadingListener)
+        }
+        localNv.destroy?.()
+      }
+      if (localNv && nvRef.current === localNv) {
         unannouncedViewerRef.current = null
         onViewer?.(null)
-        localNv.destroy?.()
         nvRef.current = null
         loadedLayerIdsRef.current = []
+        loadedLabelColormapsRef.current = {}
         loadedMeshIdsRef.current = []
       }
       onLocationChange?.(null)
@@ -825,7 +917,8 @@ export function NiivueStage({
         }
         return (
           nv.setVolume?.(index, {
-            colormap: layer.colormap,
+            colormap:
+              loadedLabelColormapsRef.current[layer.item.id] ?? layer.colormap,
             colormapNegative: layer.colormapNegative ?? '',
             opacity: layer.opacity,
             ...windowOption,
@@ -1081,10 +1174,16 @@ export function NiivueStage({
   useEffect(() => {
     const nv = nvRef.current
     if (!nv) return
-    nv.volumeIllumination = shading.illumination
-    nv.volumeGradientOpacity = shading.gradientOpacity
-    nv.volumeSilhouette = shading.silhouette
-    nv.volumeRenderMode = shading.isMip ? NIVUE_RENDER_MODE_MAXIMUM : 0
+    // Our own sets emit change events too; mid-apply they'd report a half-set look.
+    isApplyingShadingRef.current = true
+    try {
+      nv.volumeIllumination = shading.illumination
+      nv.volumeGradientOpacity = shading.gradientOpacity
+      nv.volumeSilhouette = shading.silhouette
+      nv.volumeRenderMode = NIVUE_RENDER_MODES[shading.renderMode]
+    } finally {
+      isApplyingShadingRef.current = false
+    }
     nv.drawScene()
   }, [shading, loadedVersion])
 
@@ -1334,8 +1433,13 @@ export function NiivueStage({
   function pageToSlice(target: number): void {
     const nv = nvRef.current
     if (sliceAxis === undefined || !nv?.moveCrosshairInVox) return
-    const delta = clamp(Math.round(target), 0, sliceMax) - sliceValue
-    if (delta === 0) return
+    // Step from the exact (often fractional) crosshair voxel, not the rounded
+    // slider value, or the move lands one slice off.
+    const from = Number.isFinite(currentVox)
+      ? (currentVox as number)
+      : sliceValue
+    const delta = clamp(Math.round(target), 0, sliceMax) - from
+    if (Math.abs(delta) < 1e-6) return
     const step: [number, number, number] = [0, 0, 0]
     step[sliceAxis] = delta
     nv.moveCrosshairInVox(...step)
@@ -1361,6 +1465,13 @@ export function NiivueStage({
     })),
     viewMode,
     hasVolume: Boolean(primaryItem),
+    look:
+      isRenderMode && primaryItem
+        ? {
+            presets: SHADING_PRESETS.map(({ id, label }) => ({ id, label })),
+            value: matchingShadingPreset(shading),
+          }
+        : null,
     measure:
       isRenderMode || !primaryItem
         ? null
@@ -1414,6 +1525,10 @@ export function NiivueStage({
     viewMode: (id) => {
       const mode = VIEW_MODES.find((candidate) => candidate.id === id)
       if (mode) changeViewMode(mode.id)
+    },
+    look: (id) => {
+      const preset = SHADING_PRESETS.find((candidate) => candidate.id === id)
+      if (preset) onShadingChange(preset.shading)
     },
     measure: () => {
       setDrawTool(null)
@@ -1753,6 +1868,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 async function loadRenderVolumeLods({
   layers,
+  labelColormaps,
   nv,
   clipPlanes,
   canvas,
@@ -1762,6 +1878,7 @@ async function loadRenderVolumeLods({
   setStatus,
 }: {
   layers: NiivueRenderLayer[]
+  labelColormaps: Record<string, string>
   nv: NiiVueLike
   clipPlanes: ClipPlane[]
   canvas: HTMLCanvasElement
@@ -1776,9 +1893,6 @@ async function loadRenderVolumeLods({
     layer,
     levels: renderVolumeLevels(layer.item),
   }))
-  const atlasMaps = await resolveAtlasColorMaps(layers)
-  if (isCancelled()) return
-
   const levels = stackLevels[0].levels
   let loadedLevel: RenderVolumeLevel | null = null
   let lastError: unknown = null
@@ -1810,10 +1924,12 @@ async function loadRenderVolumeLods({
         return {
           url: source,
           name: `${layer.item.label} L${layerLevel.level}`,
-          colormap: layer.colormap,
+          colormap: labelColormaps[layer.item.id] ?? layer.colormap,
           colormapNegative: layer.colormapNegative ?? '',
           opacity: layer.opacity,
           isColorbarVisible: layerIndex === 0,
+          // The drawing's pens are not regions.
+          isLegendVisible: layer.item.derivation?.operation !== 'drawing',
           ...(layer.calMin !== undefined ? { calMin: layer.calMin } : {}),
           ...(layer.calMax !== undefined ? { calMax: layer.calMax } : {}),
         }
@@ -1823,8 +1939,6 @@ async function loadRenderVolumeLods({
 
     try {
       await nv.loadVolumes(volumes)
-      if (isCancelled()) return
-      await applyAtlasLabelMaps(nv, atlasMaps)
     } catch (error) {
       lastError = error
       if (!loadedLevel) {
@@ -1844,6 +1958,9 @@ async function loadRenderVolumeLods({
       return
     }
     if (isCancelled()) return
+    // A new viewer starts at its own crosshair; report it so the slice slider
+    // and readout don't keep the previous viewer's location.
+    nv.createOnLocationChange?.()
 
     loadedLevel = level
     applyClipPlanes(nv, clipPlanes)
@@ -1931,24 +2048,30 @@ function extractAtlasColorMap(metadata: VolumeMetadata): ColorMap | null {
   return null
 }
 
-// `atlasMaps` is built by `resolveAtlasColorMaps(layers)` in layer order and
-// applied here immediately after `nv.loadVolumes(volumes)` (also layer order),
-// so the array index IS the freshly-loaded volume index — safe by construction,
-// unlike the display re-applies which run later against a possibly-reordered
-// `layers` and therefore go through `loadedLayerIdsRef`.
-async function applyAtlasLabelMaps(
+// A layer's label colormap (a drawing's pens, an atlas's sidecar LUT),
+// registered with NiiVue under a name of its own: NiiVue picks a label
+// colormap by name, like any other. Keyed by item id; a layer without one keeps
+// its own colormap.
+async function registerLabelColormaps(
   nv: NiiVueLike,
-  atlasMaps: Array<ColorMap | null>,
-): Promise<void> {
-  if (!nv.setColormapLabel) return
-  await Promise.all(
-    atlasMaps.map((colorMap, volumeIndex) => {
-      if (!colorMap) return Promise.resolve()
-      return (
-        nv.setColormapLabel?.(volumeIndex, colorMap) ?? Promise.resolve()
-      ).catch(() => undefined)
-    }),
-  )
+  layers: NiivueRenderLayer[],
+): Promise<Record<string, string>> {
+  const colorMaps = await resolveAtlasColorMaps(layers)
+  const names: Record<string, string> = {}
+  for (const [index, colorMap] of colorMaps.entries()) {
+    if (!colorMap || !nv.addColormap) continue
+    const { id } = layers[index].item
+    try {
+      // A `labels` array, even an empty one, makes it a label table.
+      names[id] = nv.addColormap(`neurovue-labels-${id}`, {
+        ...colorMap,
+        labels: colorMap.labels ?? [],
+      })
+    } catch {
+      // A malformed LUT leaves the layer on its own colormap.
+    }
+  }
+  return names
 }
 
 function normalizeLabelColorMap(value: JsonValue): ColorMap | null {

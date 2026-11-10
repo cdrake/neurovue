@@ -682,7 +682,8 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     let express_view = MenuItem::with_id(
         handle,
         MENU_EXPRESS_VIEW,
-        "Toggle Express View",
+        // Names the view the item switches to; the window in front sets it.
+        "Express View",
         true,
         Some("CmdOrCtrl+Alt+V"),
     )?;
@@ -728,6 +729,28 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         }
     }
     Ok(menu)
+}
+
+/// Names the View menu's switch after the view it leads to from `window`'s
+/// mode. The menu bar is shared, so only the window in front sets it.
+#[cfg(desktop)]
+#[tauri::command]
+fn set_express_menu_label(window: tauri::WebviewWindow, express: bool) {
+    if !window.is_focused().unwrap_or(false) {
+        return;
+    }
+    fn find<R: tauri::Runtime>(items: Vec<tauri::menu::MenuItemKind<R>>) -> Option<MenuItem<R>> {
+        items.into_iter().find_map(|item| {
+            if item.id() == MENU_EXPRESS_VIEW {
+                return item.as_menuitem().cloned();
+            }
+            item.as_submenu().and_then(|submenu| find(submenu.items().ok()?))
+        })
+    }
+    let item = window.app_handle().menu().and_then(|menu| find(menu.items().ok()?));
+    if let Some(item) = item {
+        let _ = item.set_text(if express { "Dataset View" } else { "Express View" });
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -861,7 +884,8 @@ pub fn run() {
             neuroflow::neuroflow_restart,
             neuroflow::neuroflow_read_run,
             neuroflow::neuroflow_check_path,
-            neuroflow::neuroflow_reveal
+            neuroflow::neuroflow_reveal,
+            set_express_menu_label
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -898,11 +922,11 @@ pub fn run() {
         tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
         // A suspended iOS app can lose its listening socket and its Bonjour
         // registration, so the iPad would no longer show up to send to.
-        // With scenes, coming back is a window gaining focus (RunEvent::Resumed
-        // is something else, and WindowEvent::Resumed never comes).
+        // The app has no UIScene manifest, so coming back is WindowEvent::Resumed
+        // (applicationWillEnterForeground); with scenes it would be Focused(true).
         #[cfg(target_os = "ios")]
         tauri::RunEvent::WindowEvent {
-            event: tauri::WindowEvent::Focused(true),
+            event: tauri::WindowEvent::Resumed | tauri::WindowEvent::Focused(true),
             ..
         } => {
             let app = _app.clone();

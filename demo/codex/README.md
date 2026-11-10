@@ -75,3 +75,24 @@ per run, most of them cached.
 
 If a model isn't available to your Codex account, `codex exec` says so; pass
 another with `-m`.
+
+## Record a fallback
+
+[record.sh](record.sh) records the screen with OBS while the demo runs, so
+there's a movie to play if the live demo goes wrong. It drives OBS through
+its WebSocket server ([obs.ts](obs.ts)): turn on Tools > WebSocket Server
+Settings > Enable Server once, and give OBS Screen Recording permission. It
+opens OBS if needed, adds a "NeuroVue demo" scene that fits the main display
+(using the source named `macOS Screen Capture`, or `OBS_SOURCE`), and reads
+the password from OBS's own config.
+
+```sh
+demo/codex/record.sh            # record run.sh, start to finish
+demo/codex/record.sh --ipad     # the same, for the second act
+demo/codex/record.sh start      # or record yourself reading the voice script…
+demo/codex/record.sh stop       # …and stop; prints the movie's path
+```
+
+Movies land where OBS's Output settings put them, `~/Movies` by default.
+`bun demo/codex/obs.ts shot check.png` saves a still of the scene, to check
+the capture isn't black before the meeting.

@@ -176,10 +176,13 @@ function VolumeFacetGroup({
   selected: Set<string>
   title: string
   onToggle: (value: string) => void
-}): JSX.Element {
+}): JSX.Element | null {
   const entries = Array.from(counts.entries()).sort((left, right) =>
     left[0].localeCompare(right[0]),
   )
+  // One value can't narrow anything (every volume would match); keep the group
+  // only while a stale selection needs unchecking.
+  if (entries.length <= 1 && selected.size === 0) return null
 
   return (
     <div className="nv-filter-facet-group">

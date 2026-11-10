@@ -14,11 +14,15 @@ export interface RenderShading {
   gradientOpacity: number
   /** Fades view-aligned surfaces into an outline, 0 to 1. `volumeSilhouette`. */
   silhouette: number
-  /** Maximum-intensity projection instead of the composite ray march. */
-  isMip: boolean
+  /**
+   * How the volume is drawn: the composite ray march, a maximum-intensity
+   * projection, or NiiVue's cinematic path tracer (soft shadows and ambient
+   * occlusion, refined over a few frames).
+   */
+  renderMode: 'composite' | 'mip' | 'cinematic'
 }
 
-export type ShadingPresetId = 'standard' | 'lit' | 'mip'
+export type ShadingPresetId = 'standard' | 'lit' | 'mip' | 'cinematic'
 
 export const SHADING_PRESETS: ReadonlyArray<{
   id: ShadingPresetId
@@ -32,7 +36,7 @@ export const SHADING_PRESETS: ReadonlyArray<{
       illumination: 0,
       gradientOpacity: 0,
       silhouette: 0,
-      isMip: false,
+      renderMode: 'composite',
     },
   },
   {
@@ -42,7 +46,7 @@ export const SHADING_PRESETS: ReadonlyArray<{
       illumination: 0.6,
       gradientOpacity: 0,
       silhouette: 0,
-      isMip: false,
+      renderMode: 'composite',
     },
   },
   {
@@ -52,7 +56,17 @@ export const SHADING_PRESETS: ReadonlyArray<{
       illumination: 0,
       gradientOpacity: 0,
       silhouette: 0,
-      isMip: true,
+      renderMode: 'mip',
+    },
+  },
+  {
+    id: 'cinematic',
+    label: 'Cinematic',
+    shading: {
+      illumination: 0,
+      gradientOpacity: 0,
+      silhouette: 0,
+      renderMode: 'cinematic',
     },
   },
 ]
@@ -68,7 +82,7 @@ export function matchingShadingPreset(
       candidate.illumination === shading.illumination &&
       candidate.gradientOpacity === shading.gradientOpacity &&
       candidate.silhouette === shading.silhouette &&
-      candidate.isMip === shading.isMip,
+      candidate.renderMode === shading.renderMode,
   )
   return preset?.id ?? null
 }
