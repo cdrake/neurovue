@@ -16,6 +16,8 @@ mod share;
 #[cfg(desktop)]
 mod terminal;
 mod volumetric_server;
+#[cfg(feature = "web")]
+pub mod web;
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -167,23 +169,26 @@ fn neurovue_server_info(
     window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
 ) -> NeuroVueServerInfo {
-    let server = state.server(window.label());
-    let bids = volumetric_server::bids_dataset_info(&server);
+    server_info(&state.server(window.label()), state.sample_path.as_deref())
+}
+
+fn server_info(
+    server: &volumetric_server::ServerHandle,
+    sample_path: Option<&Path>,
+) -> NeuroVueServerInfo {
+    let bids = volumetric_server::bids_dataset_info(server);
     NeuroVueServerInfo {
         url: server.url.clone(),
         port: server.port,
-        volume_count: volumetric_server::volume_count(&server),
-        dataset_root: volumetric_server::dataset_root(&server)
+        volume_count: volumetric_server::volume_count(server),
+        dataset_root: volumetric_server::dataset_root(server)
             .map(|path| path.display().to_string()),
         cache_root: volumetric_server::cache_root().display().to_string(),
         bids_name: bids.as_ref().and_then(|info| info.name.clone()),
         bids_version: bids.as_ref().and_then(|info| info.bids_version.clone()),
         bids_dataset_doi: bids.as_ref().and_then(|info| info.dataset_doi.clone()),
-        warm_progress: volumetric_server::warm_progress(&server),
-        sample_path: state
-            .sample_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
+        warm_progress: volumetric_server::warm_progress(server),
+        sample_path: sample_path.map(|path| path.display().to_string()),
     }
 }
 
@@ -246,17 +251,22 @@ async fn add_overlay_volume_path(
 ) -> Result<OverlayAddResult, String> {
     let path = normalize_local_path(&path);
     let server = state.server(window.label());
-    tauri::async_runtime::spawn_blocking(move || {
-        let registered = volumetric_server::register_overlay_volume(&server, Path::new(&path))?;
-        Ok(OverlayAddResult {
-            id: registered.id,
-            label: registered.label,
-            volume_count: volumetric_server::volume_count(&server),
-            warm_progress: volumetric_server::warm_progress(&server),
-        })
+    tauri::async_runtime::spawn_blocking(move || add_overlay(&server, Path::new(&path)))
+        .await
+        .map_err(|error| format!("add_overlay_volume_path: join error: {error}"))?
+}
+
+fn add_overlay(
+    server: &volumetric_server::ServerHandle,
+    path: &Path,
+) -> Result<OverlayAddResult, String> {
+    let registered = volumetric_server::register_overlay_volume(server, path)?;
+    Ok(OverlayAddResult {
+        id: registered.id,
+        label: registered.label,
+        volume_count: volumetric_server::volume_count(server),
+        warm_progress: volumetric_server::warm_progress(server),
     })
-    .await
-    .map_err(|error| format!("add_overlay_volume_path: join error: {error}"))?
 }
 
 #[tauri::command]
@@ -540,7 +550,15 @@ const MESH_EXTENSIONS: &[&str] = &[
 /// hands the bytes straight to NiiVue, which parses the format itself.
 #[tauri::command]
 async fn read_mesh_file(path: String) -> Result<tauri::ipc::Response, String> {
-    let path = PathBuf::from(normalize_local_path(&path));
+    tauri::async_runtime::spawn_blocking(move || {
+        read_mesh_bytes(&path).map(tauri::ipc::Response::new)
+    })
+    .await
+    .map_err(|error| format!("read_mesh_file: join error: {error}"))?
+}
+
+fn read_mesh_bytes(path: &str) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(normalize_local_path(path));
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -552,13 +570,7 @@ async fn read_mesh_file(path: String) -> Result<tauri::ipc::Response, String> {
             path.display()
         ));
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read(&path)
-            .map(tauri::ipc::Response::new)
-            .map_err(|error| format!("Couldn't read {}: {error}", path.display()))
-    })
-    .await
-    .map_err(|error| format!("read_mesh_file: join error: {error}"))?
+    std::fs::read(&path).map_err(|error| format!("Couldn't read {}: {error}", path.display()))
 }
 
 fn open_dataset_at_path(
@@ -744,12 +756,20 @@ fn set_express_menu_label(window: tauri::WebviewWindow, express: bool) {
             if item.id() == MENU_EXPRESS_VIEW {
                 return item.as_menuitem().cloned();
             }
-            item.as_submenu().and_then(|submenu| find(submenu.items().ok()?))
+            item.as_submenu()
+                .and_then(|submenu| find(submenu.items().ok()?))
         })
     }
-    let item = window.app_handle().menu().and_then(|menu| find(menu.items().ok()?));
+    let item = window
+        .app_handle()
+        .menu()
+        .and_then(|menu| find(menu.items().ok()?));
     if let Some(item) = item {
-        let _ = item.set_text(if express { "Dataset View" } else { "Express View" });
+        let _ = item.set_text(if express {
+            "Dataset View"
+        } else {
+            "Express View"
+        });
     }
 }
 

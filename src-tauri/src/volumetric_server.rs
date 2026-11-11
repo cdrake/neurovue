@@ -379,17 +379,7 @@ fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
 
     let base_url = format!("http://{}", addr);
     let shutdown = Arc::new(tokio::sync::Notify::new());
-    let state = AppState {
-        base_url: base_url.clone(),
-        volumes: server.volumes.clone(),
-        dataset_root: server.dataset_root.clone(),
-        discovery_stats: server.discovery_stats.clone(),
-        preview_cache: server.preview_cache.clone(),
-        decoded_level_cache: server.decoded_level_cache.clone(),
-        pyramid_locks: server.pyramid_locks.clone(),
-        patch: server.patch.clone(),
-        render_semaphore: Arc::new(tokio::sync::Semaphore::new(render_permits())),
-    };
+    let state = app_state(&server, base_url.clone());
 
     let stop = shutdown.clone();
     std::thread::spawn(move || {
@@ -439,7 +429,61 @@ pub fn revive(server: &ServerHandle) -> Option<ServerHandle> {
     Some(serve(listener, server.clone()))
 }
 
+fn app_state(server: &ServerHandle, base_url: String) -> AppState {
+    AppState {
+        base_url,
+        volumes: server.volumes.clone(),
+        dataset_root: server.dataset_root.clone(),
+        discovery_stats: server.discovery_stats.clone(),
+        preview_cache: server.preview_cache.clone(),
+        decoded_level_cache: server.decoded_level_cache.clone(),
+        pyramid_locks: server.pyramid_locks.clone(),
+        patch: server.patch.clone(),
+        render_semaphore: Arc::new(tokio::sync::Semaphore::new(render_permits())),
+    }
+}
+
+/// An empty dataset server for `neurovue-web`, which mounts the routes on its
+/// own listener beside the UI. URLs are built on `base_url`, the address the
+/// browser reaches it at (a proxy's, behind Neurodesk). No Host guard: the
+/// operator picks the bind address, and a proxy rewrites Host anyway.
+#[cfg(feature = "web")]
+pub fn web_router(base_url: String, port: u16) -> (ServerHandle, Router) {
+    let server = ServerHandle {
+        url: base_url.clone(),
+        port,
+        ..new_handle(VolumeDiscovery {
+            root: None,
+            volumes: Vec::new(),
+            stats: DiscoveryStats::default(),
+        })
+    };
+    let router = routes().with_state(app_state(&server, base_url));
+    (server, router)
+}
+
+/// Drops the open dataset in place; the web server's single handle lives on.
+#[cfg(feature = "web")]
+pub fn clear_dataset(handle: &ServerHandle) {
+    handle.warm_generation.fetch_add(1, Ordering::SeqCst);
+    lock_recover(&handle.volumes).clear();
+    *lock_recover(&handle.dataset_root) = None;
+    *lock_recover(&handle.discovery_stats) = DiscoveryStats::default();
+    lock_recover(&handle.preview_cache).clear();
+    lock_recover(&handle.decoded_level_cache).clear();
+}
+
 fn build_router(state: AppState, port: u16) -> Router {
+    routes()
+        .layer(app_cors_layer())
+        // Outermost, so a foreign Host is refused before any route runs.
+        .layer(middleware::from_fn(move |request, next| {
+            require_local_host(port, request, next)
+        }))
+        .with_state(state)
+}
+
+fn routes() -> Router<AppState> {
     Router::new()
         .route("/api", get(api_info))
         .route("/iiif/desktop", get(desktops))
@@ -467,12 +511,6 @@ fn build_router(state: AppState, port: u16) -> Router {
             "/session/correction.patch.json",
             get(read_patch).post(write_patch),
         )
-        .layer(app_cors_layer())
-        // Outermost, so a foreign Host is refused before any route runs.
-        .layer(middleware::from_fn(move |request, next| {
-            require_local_host(port, request, next)
-        }))
-        .with_state(state)
 }
 
 /// DNS-rebinding guard. A page on `attacker.example` that rebinds its name to
@@ -961,7 +999,9 @@ pub fn export_bundle(
     // destroy the previous one.
     let partial = dest.with_file_name(format!(
         "{}.partial",
-        dest.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
+        dest.file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default()
     ));
     let written = write_bundle_zip(handle, &partial, &selected, view, created_at);
     let total_bytes = match written {
