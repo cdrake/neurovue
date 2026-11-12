@@ -9,8 +9,8 @@
 # bash runs, so shell variables below avoid those names and their prefixes.
 
 name: neurovue
-version: "0.2.4"
-upstream_version: "0.2.4"
+version: "0.2.5"
+upstream_version: "0.2.5"
 
 required_files:
   - dataset: ds000001
