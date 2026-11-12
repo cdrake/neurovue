@@ -17,14 +17,16 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tower_http::services::ServeDir;
 
-const USAGE: &str =
-    "usage: neurovue-web [--bind 127.0.0.1:8090] [--dist DIR] [--public-url URL] [--dataset PATH]";
+const USAGE: &str = "usage: neurovue-web [--bind 127.0.0.1:PORT] [--dist DIR] [--dataset PATH]";
 
 /// Run the server on `args` (without the program name); returns the exit code.
 pub fn main(args: Vec<String>) -> i32 {
-    let mut bind = "127.0.0.1:8090".to_string();
+    // Neurodesk's webapp wrapper picks the port and proxies to it.
+    let mut bind = format!(
+        "127.0.0.1:{}",
+        std::env::var("NEURODESK_WEBAPP_PORT").unwrap_or_else(|_| "8090".into())
+    );
     let mut dist = PathBuf::from("dist-web");
-    let mut public_url = None;
     let mut dataset = None;
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -35,7 +37,6 @@ pub fn main(args: Vec<String>) -> i32 {
         match flag.as_str() {
             "--bind" => bind = value,
             "--dist" => dist = value.into(),
-            "--public-url" => public_url = Some(value),
             "--dataset" => dataset = Some(value),
             _ => {
                 eprintln!("{USAGE}");
@@ -56,11 +57,7 @@ pub fn main(args: Vec<String>) -> i32 {
         // open_dataset_path takes any server path, so the port reads any file this user can.
         eprintln!("neurovue-web: WARNING: listening on {addr} with no auth; anyone who reaches it can read your files");
     }
-    let public_url = public_url
-        .unwrap_or_else(|| format!("http://{addr}"))
-        .trim_end_matches('/')
-        .to_string();
-    let (server, dataset_routes) = volumetric_server::web_router(public_url.clone(), addr.port());
+    let (server, dataset_routes) = volumetric_server::web_router(".".into(), addr.port());
     if let Some(dataset) = dataset {
         if let Err(error) =
             open_dataset_at_path(&server, Path::new(&normalize_local_path(&dataset)))
@@ -76,7 +73,7 @@ pub fn main(args: Vec<String>) -> i32 {
         .merge(dataset_routes)
         .fallback_service(ServeDir::new(dist));
 
-    eprintln!("neurovue-web: serving {public_url}");
+    eprintln!("neurovue-web: serving http://{addr}");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

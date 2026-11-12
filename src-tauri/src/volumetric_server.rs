@@ -444,8 +444,9 @@ fn app_state(server: &ServerHandle, base_url: String) -> AppState {
 }
 
 /// An empty dataset server for `neurovue-web`, which mounts the routes on its
-/// own listener beside the UI. URLs are built on `base_url`, the address the
-/// browser reaches it at (a proxy's, behind Neurodesk). No Host guard: the
+/// own listener beside the UI. URLs are built on `base_url`: "." keeps them
+/// relative to the page, so they survive a proxy prefix such as Neurodesk's
+/// `/user/<name>/neurovue/`, which the proxy strips. No Host guard: the
 /// operator picks the bind address, and a proxy rewrites Host anyway.
 #[cfg(feature = "web")]
 pub fn web_router(base_url: String, port: u16) -> (ServerHandle, Router) {
