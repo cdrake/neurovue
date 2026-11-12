@@ -9,6 +9,8 @@ mod mcp;
 #[cfg(desktop)]
 mod neuroflow;
 #[cfg(desktop)]
+mod neuroflow_core;
+#[cfg(desktop)]
 mod niimath;
 mod opened;
 mod receive;

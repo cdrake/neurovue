@@ -10,6 +10,9 @@ mod dataset;
 #[path = "../../src/volumetric_server.rs"]
 mod volumetric_server;
 
+#[path = "../../src/neuroflow_core.rs"]
+mod neuroflow_core;
+mod pipelines;
 mod private_dir;
 mod same_user;
 
@@ -27,6 +30,7 @@ use dataset::{
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 use volumetric_server::ServerHandle;
 
@@ -104,9 +108,13 @@ fn run(args: Vec<String>) -> i32 {
         reopen = Some((server.clone(), last));
     }
 
+    let pipelines = Arc::new(pipelines::Pipelines::default());
     let app = Router::new()
         .route("/rpc/:command", post(rpc))
-        .with_state(server)
+        .with_state(WebState {
+            server,
+            pipelines: pipelines.clone(),
+        })
         .merge(dataset_routes)
         .fallback_service(ServeDir::new(dist))
         // The page names content-hashed assets, so they may be cached, but a
@@ -142,7 +150,15 @@ fn run(args: Vec<String>) -> i32 {
             });
         }
         let service = app.into_make_service_with_connect_info::<same_user::Peer>();
-        match axum::serve(listener, service).await {
+        let served = axum::serve(listener, service)
+            .with_graceful_shutdown(shutdown_signal())
+            .await;
+        // neuroflow-mcp tears a step's process group down only when cancelled,
+        // so cancel running steps rather than leave them behind.
+        tokio::task::spawn_blocking(move || pipelines.stop_now())
+            .await
+            .ok();
+        match served {
             Ok(()) => 0,
             Err(error) => {
                 eprintln!("neurovue-web: {error}");
@@ -152,16 +168,52 @@ fn run(args: Vec<String>) -> i32 {
     })
 }
 
+/// Ctrl-C, or SIGTERM (how Neurodesk stops an idle app).
+async fn shutdown_signal() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = interrupt => {}
+        () = terminate => {}
+    }
+    eprintln!("neurovue-web: shutting down");
+}
+
+#[derive(Clone)]
+struct WebState {
+    server: ServerHandle,
+    pipelines: Arc<pipelines::Pipelines>,
+}
+
 enum Reply {
     Json(Value),
     Bytes(Vec<u8>),
 }
 
 async fn rpc(
-    State(server): State<ServerHandle>,
+    State(WebState { server, pipelines }): State<WebState>,
     UrlPath(command): UrlPath<String>,
     body: Option<Json<Value>>,
 ) -> Response {
+    let args = body.as_ref().map_or(Value::Null, |Json(args)| args.clone());
+    if let Some(reply) = pipelines.handle(&command, &args).await {
+        return match reply {
+            Ok(value) => Json(value).into_response(),
+            Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+        };
+    }
     let path = body
         .as_ref()
         .and_then(|Json(args)| args.get("path"))
