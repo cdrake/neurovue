@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 use tower_http::services::ServeDir;
 use volumetric_server::ServerHandle;
 
-const USAGE: &str = "usage: neurovue-web [--bind 127.0.0.1:PORT] [--dist DIR] [--dataset PATH]";
+const USAGE: &str =
+    "usage: neurovue-web [--version] [--bind 127.0.0.1:PORT] [--dist DIR] [--dataset PATH]";
 
 fn main() {
     std::process::exit(run(std::env::args().skip(1).collect()));
@@ -39,6 +40,10 @@ fn run(args: Vec<String>) -> i32 {
     );
     let mut dist = PathBuf::from("dist-web");
     let mut dataset = None;
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("neurovue-web {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         let Some(value) = args.next() else {
