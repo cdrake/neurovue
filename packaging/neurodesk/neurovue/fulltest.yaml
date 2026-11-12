@@ -5,7 +5,7 @@
 # Test data: ds000001/sub-01 T1w (160x192x192 NIfTI, OpenNeuro)
 
 name: neurovue
-version: 0.2.2
+version: 0.2.3
 
 required_files:
   - dataset: ds000001

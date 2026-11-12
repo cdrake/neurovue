@@ -1,5 +1,5 @@
 name: neurovue
-version: 0.2.2
+version: 0.2.3
 
 architectures:
   - x86_64
@@ -83,7 +83,7 @@ readme: |
 files:
   - name: neurovue_web_tar
     url: https://github.com/cdrake/neurovue/releases/download/v{{ context.version }}/neurovue-web-{{ context.version }}-linux-x86_64.tar.gz
-    sha256: bbbe4e5f4403f843d0254bc8ea75caafe66648150fd2384528184bfbc38c94b9
+    sha256: f6025c9906c327df56eba3cc92700709eb661f64aa98a2fe516da9085e3e7a3d
 
   - name: neurovue
     contents: |
