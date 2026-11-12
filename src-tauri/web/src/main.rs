@@ -2,10 +2,14 @@
 //! the built UI (`bun run build:web`), the dataset routes, and
 //! `POST /rpc/<command>`, which stands in for Tauri's `invoke`.
 
-use crate::{
-    add_overlay, normalize_local_path, open_dataset_at_path, read_mesh_bytes, server_info,
-    volumetric_server::{self, ServerHandle},
-};
+// Shares the app's dataset server source without depending on Tauri, so it
+// builds on Linux (Neurodesk) with no webkit/gtk.
+#[path = "../../src/dataset.rs"]
+mod dataset;
+#[allow(dead_code)]
+#[path = "../../src/volumetric_server.rs"]
+mod volumetric_server;
+
 use axum::{
     extract::{Path as UrlPath, State},
     http::{header, StatusCode},
@@ -13,14 +17,21 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use dataset::{
+    add_overlay, normalize_local_path, open_dataset_at_path, read_mesh_bytes, server_info,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tower_http::services::ServeDir;
+use volumetric_server::ServerHandle;
 
 const USAGE: &str = "usage: neurovue-web [--bind 127.0.0.1:PORT] [--dist DIR] [--dataset PATH]";
 
-/// Run the server on `args` (without the program name); returns the exit code.
-pub fn main(args: Vec<String>) -> i32 {
+fn main() {
+    std::process::exit(run(std::env::args().skip(1).collect()));
+}
+
+fn run(args: Vec<String>) -> i32 {
     // Neurodesk's webapp wrapper picks the port and proxies to it.
     let mut bind = format!(
         "127.0.0.1:{}",
@@ -64,6 +75,11 @@ pub fn main(args: Vec<String>) -> i32 {
         {
             eprintln!("neurovue-web: {error}");
             return 1;
+        }
+    } else if let Ok(last) = std::fs::read_to_string(last_dataset_file()) {
+        // Neurodesk stops idle apps; reopen what was open so a relaunch picks up where it was.
+        if let Err(error) = open_dataset_at_path(&server, Path::new(&last)) {
+            eprintln!("neurovue-web: reopening {last}: {error}");
         }
     }
 
@@ -123,7 +139,7 @@ async fn rpc(
 /// The Tauri commands the web version supports, by name; the rest reject, and
 /// the page falls back as it does in any browser.
 fn dispatch(server: &ServerHandle, command: &str, path: Option<String>) -> Result<Reply, String> {
-    let path = || {
+    let required = || {
         path.clone()
             .ok_or_else(|| format!("{command}: missing path"))
     };
@@ -134,17 +150,24 @@ fn dispatch(server: &ServerHandle, command: &str, path: Option<String>) -> Resul
             "airdropAvailable": false,
         }))),
         "neurovue_server_info" => json(Ok(server_info(server, None))),
-        "open_dataset_path" => json(open_dataset_at_path(server, Path::new(&path()?))),
+        "open_dataset_path" => {
+            let path = required()?;
+            let opened = open_dataset_at_path(server, Path::new(&path))?;
+            remember_dataset(Some(&path));
+            json(Ok(opened))
+        }
         "close_dataset" => {
             volumetric_server::clear_dataset(server);
+            remember_dataset(None);
             Ok(Reply::Json(Value::Null))
         }
-        "add_overlay_volume_path" => json(add_overlay(server, Path::new(&path()?))),
-        "read_bundle_manifest" => json(volumetric_server::read_bundle(Path::new(&path()?))),
-        "read_document_manifest" => json(volumetric_server::read_document(Path::new(&path()?))),
-        "read_mesh_file" => read_mesh_bytes(&path()?).map(Reply::Bytes),
+        "add_overlay_volume_path" => json(add_overlay(server, Path::new(&required()?))),
+        "read_bundle_manifest" => json(volumetric_server::read_bundle(Path::new(&required()?))),
+        "read_document_manifest" => json(volumetric_server::read_document(Path::new(&required()?))),
+        "read_mesh_file" => read_mesh_bytes(&required()?).map(Reply::Bytes),
         "take_opened_files" => Ok(Reply::Json(json!([]))),
-        "keep_picked_file" => Ok(Reply::Json(json!(path()?))),
+        "keep_picked_file" => Ok(Reply::Json(json!(required()?))),
+        "list_dir" => list_dir(path.as_deref()),
         _ => Err(format!("{command} isn't available in the web version.")),
     }
 }
@@ -153,4 +176,60 @@ fn json<T: serde::Serialize>(value: Result<T, String>) -> Result<Reply, String> 
     Ok(Reply::Json(
         serde_json::to_value(value?).map_err(|error| error.to_string())?,
     ))
+}
+
+fn last_dataset_file() -> PathBuf {
+    // $HOME survives a Neurodesk container restart; the temp dir may not.
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".cache/neurovue"))
+        .unwrap_or_else(volumetric_server::cache_root)
+        .join("web-last-dataset")
+}
+
+fn remember_dataset(path: Option<&str>) {
+    let file = last_dataset_file();
+    let result = match path {
+        Some(path) => std::fs::create_dir_all(file.parent().expect("has parent"))
+            .and_then(|()| std::fs::write(&file, path)),
+        None => std::fs::remove_file(&file).or_else(|error| {
+            (error.kind() == std::io::ErrorKind::NotFound)
+                .then_some(())
+                .ok_or(error)
+        }),
+    };
+    if let Err(error) = result {
+        eprintln!("neurovue-web: {}: {error}", file.display());
+    }
+}
+
+/// One folder for the page's file picker: the browser can't see server paths.
+/// No path means the home folder.
+fn list_dir(path: Option<&str>) -> Result<Reply, String> {
+    let dir = match path.filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| ".".into()),
+    };
+    let dir = dir
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", dir.display()))?;
+    let mut entries: Vec<(bool, String)> = std::fs::read_dir(&dir)
+        .map_err(|error| format!("{}: {error}", dir.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            // metadata() follows symlinks, so a linked folder browses as a folder.
+            (!name.starts_with('.')).then(|| (entry.path().is_dir(), name))
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
+    Ok(Reply::Json(json!({
+        "path": dir,
+        "parent": dir.parent(),
+        "entries": entries.into_iter().map(|(dir, name)| json!({"name": name, "dir": dir})).collect::<Vec<_>>(),
+    })))
 }

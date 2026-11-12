@@ -448,7 +448,7 @@ fn app_state(server: &ServerHandle, base_url: String) -> AppState {
 /// relative to the page, so they survive a proxy prefix such as Neurodesk's
 /// `/user/<name>/neurovue/`, which the proxy strips. No Host guard: the
 /// operator picks the bind address, and a proxy rewrites Host anyway.
-#[cfg(feature = "web")]
+#[allow(dead_code)] // only neurovue-web (web/) calls this
 pub fn web_router(base_url: String, port: u16) -> (ServerHandle, Router) {
     let server = ServerHandle {
         url: base_url.clone(),
@@ -464,7 +464,7 @@ pub fn web_router(base_url: String, port: u16) -> (ServerHandle, Router) {
 }
 
 /// Drops the open dataset in place; the web server's single handle lives on.
-#[cfg(feature = "web")]
+#[allow(dead_code)] // only neurovue-web (web/) calls this
 pub fn clear_dataset(handle: &ServerHandle) {
     handle.warm_generation.fetch_add(1, Ordering::SeqCst);
     lock_recover(&handle.volumes).clear();

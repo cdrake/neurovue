@@ -15,15 +15,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # every enabled bin) leaves it out of the app.
 [features]
 cli = []
-web = ["tower-http/fs"]
 
 [[bin]]
 name = "neurovue-cli"
 required-features = ["cli"]
 
-[[bin]]
-name = "neurovue-web"
-required-features = ["web"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
