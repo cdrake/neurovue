@@ -224,6 +224,23 @@ function preferredBackend(): Backend {
   return 'gpu' in navigator ? 'webgpu' : 'webgl2'
 }
 
+// `navigator.gpu` can exist with no usable adapter (e.g. Chrome on Linux, where
+// WebGPU is off by default, or a GPU-less Neurodesk session). Confirm one is
+// available so those cases fall back to WebGL2 instead of failing to render.
+async function hasWebGpuAdapter(): Promise<boolean> {
+  const gpu = (
+    navigator as Navigator & {
+      gpu?: { requestAdapter(): Promise<unknown> }
+    }
+  ).gpu
+  if (!gpu) return false
+  try {
+    return (await gpu.requestAdapter()) != null
+  } catch {
+    return false
+  }
+}
+
 function isAppleMobile(): boolean {
   if (typeof navigator === 'undefined') return false
   const ua = navigator.userAgent || ''
@@ -316,7 +333,18 @@ const PipelineViewHost = lazy(() =>
 
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
-  const backend = useMemo<Backend>(preferredBackend, [])
+  const [backend, setBackend] = useState<Backend>(preferredBackend)
+  useEffect(() => {
+    if (backend !== 'webgpu') return
+    let cancelled = false
+    void hasWebGpuAdapter().then((ok) => {
+      if (!ok && !cancelled) setBackend('webgl2')
+    })
+    return () => {
+      cancelled = true
+    }
+    // Probe once at startup; a later downgrade must not re-trigger it.
+  }, [])
   const {
     recentDatasets,
     promoteRecent,
