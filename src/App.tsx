@@ -490,6 +490,7 @@ export function App(): JSX.Element {
     bindActiveClipPlane,
     updateClipPlane,
     changeClipPlaneDepth,
+    cycleClipPlanes,
     resetClipPlanes,
     applyClipPlanes,
   } = useClipPlanes()
@@ -2410,6 +2411,7 @@ export function App(): JSX.Element {
                   meshes={meshes}
                   onClipPlaneDepthChange={changeClipPlaneDepth}
                   onClipPlaneActivate={bindActiveClipPlane}
+                  onClipPlaneCycle={cycleClipPlanes}
                   onLayerExtents={handleLayerExtents}
                   onLocationChange={setLocationReadout}
                   onResolvedWindows={handleResolvedWindows}

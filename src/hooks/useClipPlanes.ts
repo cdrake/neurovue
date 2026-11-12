@@ -16,6 +16,12 @@ export interface ClipPlanesState {
   updateClipPlane: (plane: ClipPlane) => void
   /** Set just a plane's depth (used by the render wheel). */
   changeClipPlaneDepth: (planeId: string, depth: number) => void
+  /**
+   * Step the `c` hotkey cycle: off → each plane alone → off. The plane after
+   * the first enabled one becomes the only enabled plane (and the wheel's
+   * target); past the last plane, everything turns off.
+   */
+  cycleClipPlanes: () => void
   /** Restore the default clip planes. */
   resetClipPlanes: () => void
   /**
@@ -60,6 +66,16 @@ export function useClipPlanes(): ClipPlanesState {
     )
   }
 
+  function cycleClipPlanes(): void {
+    const next = clipPlanes.findIndex((plane) => plane.enabled) + 1
+    const target = clipPlanes[next]
+    setClipPlanes((planes) =>
+      planes.map((plane) => ({ ...plane, enabled: plane.id === target?.id })),
+    )
+    if (target) bindActiveClipPlane(target.id)
+    else setRenderWheelMode('zoom')
+  }
+
   function resetClipPlanes(): void {
     setClipPlanes(defaultClipPlanes())
   }
@@ -78,6 +94,7 @@ export function useClipPlanes(): ClipPlanesState {
     bindActiveClipPlane,
     updateClipPlane,
     changeClipPlaneDepth,
+    cycleClipPlanes,
     resetClipPlanes,
     applyClipPlanes,
   }
