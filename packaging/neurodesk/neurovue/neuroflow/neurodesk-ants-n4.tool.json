@@ -42,7 +42,9 @@
       "completion": "exit",
       "interactive": false,
       "contract": "../../docs/neuroflow-session-contract.md",
-      "requirements": ["ANTs from Neurodesk (N4BiasFieldCorrection on PATH, or via NEURODESK_N4)"],
+      "requirements": [
+        "ANTs from Neurodesk (N4BiasFieldCorrection on PATH, or via NEURODESK_N4)"
+      ],
       "description": "Runs N4BiasFieldCorrection -d 3 -i <image> -o <outputDir>/corrected.nii.gz through the shared native CLI adapter."
     },
     "neuroflow/mcp": {
@@ -62,7 +64,14 @@
         "version": "[0-9]+\\.[0-9]+\\.[0-9]+",
         "advice": "ANTs runs from Neurodesk's CVMFS in a nested Apptainer container. Check that CVMFS is mounted (ls /cvmfs/neurodesk.ardc.edu.au/containers) and that this host allows unprivileged user namespaces."
       },
-      "args": ["-d", "3", "-i", "{{image}}", "-o", "{{outputDir}}/corrected.nii.gz"],
+      "args": [
+        "-d",
+        "3",
+        "-i",
+        "{{image}}",
+        "-o",
+        "{{outputDir}}/corrected.nii.gz"
+      ],
       "outputs": {
         "corrected": "corrected.nii.gz"
       }

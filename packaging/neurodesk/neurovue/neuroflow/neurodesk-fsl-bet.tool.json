@@ -56,7 +56,9 @@
       "completion": "exit",
       "interactive": false,
       "contract": "../../docs/neuroflow-session-contract.md",
-      "requirements": ["FSL from Neurodesk (bet on PATH, or via NEURODESK_BET)"],
+      "requirements": [
+        "FSL from Neurodesk (bet on PATH, or via NEURODESK_BET)"
+      ],
       "description": "Runs bet <t1> <outputDir>/brain -f <frac> -m through the shared native CLI adapter."
     },
     "neuroflow/mcp": {
