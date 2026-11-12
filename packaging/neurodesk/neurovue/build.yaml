@@ -11,6 +11,16 @@ copyright:
 variables:
   upstream_version: "0.2.4"
   neurovue_web_sha256: "63bec82fc7049123de1ea431691a8250567e9dad5bc7f83692a1664e5ba096f0"
+  # Pipelines: the NeuroFlow engine and gallery (same release) and its spec.
+  neuroflow_version: "0.7.0"
+  neuroflow_mcp_sha256: "efa038499d69769a42554b6ab095aa9493cab4a89ca43ef6dc7c7a775dda6f2a"
+  neuroflow_source_sha256: "8c96a54a0741240fbca44b158118f7c9d588a05f1ce9d3f362c3c2de4a2e3a2e"
+  neuroflow_spec_commit: "657af6ffe3b89e2b0b580a2ab97feb234a821f9c"
+  neuroflow_spec_sha256: "c83259461a8b21f2a5a368d86851a397b57a63683af9cefdbd86e63c633b1bc0"
+  # Unprivileged Apptainer, so pipeline steps can run other Neurodesk tools
+  # (FSL, ANTs) in nested containers, as the neurocommand recipe does.
+  apptainer_version: "1.4.4"
+  apptainer_sha256: "2e71dd4a194d3059eabf6714c31b0c0cea9c664323d79b723b292f844113b014"
 
 domains:
   - neuroimaging
@@ -46,6 +56,16 @@ build:
     - install:
         - ca-certificates
         - curl
+        # Pipeline step interpreters (NeuroFlow's script tools).
+        - nodejs
+        - python3
+        - python3-nibabel
+        - python3-numpy
+        - python3-scipy
+        # Nested Apptainer for Neurodesk tool steps.
+        - fuse-overlayfs
+        - squashfuse
+        - uidmap
 
     - workdir: /opt
 
@@ -53,6 +73,19 @@ build:
         - mkdir -p /opt/neurovue
         - tar -xzf {{ get_file("neurovue_web_tar") }} --strip-components=1 --no-same-owner -C /opt/neurovue
         - chmod 0755 /opt/neurovue/neurovue-web
+        - apt-get update
+        - apt-get install -y --no-install-recommends {{ get_file("apptainer_deb") }}
+        - rm -rf /var/lib/apt/lists/*
+        - apptainer --version
+        - mkdir -p /opt/neuroflow/gallery /opt/neuroflow/spec
+        - tar -xzf {{ get_file("neuroflow_mcp_tar") }} --strip-components=1 --no-same-owner -C /opt/neuroflow
+        - tar -xzf {{ get_file("neuroflow_source_tar") }} --strip-components=2 --no-same-owner -C /opt/neuroflow/gallery neuroflow-{{ context.neuroflow_version }}/gallery
+        - tar -xzf {{ get_file("neuroflow_spec_tar") }} --strip-components=1 --no-same-owner -C /opt/neuroflow/spec
+        - chmod 0755 /opt/neuroflow/neuroflow-mcp
+        # Neurodesk tool steps live beside the gallery's tools so they use its CLI adapter.
+        - install -m 0644 {{ get_file("neurodesk-fsl-bet.tool.json") }} /opt/neuroflow/gallery/tools/neurodesk-fsl-bet.tool.json
+        - install -m 0644 {{ get_file("neurodesk-ants-n4.tool.json") }} /opt/neuroflow/gallery/tools/neurodesk-ants-n4.tool.json
+        - install -m 0644 {{ get_file("neuroflow.json") }} /opt/neuroflow/neuroflow.json
 
     - copy: neurovue /usr/local/bin/neurovue
 
@@ -87,6 +120,13 @@ readme: |
   computer's `neurodesktop-storage` folder on a local install) and `~/data`
   appear there. On Neurodesk Play, upload files in JupyterLab first.
 
+  Pipelines: the Pipelines tab runs NeuroFlow tools and workflows (bundled
+  NeuroFlow {{ context.neuroflow_version }} gallery) on files under your home
+  folder, `/neurodesktop-storage` and `/data`. Steps that use Neurodesk tools
+  (FSL BET, ANTs N4) start them from CVMFS in nested Apptainer containers, so
+  they need CVMFS mounted and unprivileged user namespaces, as every Neurodesk
+  tool does. Runs are recorded in `~/.neuroflow/runs`.
+
   On Linux the server answers only the user who started it: connections from
   other users on the same machine are refused. Its cache (and the last opened
   dataset, reopened on the next start) lives in `~/.cache/neurovue`, or
@@ -103,6 +143,37 @@ files:
     url: https://github.com/cdrake/neurovue/releases/download/v{{ context.upstream_version }}/neurovue-web-{{ context.upstream_version }}-linux-x86_64.tar.gz
     sha256: "{{ context.neurovue_web_sha256 }}"
 
+  - name: neuroflow_mcp_tar
+    url: https://github.com/cdrake/neuroflow/releases/download/v{{ context.neuroflow_version }}/neuroflow-mcp-v{{ context.neuroflow_version }}-x86_64-unknown-linux-musl.tar.gz
+    sha256: "{{ context.neuroflow_mcp_sha256 }}"
+
+  - name: neuroflow_source_tar
+    url: https://github.com/cdrake/neuroflow/archive/refs/tags/v{{ context.neuroflow_version }}.tar.gz
+    sha256: "{{ context.neuroflow_source_sha256 }}"
+
+  - name: neuroflow_spec_tar
+    url: https://github.com/cdrake/neuroflow-spec/archive/{{ context.neuroflow_spec_commit }}.tar.gz
+    sha256: "{{ context.neuroflow_spec_sha256 }}"
+
+  - name: apptainer_deb
+    url: https://github.com/apptainer/apptainer/releases/download/v{{ context.apptainer_version }}/apptainer_{{ context.apptainer_version }}_amd64.deb
+    sha256: "{{ context.apptainer_sha256 }}"
+
+  - name: neurodesk-fsl-bet.tool.json
+    filename: neuroflow/neurodesk-fsl-bet.tool.json
+
+  - name: neurodesk-ants-n4.tool.json
+    filename: neuroflow/neurodesk-ants-n4.tool.json
+
+  - name: neuroflow.json
+    contents: |
+      {
+        "binary": "/opt/neuroflow/neuroflow-mcp",
+        "registries": ["/opt/neuroflow/gallery"],
+        "spec": "/opt/neuroflow/spec",
+        "interpreters": { "node": "/usr/bin/node", "python3": "/usr/bin/python3" }
+      }
+
   - name: neurovue
     executable: true
     contents: |
@@ -113,6 +184,18 @@ files:
       # coarser level). Home-directory caches are quota-bound on HPC.
       export NEUROVUE_MAX_SERVED_BYTES="${NEUROVUE_MAX_SERVED_BYTES:-1000000000}"
       export NEUROVUE_CACHE_BUDGET_BYTES="${NEUROVUE_CACHE_BUDGET_BYTES:-2147483648}"
+      # Pipelines: the bundled NeuroFlow engine, gallery, and spec.
+      export NEUROVUE_NEUROFLOW_CONFIG="${NEUROVUE_NEUROFLOW_CONFIG:-/opt/neuroflow/neuroflow.json}"
+      # Neurodesk tools for pipeline steps: append the newest x86_64 build of
+      # each module to PATH (after the container's own tools), as
+      # `ml <module>` would. Each command there is a Neurodesk wrapper that
+      # runs the tool in its own Apptainer container from CVMFS.
+      neurodesk_containers=/cvmfs/neurodesk.ardc.edu.au/containers
+      for module in ${NEUROVUE_NEURODESK_MODULES:-fsl ants}; do
+        dir=$(ls -d "$neurodesk_containers/${module}_"[0-9]* 2>/dev/null | sort -V | tail -n 1 || true)
+        if [ -n "$dir" ]; then PATH="$PATH:$dir"; fi
+      done
+      export PATH
       case "${1:-start}" in
         start)
           [ "$#" -gt 0 ] && shift

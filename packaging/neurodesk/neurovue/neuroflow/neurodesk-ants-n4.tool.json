@@ -1,0 +1,71 @@
+{
+  "$schema": "../../../neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "neurodesk.modules/ants-n4",
+  "version": "0.1.0",
+  "description": "N4 bias-field correction with ANTs N4BiasFieldCorrection, run from Neurodesk's ANTs container. Writes the intensity-corrected image on the input grid. In the NeuroVue Neurodesk app the latest ANTs module is on PATH; each run starts ANTs in a nested Apptainer container from CVMFS.",
+  "inputs": {
+    "image": {
+      "type": "neuro:volume",
+      "description": "Image to correct, typically a T1-weighted scan."
+    }
+  },
+  "outputs": {
+    "corrected": {
+      "type": "neuro:volume",
+      "description": "Bias-field-corrected image.",
+      "delivery": {
+        "mode": "core:result-dir",
+        "path": "corrected.nii.gz"
+      }
+    }
+  },
+  "outputDelivery": {
+    "default": "core:result-dir"
+  },
+  "extensions": {
+    "niivue/ui": {
+      "block": {
+        "id": "neurodesk-ants-n4",
+        "label": "Bias-field correction (ANTs N4, Neurodesk)",
+        "description": "Correct intensity inhomogeneity with ANTs N4.",
+        "category": "Processing",
+        "stage": "explore",
+        "exposedFields": []
+      }
+    },
+    "neuroflow/launch": {
+      "kind": "script",
+      "interpreter": "node",
+      "script": "../scripts/cli_tool.mjs",
+      "completion": "exit",
+      "interactive": false,
+      "contract": "../../docs/neuroflow-session-contract.md",
+      "requirements": ["ANTs from Neurodesk (N4BiasFieldCorrection on PATH, or via NEURODESK_N4)"],
+      "description": "Runs N4BiasFieldCorrection -d 3 -i <image> -o <outputDir>/corrected.nii.gz through the shared native CLI adapter."
+    },
+    "neuroflow/mcp": {
+      "title": "Bias-field correction (ANTs N4, Neurodesk)",
+      "annotations": {
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "maxWaitMs": 1800000
+    },
+    "neuroflow/cli": {
+      "command": "N4BiasFieldCorrection",
+      "env": "NEURODESK_N4",
+      "probe": {
+        "args": ["--version"],
+        "match": "ANTs Version",
+        "version": "[0-9]+\\.[0-9]+\\.[0-9]+",
+        "advice": "ANTs runs from Neurodesk's CVMFS in a nested Apptainer container. Check that CVMFS is mounted (ls /cvmfs/neurodesk.ardc.edu.au/containers) and that this host allows unprivileged user namespaces."
+      },
+      "args": ["-d", "3", "-i", "{{image}}", "-o", "{{outputDir}}/corrected.nii.gz"],
+      "outputs": {
+        "corrected": "corrected.nii.gz"
+      }
+    }
+  }
+}

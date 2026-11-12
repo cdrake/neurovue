@@ -1,0 +1,85 @@
+{
+  "$schema": "../../../neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.0",
+  "kind": "tool",
+  "id": "neurodesk.modules/fsl-bet",
+  "version": "0.1.0",
+  "description": "Brain extraction with FSL BET, run from Neurodesk's FSL container. Writes the brain-only image and a binary brain mask on the input grid. In the NeuroVue Neurodesk app the latest FSL module is on PATH; each run starts FSL in a nested Apptainer container from CVMFS.",
+  "inputs": {
+    "t1": {
+      "type": "neuro:volume",
+      "description": "Head image to skull-strip, typically a T1-weighted scan."
+    },
+    "frac": {
+      "type": "core:number",
+      "description": "Fractional intensity threshold (0 to 1); smaller values give larger brain estimates.",
+      "optional": true,
+      "default": 0.5
+    }
+  },
+  "outputs": {
+    "brain": {
+      "type": "neuro:volume",
+      "description": "Brain-extracted image.",
+      "delivery": {
+        "mode": "core:result-dir",
+        "path": "brain.nii.gz"
+      }
+    },
+    "brain_mask": {
+      "type": "neuro:mask",
+      "description": "Binary brain mask.",
+      "delivery": {
+        "mode": "core:result-dir",
+        "path": "brain_mask.nii.gz"
+      }
+    }
+  },
+  "outputDelivery": {
+    "default": "core:result-dir"
+  },
+  "extensions": {
+    "niivue/ui": {
+      "block": {
+        "id": "neurodesk-fsl-bet",
+        "label": "Brain extraction (FSL BET, Neurodesk)",
+        "description": "Skull-strip a head image with FSL BET.",
+        "category": "Processing",
+        "stage": "explore",
+        "exposedFields": ["frac"]
+      }
+    },
+    "neuroflow/launch": {
+      "kind": "script",
+      "interpreter": "node",
+      "script": "../scripts/cli_tool.mjs",
+      "completion": "exit",
+      "interactive": false,
+      "contract": "../../docs/neuroflow-session-contract.md",
+      "requirements": ["FSL from Neurodesk (bet on PATH, or via NEURODESK_BET)"],
+      "description": "Runs bet <t1> <outputDir>/brain -f <frac> -m through the shared native CLI adapter."
+    },
+    "neuroflow/mcp": {
+      "title": "Brain extraction (FSL BET, Neurodesk)",
+      "annotations": {
+        "idempotentHint": true,
+        "readOnlyHint": false
+      },
+      "maxWaitMs": 900000
+    },
+    "neuroflow/cli": {
+      "command": "bet",
+      "env": "NEURODESK_BET",
+      "probe": {
+        "args": [],
+        "match": "Usage:\\s+bet\\b",
+        "advice": "FSL runs from Neurodesk's CVMFS in a nested Apptainer container. Check that CVMFS is mounted (ls /cvmfs/neurodesk.ardc.edu.au/containers) and that this host allows unprivileged user namespaces."
+      },
+      "args": ["{{t1}}", "{{outputDir}}/brain", "-f", "{{frac}}", "-m"],
+      "outputs": {
+        "brain": "brain.nii.gz",
+        "brain_mask": "brain_mask.nii.gz"
+      }
+    }
+  }
+}
