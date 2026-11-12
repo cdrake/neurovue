@@ -10,7 +10,7 @@ copyright:
 
 variables:
   upstream_version: "0.2.4"
-  neurovue_web_sha256: "__SHA256__"
+  neurovue_web_sha256: "63bec82fc7049123de1ea431691a8250567e9dad5bc7f83692a1664e5ba096f0"
 
 domains:
   - neuroimaging

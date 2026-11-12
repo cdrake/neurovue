@@ -1,6 +1,6 @@
 [package]
 name = "neurovue"
-version = "0.2.3"
+version = "0.2.4"
 description = "NeuroVue desktop viewer"
 edition = "2021"
 license = "BSD-2-Clause"
