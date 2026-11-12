@@ -74,6 +74,9 @@ interface NiivueStageProps {
   onClipPlaneDepthChange: (planeId: string, depth: number) => void
   // Make a clip plane the active (on-screen depth-slider / wheel) target.
   onClipPlaneActivate?: (planeId: string) => void
+  // The `c` hotkey. Handled here instead of by NiiVue's own `c`, which moves
+  // its clip plane without the app's clip-plane state (and controls) knowing.
+  onClipPlaneCycle?: () => void
   onLocationChange?: (location: NiiVueLocation | null) => void
   // Reports the intensity window NiiVue actually applied per layer (keyed by
   // item id), including auto-seeded defaults — so the UI can show the effective
@@ -526,6 +529,7 @@ export function NiivueStage({
   crosshairTarget,
   onClipPlaneDepthChange,
   onClipPlaneActivate,
+  onClipPlaneCycle,
   onLocationChange,
   onResolvedWindows,
   onLayerExtents,
@@ -1258,12 +1262,24 @@ export function NiivueStage({
     nv.drawScene()
   }, [activeClipPlaneId, clipPlanes])
 
+  // The key handler below outlives renders; read the latest cycle callback.
+  const clipPlaneCycleRef = useRef(onClipPlaneCycle)
+  clipPlaneCycleRef.current = onClipPlaneCycle
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: snapRenderView touches only refs and state setters.
   useEffect(() => {
     if (!isActive || !primaryItem) return
 
     function onKeyDown(event: KeyboardEvent): void {
       if (isEditableTarget(event.target)) return
+
+      if (isClipPlaneCycleKey(event)) {
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+        clipPlaneCycleRef.current?.()
+        return
+      }
 
       const crosshairStep = crosshairStepForEvent(event)
       if (crosshairStep) {
@@ -1810,6 +1826,12 @@ function blenderSnapForEvent(event: KeyboardEvent): RenderViewSnap | null {
   if (!snap) return null
 
   return event.ctrlKey ? snap.reverse : snap.normal
+}
+
+function isClipPlaneCycleKey(event: KeyboardEvent): boolean {
+  if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey)
+    return false
+  return event.key.toLowerCase() === 'c'
 }
 
 function crosshairStepForEvent(event: KeyboardEvent): VoxelStep | null {
