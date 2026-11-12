@@ -5,6 +5,8 @@ type Listing = {
   parent: string | null
   // Set when the requested path was a file; `path` is then its folder.
   file: string | null
+  // The server lists at most a few thousand entries per folder.
+  truncated?: boolean
   entries: { name: string; dir: boolean }[]
 }
 
@@ -93,7 +95,9 @@ export function open(options: OpenOptions = {}): Promise<string | null> {
         location.value = listing.path
         error.textContent = listing.file
           ? `${listing.file} isn't something this picker can open.`
-          : ''
+          : listing.truncated
+            ? `This folder has more entries than the picker shows (${listing.entries.length}). Type a path to open one that isn't listed.`
+            : ''
         list.replaceChildren()
         if (listing.parent) {
           const parent = listing.parent

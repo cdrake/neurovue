@@ -1,12 +1,16 @@
 name: neurovue
-version: 0.2.3
+version: "0.2.4"
 
 architectures:
   - x86_64
 
 copyright:
   - license: BSD-2-Clause
-    url: https://github.com/cdrake/neurovue/blob/main/LICENSE
+    url: https://github.com/cdrake/neurovue/blob/v{{ context.upstream_version }}/LICENSE
+
+variables:
+  upstream_version: "0.2.4"
+  neurovue_web_sha256: "__SHA256__"
 
 domains:
   - neuroimaging
@@ -16,8 +20,20 @@ categories:
 icon: data:image/png;base64,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
 
 auto_update:
-  method: github_release
-  repo: cdrake/neurovue
+  container_version: neurovue
+  method: sources
+  sources:
+  - id: neurovue
+    method: github_release_asset
+    repo: cdrake/neurovue
+    asset: neurovue-web-{version}-linux-x86_64.tar.gz
+    version_regex: v?(?P<version>\d+\.\d+\.\d+)
+    target:
+      variable: upstream_version
+      value: version
+      fulltest_variable: upstream_version
+      variables:
+        neurovue_web_sha256: sha256
 
 build:
   kind: neurodocker
@@ -34,14 +50,11 @@ build:
     - workdir: /opt
 
     - run:
-        - tar -xzf {{ get_file("neurovue_web_tar") }} -C /opt
-        - mv /opt/neurovue-web-{{ context.version }}-linux-x86_64 /opt/neurovue
-        - chmod +x /opt/neurovue/neurovue-web
+        - mkdir -p /opt/neurovue
+        - tar -xzf {{ get_file("neurovue_web_tar") }} --strip-components=1 --no-same-owner -C /opt/neurovue
+        - chmod 0755 /opt/neurovue/neurovue-web
 
     - copy: neurovue /usr/local/bin/neurovue
-
-    - run:
-        - chmod +x /usr/local/bin/neurovue
 
 deploy:
   bins:
@@ -69,10 +82,15 @@ readme: |
   ```
 
   This serves NeuroVue on `127.0.0.1:${NEURODESK_WEBAPP_PORT}` when set,
-  otherwise on port `8090`. It listens on localhost only and has no
-  authentication; anyone who can reach that port can read files this user
-  can. The last opened dataset is remembered in `~/.cache/neurovue` and
-  reopened on the next start.
+  otherwise on port `8090`. Open files from its file picker, which starts in
+  your home folder; in Neurodesk, data in `~/neurodesktop-storage` (your
+  computer's `neurodesktop-storage` folder on a local install) and `~/data`
+  appear there. On Neurodesk Play, upload files in JupyterLab first.
+
+  On Linux the server answers only the user who started it: connections from
+  other users on the same machine are refused. Its cache (and the last opened
+  dataset, reopened on the next start) lives in `~/.cache/neurovue`, or
+  `$NEUROVUE_CACHE_DIR` if set.
 
   More documentation can be found here: https://github.com/cdrake/neurovue
 
@@ -82,13 +100,19 @@ readme: |
 
 files:
   - name: neurovue_web_tar
-    url: https://github.com/cdrake/neurovue/releases/download/v{{ context.version }}/neurovue-web-{{ context.version }}-linux-x86_64.tar.gz
-    sha256: f6025c9906c327df56eba3cc92700709eb661f64aa98a2fe516da9085e3e7a3d
+    url: https://github.com/cdrake/neurovue/releases/download/v{{ context.upstream_version }}/neurovue-web-{{ context.upstream_version }}-linux-x86_64.tar.gz
+    sha256: "{{ context.neurovue_web_sha256 }}"
 
   - name: neurovue
+    executable: true
     contents: |
       #!/usr/bin/env bash
       set -euo pipefail
+      # Neurodesk's Jupyter proxy buffers each response and rejects ones over
+      # 1 GiB; keep served volume files under that (the viewer then stays at a
+      # coarser level). Home-directory caches are quota-bound on HPC.
+      export NEUROVUE_MAX_SERVED_BYTES="${NEUROVUE_MAX_SERVED_BYTES:-1000000000}"
+      export NEUROVUE_CACHE_BUDGET_BYTES="${NEUROVUE_CACHE_BUDGET_BYTES:-2147483648}"
       case "${1:-start}" in
         start)
           [ "$#" -gt 0 ] && shift

@@ -2005,6 +2005,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-pencil",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http",
  "zip",

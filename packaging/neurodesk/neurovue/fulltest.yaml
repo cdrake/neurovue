@@ -3,9 +3,14 @@
 # server-side file picker (list_dir), and the volumes it opens.
 #
 # Test data: ds000001/sub-01 T1w (160x192x192 NIfTI, OpenNeuro)
+#
+# The runner substitutes ${key} and bare $key for every test_data entry and
+# top-level scalar (t1w, output_dir, name, version, upstream_version) before
+# bash runs, so shell variables below avoid those names and their prefixes.
 
 name: neurovue
-version: 0.2.3
+version: "0.2.4"
+upstream_version: "0.2.4"
 
 required_files:
   - dataset: ds000001
@@ -24,18 +29,23 @@ setup:
 tests:
   - name: NeuroVue version
     command: neurovue --version
-    expected_output_contains: ${version}
+    expected_output_contains: ${upstream_version}
 
   - name: Serve the UI, browse, open a NIfTI, and stream it back
     description: Start on NEURODESK_WEBAPP_PORT like the Neurodesk webapp wrapper, then use the page's own RPC and dataset routes to open the T1w and fetch its full-resolution volume
+    timeout: 300
     command: |
       set -euo pipefail
+      src="${t1w}"
       workspace="$(mktemp -d "${output_dir}/neurovue.XXXXXXXX")"
+      # Isolate the server's cache from the host: a fresh HOME, no XDG
+      # overrides, and no proxy for localhost requests.
       export HOME="$workspace/home"
       mkdir -p "$HOME"
+      unset XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME NEUROVUE_CACHE_DIR
+      export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
       export NEURODESK_WEBAPP_PORT="$(shuf -i 20000-50000 -n 1)"
       base="http://127.0.0.1:$NEURODESK_WEBAPP_PORT"
-      t1w="$(cd "$(dirname "${t1w}")" && pwd)/$(basename "${t1w}")"
       neurovue start > "$workspace/server.log" 2>&1 &
       server_pid=$!
       cleanup() {
@@ -47,20 +57,26 @@ tests:
         exit "$status"
       }
       trap cleanup EXIT
-      for _ in $(seq 1 30); do
+      for _ in $(seq 1 60); do
         kill -0 "$server_pid"
         curl -fsS --max-time 2 "$base/" -o "$workspace/index.html" 2>/dev/null && break
         sleep 1
       done
+      # The answer must come from our server, not another process on the port.
+      kill -0 "$server_pid" || { echo "server exited (port $NEURODESK_WEBAPP_PORT in use?)" >&2; exit 1; }
       grep -q '<title>NeuroVue</title>' "$workspace/index.html"
       # Asset URLs must stay relative so they survive the /user/<name>/<app>/ proxy prefix.
       if grep -Eq '(src|href)="/' "$workspace/index.html"; then
         echo "absolute asset URL in index.html" >&2; exit 1
       fi
+      # The page is revalidated, so an upgrade isn't masked by a cached index.html.
+      curl -fsS -D - -o /dev/null "$base/" | grep -qi '^cache-control: no-cache'
+      # The cache lives in a private per-user directory, not a shared /tmp/neurovue.
+      [ "$(stat -c %a "$HOME/.cache/neurovue")" = 700 ]
       rpc() { curl -fsS -X POST -H 'content-type: application/json' -d "{\"path\":\"$2\"}" "$base/rpc/$1"; }
-      rpc list_dir "$(dirname "$t1w")" | grep -q "\"name\":\"$(basename "$t1w")\""
-      rpc list_dir "$t1w" | grep -q "\"file\":\"$t1w\""
-      rpc open_dataset_path "$t1w" > "$workspace/opened.json"
+      rpc list_dir "$(dirname "$src")" | grep -q "\"name\":\"$(basename "$src")\""
+      rpc list_dir "$src" | grep -q "\"file\":\"$src\""
+      rpc open_dataset_path "$src" > "$workspace/opened.json"
       grep -q '"volumeCount":1' "$workspace/opened.json"
       curl -fsS "$base/iiif/desktop/neuro/manifest" > "$workspace/manifest.json"
       grep -q '"itemCount":1' "$workspace/manifest.json"
@@ -68,6 +84,6 @@ tests:
       [ -n "$raw" ]
       curl -fsS "$base/${raw#./}" -o "$workspace/volume.nii.gz"
       # The full-resolution level is the source file, byte for byte.
-      cmp "$workspace/volume.nii.gz" "$t1w"
+      cmp "$workspace/volume.nii.gz" "$src"
       echo "served $(stat -c %s "$workspace/volume.nii.gz") bytes"
     expected_output_contains: served

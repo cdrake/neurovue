@@ -10,9 +10,14 @@ mod dataset;
 #[path = "../../src/volumetric_server.rs"]
 mod volumetric_server;
 
+mod private_dir;
+mod same_user;
+
+use axum::http::HeaderValue;
 use axum::{
     extract::{Path as UrlPath, State},
     http::{header, StatusCode},
+    middleware,
     response::{IntoResponse, Response},
     routing::post,
     Json, Router,
@@ -22,7 +27,7 @@ use dataset::{
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use tower_http::services::ServeDir;
+use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 use volumetric_server::ServerHandle;
 
 const USAGE: &str =
@@ -61,6 +66,15 @@ fn run(args: Vec<String>) -> i32 {
         }
     }
 
+    // Before anything touches the cache: keep it in a directory only this user
+    // controls, never a shared /tmp/neurovue.
+    let cache_dir = private_dir::default_cache_dir();
+    if let Err(error) = private_dir::ensure_private_dir(&cache_dir) {
+        eprintln!("neurovue-web: cache: {error} (set NEUROVUE_CACHE_DIR to choose another)");
+        return 1;
+    }
+    volumetric_server::init_cache_root(cache_dir);
+
     let listener = match std::net::TcpListener::bind(&bind) {
         Ok(listener) => listener,
         Err(error) => {
@@ -74,6 +88,7 @@ fn run(args: Vec<String>) -> i32 {
         eprintln!("neurovue-web: WARNING: listening on {addr} with no auth; anyone who reaches it can read your files");
     }
     let (server, dataset_routes) = volumetric_server::web_router(".".into(), addr.port());
+    let mut reopen = None;
     if let Some(dataset) = dataset {
         if let Err(error) =
             open_dataset_at_path(&server, Path::new(&normalize_local_path(&dataset)))
@@ -82,17 +97,32 @@ fn run(args: Vec<String>) -> i32 {
             return 1;
         }
     } else if let Ok(last) = std::fs::read_to_string(last_dataset_file()) {
-        // Neurodesk stops idle apps; reopen what was open so a relaunch picks up where it was.
-        if let Err(error) = open_dataset_at_path(&server, Path::new(&last)) {
-            eprintln!("neurovue-web: reopening {last}: {error}");
-        }
+        // Neurodesk stops idle apps; reopen what was open so a relaunch picks
+        // up where it was. In the background: Neurodesk treats the app as ready
+        // once the port accepts, and a big tree (or a slow mount) mustn't hold
+        // every request until the walk finishes.
+        reopen = Some((server.clone(), last));
     }
 
     let app = Router::new()
         .route("/rpc/:command", post(rpc))
         .with_state(server)
         .merge(dataset_routes)
-        .fallback_service(ServeDir::new(dist));
+        .fallback_service(ServeDir::new(dist))
+        // The page names content-hashed assets, so they may be cached, but a
+        // stale index.html after an upgrade would keep loading the old build.
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            |response: &Response| {
+                response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.starts_with("text/html"))
+                    .then(|| HeaderValue::from_static("no-cache"))
+            },
+        ))
+        .layer(middleware::from_fn(same_user::require_same_user));
 
     eprintln!("neurovue-web: serving http://{addr}");
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -104,7 +134,15 @@ fn run(args: Vec<String>) -> i32 {
             .set_nonblocking(true)
             .expect("set listener nonblocking");
         let listener = tokio::net::TcpListener::from_std(listener).expect("adopt listener");
-        match axum::serve(listener, app).await {
+        if let Some((server, last)) = reopen {
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = open_dataset_at_path(&server, Path::new(&last)) {
+                    eprintln!("neurovue-web: reopening {last}: {error}");
+                }
+            });
+        }
+        let service = app.into_make_service_with_connect_info::<same_user::Peer>();
+        match axum::serve(listener, service).await {
             Ok(()) => 0,
             Err(error) => {
                 eprintln!("neurovue-web: {error}");
@@ -184,18 +222,15 @@ fn json<T: serde::Serialize>(value: Result<T, String>) -> Result<Reply, String> 
 }
 
 fn last_dataset_file() -> PathBuf {
-    // $HOME survives a Neurodesk container restart; the temp dir may not.
-    std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".cache/neurovue"))
-        .unwrap_or_else(volumetric_server::cache_root)
-        .join("web-last-dataset")
+    // The private cache dir; by default ~/.cache/neurovue, which survives a
+    // Neurodesk container restart where the temp dir may not.
+    volumetric_server::cache_root().join("web-last-dataset")
 }
 
 fn remember_dataset(path: Option<&str>) {
     let file = last_dataset_file();
     let result = match path {
-        Some(path) => std::fs::create_dir_all(file.parent().expect("has parent"))
-            .and_then(|()| std::fs::write(&file, path)),
+        Some(path) => std::fs::write(&file, path),
         None => std::fs::remove_file(&file).or_else(|error| {
             (error.kind() == std::io::ErrorKind::NotFound)
                 .then_some(())
@@ -230,10 +265,25 @@ fn list_dir(path: Option<&str>) -> Result<Reply, String> {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            // metadata() follows symlinks, so a linked folder browses as a folder.
-            (!name.starts_with('.')).then(|| (entry.path().is_dir(), name))
+            if name.starts_with('.') {
+                return None;
+            }
+            // The entry's own type needs no extra stat; only symlinks are
+            // followed, so a linked folder (e.g. ~/neurodesktop-storage)
+            // browses as a folder.
+            let kind = entry.file_type().ok()?;
+            let is_dir = if kind.is_symlink() {
+                entry.path().is_dir()
+            } else {
+                kind.is_dir()
+            };
+            Some((is_dir, name))
         })
+        // HPC scratch folders can hold millions of entries.
+        .take(MAX_LIST_ENTRIES + 1)
         .collect();
+    let truncated = entries.len() > MAX_LIST_ENTRIES;
+    entries.truncate(MAX_LIST_ENTRIES);
     entries.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
@@ -242,6 +292,9 @@ fn list_dir(path: Option<&str>) -> Result<Reply, String> {
         "path": dir,
         "parent": dir.parent(),
         "file": file,
+        "truncated": truncated,
         "entries": entries.into_iter().map(|(dir, name)| json!({"name": name, "dir": dir})).collect::<Vec<_>>(),
     })))
 }
+
+const MAX_LIST_ENTRIES: usize = 5000;

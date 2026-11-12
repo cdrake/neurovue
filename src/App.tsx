@@ -334,8 +334,10 @@ const PipelineViewHost = lazy(() =>
 export function App(): JSX.Element {
   const splitRef = useRef<HTMLElement | null>(null)
   const [backend, setBackend] = useState<Backend>(preferredBackend)
+  // Probe once at startup, from the initial choice rather than state, so a
+  // downgrade doesn't re-trigger it.
   useEffect(() => {
-    if (backend !== 'webgpu') return
+    if (preferredBackend() !== 'webgpu') return
     let cancelled = false
     void hasWebGpuAdapter().then((ok) => {
       if (!ok && !cancelled) setBackend('webgl2')
@@ -343,7 +345,6 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true
     }
-    // Probe once at startup; a later downgrade must not re-trigger it.
   }, [])
   const {
     recentDatasets,
