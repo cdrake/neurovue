@@ -214,6 +214,12 @@ fn list_dir(path: Option<&str>) -> Result<Reply, String> {
     let dir = dir
         .canonicalize()
         .map_err(|error| format!("{}: {error}", dir.display()))?;
+    // A typed file path lists its folder and names the file, so the picker can
+    // open it directly.
+    let (dir, file) = match dir.parent() {
+        Some(parent) if !dir.is_dir() => (parent.to_path_buf(), Some(dir.clone())),
+        _ => (dir, None),
+    };
     let mut entries: Vec<(bool, String)> = std::fs::read_dir(&dir)
         .map_err(|error| format!("{}: {error}", dir.display()))?
         .filter_map(Result::ok)
@@ -230,6 +236,7 @@ fn list_dir(path: Option<&str>) -> Result<Reply, String> {
     Ok(Reply::Json(json!({
         "path": dir,
         "parent": dir.parent(),
+        "file": file,
         "entries": entries.into_iter().map(|(dir, name)| json!({"name": name, "dir": dir})).collect::<Vec<_>>(),
     })))
 }

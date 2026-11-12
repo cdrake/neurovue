@@ -3,6 +3,8 @@ import { invoke } from './core'
 type Listing = {
   path: string
   parent: string | null
+  // Set when the requested path was a file; `path` is then its folder.
+  file: string | null
   entries: { name: string; dir: boolean }[]
 }
 
@@ -79,12 +81,19 @@ export function open(options: OpenOptions = {}): Promise<string | null> {
       item.append(button)
       list.append(item)
     }
+    const accepts = (name: string) =>
+      !options.directory &&
+      (!extensions ||
+        extensions.some((ext) => name.toLowerCase().endsWith(ext)))
     const show = async (path: string) => {
       try {
         const listing = await invoke<Listing>('list_dir', { path })
         current = listing.path
+        if (listing.file && accepts(listing.file)) return finish(listing.file)
         location.value = listing.path
-        error.textContent = ''
+        error.textContent = listing.file
+          ? `${listing.file} isn't something this picker can open.`
+          : ''
         list.replaceChildren()
         if (listing.parent) {
           const parent = listing.parent
@@ -93,12 +102,7 @@ export function open(options: OpenOptions = {}): Promise<string | null> {
         for (const { name, dir } of listing.entries) {
           const full = `${listing.path.replace(/\/$/, '')}/${name}`
           if (dir) row(`📁 ${name}`, () => show(full))
-          else if (
-            !options.directory &&
-            (!extensions ||
-              extensions.some((ext) => name.toLowerCase().endsWith(ext)))
-          )
-            row(name, () => finish(full))
+          else if (accepts(name)) row(name, () => finish(full))
         }
       } catch (reason) {
         // A remembered folder may be gone; start from home instead.
