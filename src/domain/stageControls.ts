@@ -87,10 +87,8 @@ const SLIDER_STYLE: Partial<SliderStyle> = {
 // Where the controls sit, in CSS pixels, as the HTML ones did.
 const EDGE = 14
 const TOP = 56
-/** Below the stage's floating title bar, where the controls start. */
-export const TITLE_CLEARANCE = TOP
 const ROW_GAP = 6
-/** Below the view-mode control, the only one at the top right. */
+/** Below the first control row (the tools and the view modes). */
 export const TOP_RIGHT_CLEARANCE = TOP + CONTROL_HEIGHT + ROW_GAP
 const GAP = 2
 const GROUP_GAP = 10
@@ -177,6 +175,7 @@ export interface StageControlsActions {
   send(): void
   exportSVG(): void
   saveMask(): void
+  loadMask(): void
   pen(value: number): void
   brush(size: number): void
   wandTolerance(tolerance: number): void
@@ -380,6 +379,9 @@ export class StageControls implements UIKitOverlayRenderer {
           }),
           this.toolButton('save-mask', 'Save mask', draw.hasDrawing, {
             click: () => this.actions?.saveMask(),
+          }),
+          this.toolButton('load-mask', 'Load mask', true, {
+            click: () => this.actions?.loadMask(),
           }),
         )
       }

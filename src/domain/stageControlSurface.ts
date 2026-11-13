@@ -105,6 +105,7 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
         button('undo', 'Undo', draw.hasDrawing),
         button('clear-drawing', 'Clear ink', draw.hasDrawing),
         button('save-mask', 'Save mask', draw.hasDrawing),
+        button('load-mask', 'Load mask', true),
       )
     }
   }
