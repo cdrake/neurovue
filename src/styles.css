@@ -2142,6 +2142,32 @@ button {
   cursor: default;
 }
 
+.nv-block-pick {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.nv-block-pick button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  background: rgba(215, 166, 66, 0.18);
+  color: var(--amber);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.nv-block-pick button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .nv-block-hint {
   margin: 10px 0 0;
   color: var(--muted);
