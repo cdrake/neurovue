@@ -33,6 +33,34 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
 
+  web:
+    # neurovue-web, the browser/Neurodesk server (src-tauri/web). Built on
+    # ubuntu-22.04 so the binary's glibc floor (2.35) runs on the Neurodesk
+    # recipe's base image and on older HPC hosts.
+    name: Web server (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri/web
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - name: Rust tests
+        working-directory: src-tauri/web
+        run: cargo test --locked
+      - name: Package
+        run: scripts/package-web.sh
+      - uses: actions/upload-artifact@v6
+        with:
+          name: neurovue-web-linux-x86_64
+          path: dist-pkg/*
+          if-no-files-found: error
+
   build:
     name: Build (${{ matrix.name }})
     strategy:

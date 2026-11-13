@@ -53,7 +53,19 @@ type PyramidLocks = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 /// Total byte budget for the in-memory rendered-preview cache. Cache keys
 /// include client-controlled fields (size, version, region), so without a
 /// ceiling a client could grow this without bound; evict oldest-first past it.
-const PREVIEW_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+/// Overridable via NEUROVUE_PREVIEW_CACHE_BYTES (e.g. tighter on mobile).
+const DEFAULT_PREVIEW_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+fn preview_cache_max_bytes() -> usize {
+    static BYTES: OnceLock<usize> = OnceLock::new();
+    *BYTES.get_or_init(|| {
+        std::env::var("NEUROVUE_PREVIEW_CACHE_BYTES")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok())
+            .filter(|&bytes| bytes > 0)
+            .unwrap_or(DEFAULT_PREVIEW_CACHE_MAX_BYTES)
+    })
+}
 
 /// Byte-bounded, insertion-ordered (FIFO) cache of rendered preview BMPs.
 /// Exposes the subset of the HashMap API the call sites use so they stay
@@ -78,13 +90,13 @@ impl PreviewCache {
             }
         }
         // A single entry larger than the whole budget is never worth caching.
-        if bytes.len() > PREVIEW_CACHE_MAX_BYTES {
+        if bytes.len() > preview_cache_max_bytes() {
             return;
         }
         self.total_bytes += bytes.len();
         self.order.push_back(key.clone());
         self.entries.insert(key, bytes);
-        while self.total_bytes > PREVIEW_CACHE_MAX_BYTES {
+        while self.total_bytes > preview_cache_max_bytes() {
             let Some(evicted) = self.order.pop_front() else {
                 break;
             };
@@ -379,17 +391,7 @@ fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
 
     let base_url = format!("http://{}", addr);
     let shutdown = Arc::new(tokio::sync::Notify::new());
-    let state = AppState {
-        base_url: base_url.clone(),
-        volumes: server.volumes.clone(),
-        dataset_root: server.dataset_root.clone(),
-        discovery_stats: server.discovery_stats.clone(),
-        preview_cache: server.preview_cache.clone(),
-        decoded_level_cache: server.decoded_level_cache.clone(),
-        pyramid_locks: server.pyramid_locks.clone(),
-        patch: server.patch.clone(),
-        render_semaphore: Arc::new(tokio::sync::Semaphore::new(render_permits())),
-    };
+    let state = app_state(&server, base_url.clone());
 
     let stop = shutdown.clone();
     std::thread::spawn(move || {
@@ -439,7 +441,62 @@ pub fn revive(server: &ServerHandle) -> Option<ServerHandle> {
     Some(serve(listener, server.clone()))
 }
 
+fn app_state(server: &ServerHandle, base_url: String) -> AppState {
+    AppState {
+        base_url,
+        volumes: server.volumes.clone(),
+        dataset_root: server.dataset_root.clone(),
+        discovery_stats: server.discovery_stats.clone(),
+        preview_cache: server.preview_cache.clone(),
+        decoded_level_cache: server.decoded_level_cache.clone(),
+        pyramid_locks: server.pyramid_locks.clone(),
+        patch: server.patch.clone(),
+        render_semaphore: Arc::new(tokio::sync::Semaphore::new(render_permits())),
+    }
+}
+
+/// An empty dataset server for `neurovue-web`, which mounts the routes on its
+/// own listener beside the UI. URLs are built on `base_url`: "." keeps them
+/// relative to the page, so they survive a proxy prefix such as Neurodesk's
+/// `/user/<name>/neurovue/`, which the proxy strips. No Host guard: the
+/// operator picks the bind address, and a proxy rewrites Host anyway.
+#[allow(dead_code)] // only neurovue-web (web/) calls this
+pub fn web_router(base_url: String, port: u16) -> (ServerHandle, Router) {
+    let server = ServerHandle {
+        url: base_url.clone(),
+        port,
+        ..new_handle(VolumeDiscovery {
+            root: None,
+            volumes: Vec::new(),
+            stats: DiscoveryStats::default(),
+        })
+    };
+    let router = routes().with_state(app_state(&server, base_url));
+    (server, router)
+}
+
+/// Drops the open dataset in place; the web server's single handle lives on.
+#[allow(dead_code)] // only neurovue-web (web/) calls this
+pub fn clear_dataset(handle: &ServerHandle) {
+    handle.warm_generation.fetch_add(1, Ordering::SeqCst);
+    lock_recover(&handle.volumes).clear();
+    *lock_recover(&handle.dataset_root) = None;
+    *lock_recover(&handle.discovery_stats) = DiscoveryStats::default();
+    lock_recover(&handle.preview_cache).clear();
+    lock_recover(&handle.decoded_level_cache).clear();
+}
+
 fn build_router(state: AppState, port: u16) -> Router {
+    routes()
+        .layer(app_cors_layer())
+        // Outermost, so a foreign Host is refused before any route runs.
+        .layer(middleware::from_fn(move |request, next| {
+            require_local_host(port, request, next)
+        }))
+        .with_state(state)
+}
+
+fn routes() -> Router<AppState> {
     Router::new()
         .route("/api", get(api_info))
         .route("/iiif/desktop", get(desktops))
@@ -467,12 +524,6 @@ fn build_router(state: AppState, port: u16) -> Router {
             "/session/correction.patch.json",
             get(read_patch).post(write_patch),
         )
-        .layer(app_cors_layer())
-        // Outermost, so a foreign Host is refused before any route runs.
-        .layer(middleware::from_fn(move |request, next| {
-            require_local_host(port, request, next)
-        }))
-        .with_state(state)
 }
 
 /// DNS-rebinding guard. A page on `attacker.example` that rebinds its name to
@@ -553,8 +604,21 @@ fn read_bids_dataset_info(root: &FsPath) -> Option<BidsDatasetInfo> {
 
 /// Purgeable, regenerable state (pyramids, previews, staged shares, terminal
 /// helpers). The OS may clear it at any time.
+static CACHE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set once by neurovue-web to a private per-user directory before serving.
+/// The desktop app leaves it unset: its temp dir is already per-user on
+/// macOS/Windows, but a Linux server's /tmp is shared across users.
+#[allow(dead_code)] // only neurovue-web (web/) calls this
+pub fn init_cache_root(path: PathBuf) {
+    let _ = CACHE_ROOT.set(path);
+}
+
 pub fn cache_root() -> PathBuf {
-    std::env::temp_dir().join("neurovue")
+    CACHE_ROOT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("neurovue"))
 }
 
 static DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -961,7 +1025,9 @@ pub fn export_bundle(
     // destroy the previous one.
     let partial = dest.with_file_name(format!(
         "{}.partial",
-        dest.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
+        dest.file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default()
     ));
     let written = write_bundle_zip(handle, &partial, &selected, view, created_at);
     let total_bytes = match written {
@@ -2041,15 +2107,44 @@ async fn raw_volume(
 ) -> Result<Response, StatusCode> {
     let volume = find_signed_volume(&state, &path.vol_id, &path.sig)?;
     let path = volume.source_path.as_ref().ok_or(StatusCode::NOT_FOUND)?;
-    let body = tokio::fs::read(path)
+    stream_volume_file(path).await
+}
+
+/// Optional ceiling on a single served volume file, via
+/// NEUROVUE_MAX_SERVED_BYTES. Unset means no limit. Neurodesk's Jupyter proxy
+/// buffers each response and rejects ones past 1 GiB, so its launcher sets
+/// this below that; the client then keeps the coarser level it already shows.
+fn max_served_bytes() -> Option<u64> {
+    static BYTES: OnceLock<Option<u64>> = OnceLock::new();
+    *BYTES.get_or_init(|| {
+        std::env::var("NEUROVUE_MAX_SERVED_BYTES")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|&bytes| bytes > 0)
+    })
+}
+
+/// Stream a volume file instead of reading it into memory per request.
+async fn stream_volume_file(path: &FsPath) -> Result<Response, StatusCode> {
+    let file = tokio::fs::File::open(path)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let length = file
+        .metadata()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .len();
+    if max_served_bytes().is_some_and(|max| length > max) {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, raw_volume_content_type(path));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=3600"),
     );
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
     Ok((headers, body).into_response())
 }
 
@@ -2063,24 +2158,17 @@ async fn raw_level_volume(
     let path = if level == 0 {
         volume.source_path.clone().ok_or(StatusCode::NOT_FOUND)?
     } else {
-        ensure_downsampled_nifti(
-            &volume,
-            level,
-            &state.pyramid_locks,
-            dataset_root.as_deref(),
-        )
+        // Building a level decodes and resamples the whole volume; keep it off
+        // the async workers so other routes (and /rpc) stay responsive.
+        let locks = state.pyramid_locks.clone();
+        tokio::task::spawn_blocking(move || {
+            ensure_downsampled_nifti(&volume, level, &locks, dataset_root.as_deref())
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
     };
-    let body = tokio::fs::read(&path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, raw_volume_content_type(&path));
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=3600"),
-    );
-    Ok((headers, body).into_response())
+    stream_volume_file(&path).await
 }
 
 async fn image_info(
@@ -2175,7 +2263,7 @@ async fn image_tile(
         dataset_root.as_deref(),
     );
     if let Some(ref dp) = disk_path {
-        if let Ok(bytes) = fs::read(dp) {
+        if let Ok(bytes) = tokio::fs::read(dp).await {
             lock_recover(&state.preview_cache).insert(cache_key.clone(), bytes.clone());
             headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/bmp"));
             return Ok((headers, bytes).into_response());
@@ -2192,21 +2280,39 @@ async fn image_tile(
         return Ok((headers, cached).into_response());
     }
 
-    if let Some(bmp) = render_slice_bmp(
-        &volume,
-        &path.axis,
-        path.slice,
-        region,
-        &path.size,
-        query.level,
-        &state.pyramid_locks,
-        &state.decoded_level_cache,
-        dataset_root.as_deref(),
-    ) {
+    // Rendering decodes (or builds) a pyramid level; run it on the blocking
+    // pool so a few cold tiles can't stall every other route.
+    let rendered = {
+        let volume = volume.clone();
+        let axis = path.axis.clone();
+        let size = path.size.clone();
+        let slice = path.slice;
+        let level = query.level;
+        let locks = state.pyramid_locks.clone();
+        let decoded = state.decoded_level_cache.clone();
+        tokio::task::spawn_blocking(move || {
+            let bmp = render_slice_bmp(
+                &volume,
+                &axis,
+                slice,
+                region,
+                &size,
+                level,
+                &locks,
+                &decoded,
+                dataset_root.as_deref(),
+            )?;
+            if let Some(dp) = disk_path {
+                write_preview_to_disk(&dp, &bmp);
+            }
+            Some(bmp)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some(bmp) = rendered {
         lock_recover(&state.preview_cache).insert(cache_key, bmp.clone());
-        if let Some(dp) = disk_path {
-            write_preview_to_disk(&dp, &bmp);
-        }
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/bmp"));
         return Ok((headers, bmp).into_response());
     }
@@ -3254,7 +3360,7 @@ fn is_gzipped_nifti(path: &FsPath) -> bool {
 }
 
 /// Read just the 348-byte header without decompressing the whole volume.
-fn peek_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
+fn peek_nifti_header_bytes(path: &FsPath) -> Option<[u8; 348]> {
     let mut header_bytes = [0u8; 348];
     if is_gzipped_nifti(path) {
         GzDecoder::new(File::open(path).ok()?)
@@ -3263,16 +3369,52 @@ fn peek_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
     } else {
         File::open(path).ok()?.read_exact(&mut header_bytes).ok()?;
     }
-    parse_nifti_header(&header_bytes)
+    Some(header_bytes)
+}
+
+fn peek_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
+    parse_nifti_header(&peek_nifti_header_bytes(path)?)
+}
+
+/// Frames beyond the spatial dims: the product of dim[4..=dim[0]] (time,
+/// components, ...), at least 1. A 4D file is read whole, so neurovue-web
+/// counts these toward the voxel ceiling; the desktop app counts one frame,
+/// as it always has, so large 4D runs it opened before still open.
+#[cfg_attr(not(neurovue_web), allow(dead_code))]
+fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
+    let little_endian = i32::from_le_bytes(header[0..4].try_into().ok()?) == 348;
+    let dim = |index: usize| -> i16 {
+        let bytes = [header[40 + 2 * index], header[41 + 2 * index]];
+        if little_endian {
+            i16::from_le_bytes(bytes)
+        } else {
+            i16::from_be_bytes(bytes)
+        }
+    };
+    let dim_count = usize::try_from(dim(0)).ok()?.min(7);
+    (4..=dim_count).try_fold(1usize, |frames, index| {
+        frames.checked_mul(usize::try_from(dim(index).max(1)).ok()?)
+    })
+}
+
+/// Frames counted toward the voxel ceiling (see `nifti_frame_count`).
+fn source_frames(header: &[u8; 348]) -> Option<usize> {
+    if cfg!(neurovue_web) {
+        nifti_frame_count(header)
+    } else {
+        Some(1)
+    }
 }
 
 fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     // Peek the header and enforce the voxel ceiling before the (potentially
     // huge) full read, so an oversized volume bails instead of OOMing.
-    let header = peek_nifti_header(path)?;
+    let header_bytes = peek_nifti_header_bytes(path)?;
+    let header = parse_nifti_header(&header_bytes)?;
     let voxels = usize::from(header.shape[0])
         .checked_mul(usize::from(header.shape[1]))?
-        .checked_mul(usize::from(header.shape[2]))?;
+        .checked_mul(usize::from(header.shape[2]))?
+        .checked_mul(source_frames(&header_bytes)?)?;
     if voxels > max_source_voxels() {
         return None;
     }
@@ -4609,7 +4751,9 @@ fn escape_xml(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-#[cfg(test)]
+// These tests use desktop-only pieces (the `headless` module, tower), so they
+// run in the desktop crate; neurovue-web (cfg neurovue_web) skips them.
+#[cfg(all(test, not(neurovue_web)))]
 mod tests {
     use super::*;
     use flate2::{write::GzEncoder, Compression};
@@ -5113,5 +5257,17 @@ mod tests {
         assert_eq!(all.volumes.len(), 20);
         assert_eq!(all.stats.total_discovered, 21);
         assert!(!all.stats.truncated);
+    }
+
+    #[test]
+    fn desktop_counts_one_frame_toward_the_voxel_ceiling() {
+        // A 4D header: 64 x 64 x 40 spatial, 300 time points.
+        let mut header = [0u8; 348];
+        header[0..4].copy_from_slice(&348i32.to_le_bytes());
+        for (index, value) in [4i16, 64, 64, 40, 300].into_iter().enumerate() {
+            header[40 + 2 * index..42 + 2 * index].copy_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(nifti_frame_count(&header), Some(300));
+        assert_eq!(source_frames(&header), Some(1));
     }
 }

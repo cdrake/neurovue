@@ -1,7 +1,7 @@
 {
   "name": "neurovue",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.5",
   "license": "BSD-2-Clause",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build-quicklook": "sh scripts/build-quicklook.sh",
     "build-mcp-server": "node scripts/build-mcp-server.cjs",
     "build": "tsc --noEmit && vite build",
+    "build:web": "tsc --noEmit && vite build --mode web",
     "typecheck": "tsc --noEmit && tsc --noEmit -p mcp-server",
     "lint": "biome check .",
     "format": "biome format --write .",

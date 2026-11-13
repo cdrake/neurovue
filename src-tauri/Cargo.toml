@@ -1,6 +1,6 @@
 [package]
 name = "neurovue"
-version = "0.2.2"
+version = "0.2.5"
 description = "NeuroVue desktop viewer"
 edition = "2021"
 license = "BSD-2-Clause"
@@ -19,6 +19,7 @@ cli = []
 [[bin]]
 name = "neurovue-cli"
 required-features = ["cli"]
+
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -44,6 +45,7 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-pencil = { path = "plugins/pencil" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the axum router in tests without binding a port.
@@ -77,3 +79,7 @@ objc2-ui-kit = { version = "0.3", features = [
   "UIView",
   "UIPopoverPresentationController",
 ] }
+
+# neurovue-web (web/) sets cfg(neurovue_web) on the sources it shares with this crate.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(neurovue_web)"] }

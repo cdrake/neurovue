@@ -263,7 +263,46 @@ export async function fetchDesktopManifest(
       `Desktop manifest request failed with HTTP ${response.status}.`,
     )
   }
-  return response.json() as Promise<DesktopManifest>
+  return absolutizeServerUrls(
+    await response.json(),
+    serverBaseHref(serverUrl),
+  ) as DesktopManifest
+}
+
+// The web server (neurovue-web) describes its routes relative to itself
+// ("./volumes/..."). Resolve them against the page's base, not
+// `location.href`: behind a path-prefix proxy (Neurodesk) the page carries a
+// <base href> for the prefix and the proxy rewrites the address bar to drop
+// it, and NiiVue's loader resolves string URLs against `location.href`.
+// `document.baseURI` honours <base>, so absolute URLs reach NiiVue intact.
+export function serverBaseHref(serverUrl: string): string {
+  const base = typeof document === 'undefined' ? undefined : document.baseURI
+  if (!base) return `${trimTrailingSlash(serverUrl)}/`
+  return new URL(`${trimTrailingSlash(serverUrl)}/`, base).href
+}
+
+// Prefix-concatenate rather than `new URL()` each value: URL templates such as
+// `brickTemplate` carry `{level}` placeholders a URL parser would
+// percent-encode.
+export function absolutizeServerUrls(
+  value: unknown,
+  baseHref: string,
+): unknown {
+  if (typeof value === 'string') {
+    return value.startsWith('./') ? baseHref + value.slice(2) : value
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => absolutizeServerUrls(entry, baseHref))
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        absolutizeServerUrls(entry, baseHref),
+      ]),
+    )
+  }
+  return value
 }
 
 export async function fetchDesktopManifestVersion(

@@ -2,11 +2,14 @@
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod bonjour;
+mod dataset;
 pub mod headless;
 #[cfg(desktop)]
 mod mcp;
 #[cfg(desktop)]
 mod neuroflow;
+#[cfg(desktop)]
+mod neuroflow_core;
 #[cfg(desktop)]
 mod niimath;
 mod opened;
@@ -17,6 +20,7 @@ mod share;
 mod terminal;
 mod volumetric_server;
 
+use dataset::*;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,22 +57,6 @@ const MENU_EXPRESS_VIEW: &str = "view-express-view";
 const MENU_PIPELINES: &str = "view-pipelines";
 #[cfg(desktop)]
 const MENU_CLEAR_ALL: &str = "view-clear-all";
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NeuroVueServerInfo {
-    url: String,
-    port: u16,
-    volume_count: usize,
-    dataset_root: Option<String>,
-    cache_root: String,
-    bids_name: Option<String>,
-    bids_version: Option<String>,
-    bids_dataset_doi: Option<String>,
-    warm_progress: volumetric_server::WarmProgressSnapshot,
-    /// The bundled MNI152 sample, opened on request from the Welcome screen.
-    sample_path: Option<String>,
-}
 
 /// The label of the window NeuroVue opens at launch.
 const MAIN_WINDOW: &str = "main";
@@ -113,32 +101,6 @@ impl NeuroVueState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DatasetOpenResult {
-    url: String,
-    port: u16,
-    volume_count: usize,
-    dataset_root: String,
-    /// The file opened, when that was a single volume: its dataset root is the
-    /// parent folder, which may hold other files.
-    opened_file: Option<String>,
-    cache_root: String,
-    bids_name: Option<String>,
-    bids_version: Option<String>,
-    bids_dataset_doi: Option<String>,
-    warm_progress: volumetric_server::WarmProgressSnapshot,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OverlayAddResult {
-    id: String,
-    label: String,
-    volume_count: usize,
-    warm_progress: volumetric_server::WarmProgressSnapshot,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ExportBundleResult {
     bundle_path: String,
     volume_count: usize,
@@ -167,24 +129,7 @@ fn neurovue_server_info(
     window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
 ) -> NeuroVueServerInfo {
-    let server = state.server(window.label());
-    let bids = volumetric_server::bids_dataset_info(&server);
-    NeuroVueServerInfo {
-        url: server.url.clone(),
-        port: server.port,
-        volume_count: volumetric_server::volume_count(&server),
-        dataset_root: volumetric_server::dataset_root(&server)
-            .map(|path| path.display().to_string()),
-        cache_root: volumetric_server::cache_root().display().to_string(),
-        bids_name: bids.as_ref().and_then(|info| info.name.clone()),
-        bids_version: bids.as_ref().and_then(|info| info.bids_version.clone()),
-        bids_dataset_doi: bids.as_ref().and_then(|info| info.dataset_doi.clone()),
-        warm_progress: volumetric_server::warm_progress(&server),
-        sample_path: state
-            .sample_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
-    }
+    server_info(&state.server(window.label()), state.sample_path.as_deref())
 }
 
 #[tauri::command]
@@ -198,34 +143,6 @@ async fn open_dataset_path(
     tauri::async_runtime::spawn_blocking(move || open_dataset_at_path(&server, Path::new(&path)))
         .await
         .map_err(|error| format!("open_dataset_path: join error: {error}"))?
-}
-
-/// The iOS document picker hands back a `file://` URL (Tauri copies the picked
-/// file into the app's Inbox first), so convert it to a plain, percent-decoded
-/// filesystem path. Desktop paths have no scheme, so this is a no-op there.
-pub(crate) fn normalize_local_path(raw: &str) -> String {
-    let without_scheme = raw.strip_prefix("file://").unwrap_or(raw);
-    percent_decode(without_scheme)
-}
-
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Drops this window's dataset: its server stops, and the next request gets an empty one.
@@ -246,17 +163,9 @@ async fn add_overlay_volume_path(
 ) -> Result<OverlayAddResult, String> {
     let path = normalize_local_path(&path);
     let server = state.server(window.label());
-    tauri::async_runtime::spawn_blocking(move || {
-        let registered = volumetric_server::register_overlay_volume(&server, Path::new(&path))?;
-        Ok(OverlayAddResult {
-            id: registered.id,
-            label: registered.label,
-            volume_count: volumetric_server::volume_count(&server),
-            warm_progress: volumetric_server::warm_progress(&server),
-        })
-    })
-    .await
-    .map_err(|error| format!("add_overlay_volume_path: join error: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || add_overlay(&server, Path::new(&path)))
+        .await
+        .map_err(|error| format!("add_overlay_volume_path: join error: {error}"))?
 }
 
 #[tauri::command]
@@ -528,66 +437,15 @@ async fn read_document_manifest(path: String) -> Result<serde_json::Value, Strin
         .map_err(|error| format!("read_document_manifest: join error: {error}"))?
 }
 
-/// Surface mesh formats NiiVue reads (its `mesh/readers`), lower-case. FreeSurfer
-/// surfaces are named by their type (`lh.pial`), so those count as extensions.
-const MESH_EXTENSIONS: &[&str] = &[
-    "asc", "byu", "dfs", "geo", "gii", "ico", "mz3", "nv", "obj", "off", "ply", "srf", "stl",
-    "vtk", "wrl", "x3d", "cbor", "white", "pial", "inflated", "sphere", "orig", "smoothwm",
-    "qsphere", "trk", "tck", "trx",
-];
-
 /// The raw bytes of a surface mesh. Meshes skip the volume server: the viewer
 /// hands the bytes straight to NiiVue, which parses the format itself.
 #[tauri::command]
 async fn read_mesh_file(path: String) -> Result<tauri::ipc::Response, String> {
-    let path = PathBuf::from(normalize_local_path(&path));
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    if !MESH_EXTENSIONS.contains(&extension.as_str()) {
-        return Err(format!(
-            "{} is not a mesh NeuroVue can open.",
-            path.display()
-        ));
-    }
     tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read(&path)
-            .map(tauri::ipc::Response::new)
-            .map_err(|error| format!("Couldn't read {}: {error}", path.display()))
+        read_mesh_bytes(&path).map(tauri::ipc::Response::new)
     })
     .await
     .map_err(|error| format!("read_mesh_file: join error: {error}"))?
-}
-
-fn open_dataset_at_path(
-    server: &volumetric_server::ServerHandle,
-    root: &Path,
-) -> Result<DatasetOpenResult, String> {
-    let volume_count = volumetric_server::open_dataset_root(server, root)?;
-    let dataset_root = volumetric_server::dataset_root(server)
-        .unwrap_or_else(|| root.to_path_buf())
-        .display()
-        .to_string();
-    let bids = volumetric_server::bids_dataset_info(server);
-    let opened_file = root
-        .is_file()
-        .then(|| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
-        .map(|path| path.display().to_string());
-
-    Ok(DatasetOpenResult {
-        url: server.url.clone(),
-        port: server.port,
-        volume_count,
-        dataset_root,
-        opened_file,
-        cache_root: volumetric_server::cache_root().display().to_string(),
-        bids_name: bids.as_ref().and_then(|info| info.name.clone()),
-        bids_version: bids.as_ref().and_then(|info| info.bids_version.clone()),
-        bids_dataset_doi: bids.as_ref().and_then(|info| info.dataset_doi.clone()),
-        warm_progress: volumetric_server::warm_progress(server),
-    })
 }
 
 #[cfg(desktop)]
@@ -744,12 +602,20 @@ fn set_express_menu_label(window: tauri::WebviewWindow, express: bool) {
             if item.id() == MENU_EXPRESS_VIEW {
                 return item.as_menuitem().cloned();
             }
-            item.as_submenu().and_then(|submenu| find(submenu.items().ok()?))
+            item.as_submenu()
+                .and_then(|submenu| find(submenu.items().ok()?))
         })
     }
-    let item = window.app_handle().menu().and_then(|menu| find(menu.items().ok()?));
+    let item = window
+        .app_handle()
+        .menu()
+        .and_then(|menu| find(menu.items().ok()?));
     if let Some(item) = item {
-        let _ = item.set_text(if express { "Dataset View" } else { "Express View" });
+        let _ = item.set_text(if express {
+            "Dataset View"
+        } else {
+            "Express View"
+        });
     }
 }
 

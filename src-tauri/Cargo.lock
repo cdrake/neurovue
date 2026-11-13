@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "neurovue"
-version = "0.2.2"
+version = "0.2.5"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2005,6 +2005,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-pencil",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http",
  "zip",
