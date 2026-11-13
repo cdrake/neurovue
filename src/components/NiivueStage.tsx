@@ -688,8 +688,9 @@ export function NiivueStage({
   // re-runs once NiiVue has computed per-volume stats (robust range / peak) —
   // needed to seed a stat overlay's default threshold from its data.
   const [loadedVersion, setLoadedVersion] = useState(0)
-  const annotationsTargetRef = useRef(annotationsTarget)
-  annotationsTargetRef.current = annotationsTarget
+  // Each base volume's annotations (getAnnotationsJSON), kept across the
+  // instance a reload replaces; seeded by an opened bundle.
+  const annotationsByBaseRef = useRef(new Map<string, string>())
   // A go-to that arrives while a viewer is loading waits for its volumes:
   // setCrosshairPos before then is lost (a bundle's slice, and so its shapes).
   const pendingCrosshairRef = useRef<{ mm: [number, number, number] } | null>(
@@ -778,6 +779,7 @@ export function NiivueStage({
   // biome-ignore lint/correctness/useExhaustiveDependencies: layerLoadKey is the reload trigger; layer display fields, view mode and clip planes are applied in place by the effects below.
   useEffect(() => {
     let cancelled = false
+    let isLoaded = false
     let localNv: NiiVueLike | null = null
     let locationListener:
       | ((event: CustomEvent<NiiVueLocation>) => void)
@@ -962,10 +964,10 @@ export function NiivueStage({
           else onViewer?.(nv)
         }
         // A new instance starts without annotations.
-        const annotations = annotationsTargetRef.current
-        if (annotations && annotations.baseId === primaryItem?.id) {
-          nv.loadAnnotationsJSON?.(annotations.json)
-        }
+        const annotations =
+          primaryItem && annotationsByBaseRef.current.get(primaryItem.id)
+        if (annotations) nv.loadAnnotationsJSON?.(annotations)
+        isLoaded = true
         isAttachingRef.current = false
         const crosshair = pendingCrosshairRef.current
         pendingCrosshairRef.current = null
@@ -998,6 +1000,13 @@ export function NiivueStage({
       stageControls?.destroy()
       if (stageControlsRef.current === stageControls) {
         stageControlsRef.current = null
+      }
+      // A half-loaded instance has none of the base's annotations yet.
+      if (localNv && isLoaded && primaryItem) {
+        annotationsByBaseRef.current.set(
+          primaryItem.id,
+          localNv.getAnnotationsJSON?.() ?? '[]',
+        )
       }
       // Always free this instance, even if a failed load already nulled nvRef.
       if (localNv) {
@@ -1374,13 +1383,17 @@ export function NiivueStage({
     nv.drawScene()
   }, [crosshairTarget])
 
-  // A bundle opened over volumes already shown: no reload brings its
-  // annotations in, so apply them here. An instance still loading (no
-  // volumes yet) gets them from the attach effect.
+  // An opened bundle's annotations replace what this session drew. Runs after
+  // the attach effect, so a reload it causes loads these. A bundle opened over
+  // volumes already shown reloads nothing, so apply them here too.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only a new target applies; a load applies it in attach.
   useEffect(() => {
+    if (!annotationsTarget) return
+    annotationsByBaseRef.current = new Map([
+      [annotationsTarget.baseId, annotationsTarget.json],
+    ])
     const nv = nvRef.current
-    if (!nv?.volumes?.length || !annotationsTarget) return
+    if (!nv?.volumes?.length) return
     if (annotationsTarget.baseId !== primaryItem?.id) return
     nv.loadAnnotationsJSON?.(annotationsTarget.json)
   }, [annotationsTarget])
