@@ -193,21 +193,29 @@ const DEFAULT_OVERLAY_COLORMAPS = ['magma', 'viridis', 'actc'] as const
 const DEFAULT_OVERLAY_OPACITY = 0.48
 const DEFAULT_ATLAS_OPACITY = 0.34
 const MASK_OVERLAY_OPACITY = 0.4
-const COLORMAP_OPTIONS = [
+// Listed first; the rest of NiiVue's continuous maps follow alphabetically.
+const COMMON_COLORMAPS = [
   { value: 'gray', label: 'Gray' },
+  { value: 'bone', label: 'Bone' },
   { value: 'viridis', label: 'Viridis' },
   { value: 'magma', label: 'Magma' },
   { value: 'actc', label: 'ACTC' },
   { value: 'warm_cool', label: 'Warm/Cool (diverging)' },
   { value: 'red', label: 'Red' },
-] as const
-// The anatomical base is restricted to grayscale-family maps: pseudocolor
-// (viridis/magma/actc) on a structural volume invites intensity misreading.
-// Stat/label overlays keep the full COLORMAP_OPTIONS set.
-const BASE_COLORMAP_OPTIONS = [
-  { value: 'gray', label: 'Gray' },
-  { value: 'bone', label: 'Bone' },
-] as const
+]
+type ColormapOption = { value: string; label: string }
+
+function colormapOptions(builtin: readonly string[]): ColormapOption[] {
+  const common = new Set(COMMON_COLORMAPS.map((option) => option.value))
+  return [
+    ...COMMON_COLORMAPS,
+    ...builtin
+      // NiiVue capitalizes its names and matches them case-insensitively.
+      .filter((name) => !common.has(name.toLowerCase()))
+      .sort()
+      .map((name) => ({ value: name, label: name.replace(/_/g, ' ') })),
+  ]
+}
 
 // A colormap selection of 'warm_cool' is the NiiVue idiom for signed/stat data:
 // a warm map for positive intensities paired with a cool map for negatives, so
@@ -718,12 +726,10 @@ export function App(): JSX.Element {
                 layerSettings,
                 DEFAULT_ATLAS_COLORMAP,
               )
-            : baseColormap(
-                layerColormapForItem(
-                  selected,
-                  layerSettings,
-                  DEFAULT_BASE_COLORMAP,
-                ),
+            : layerColormapForItem(
+                selected,
+                layerSettings,
+                DEFAULT_BASE_COLORMAP,
               ),
         ),
         ...windowForItem(selected.id, layerSettings),
@@ -1289,8 +1295,22 @@ export function App(): JSX.Element {
   const viewerRef = useRef<unknown>(null)
   const viewerWaitersRef = useRef<Array<() => void>>([])
   const viewerGoneWaitersRef = useRef<Array<() => void>>([])
+  const [builtinColormaps, setBuiltinColormaps] = useState<string[]>([])
+  const colormaps = useMemo(
+    () => colormapOptions(builtinColormaps),
+    [builtinColormaps],
+  )
   const handleViewer = useCallback((nv: unknown) => {
     viewerRef.current = nv
+    // The registry is NiiVue-wide, so the first viewer's list is the list.
+    if (nv)
+      setBuiltinColormaps((current) =>
+        current.length
+          ? current
+          : (
+              nv as { colormapNames(kind: 'continuous'): string[] }
+            ).colormapNames('continuous'),
+      )
     const waiters = nv ? viewerWaitersRef : viewerGoneWaitersRef
     for (const resolve of waiters.current.splice(0)) resolve()
   }, [])
@@ -2539,6 +2559,7 @@ export function App(): JSX.Element {
                   <>
                     <LayerPanel
                       atlasId={atlasId}
+                      colormaps={colormaps}
                       isOpeningOverlay={isOpeningOverlay}
                       items={items}
                       layerSettings={layerSettings}
@@ -3027,6 +3048,7 @@ function DesktopZoomControls({
 
 function LayerPanel({
   atlasId,
+  colormaps,
   isOpeningOverlay,
   items,
   layerSettings,
@@ -3046,6 +3068,7 @@ function LayerPanel({
   onRevealRun,
 }: {
   atlasId: string | null
+  colormaps: ColormapOption[]
   isOpeningOverlay: boolean
   items: DesktopItem[]
   layerSettings: Record<string, LayerSettings>
@@ -3144,9 +3167,6 @@ function LayerPanel({
           ? DEFAULT_ATLAS_COLORMAP
           : DEFAULT_BASE_COLORMAP,
     )
-    // Keep the base's select in sync with what actually renders (grayscale).
-    const colormapValue =
-      role === 'base' && !isBaseAtlas ? baseColormap(rawColormap) : rawColormap
     return (
       <LayerRow
         key={item.id}
@@ -3185,12 +3205,8 @@ function LayerPanel({
             <LayerColormapSelect
               ariaLabel={`Colormap for ${item.label}`}
               itemId={item.id}
-              value={colormapValue}
-              options={
-                role === 'base' && !isBaseAtlas
-                  ? BASE_COLORMAP_OPTIONS
-                  : COLORMAP_OPTIONS
-              }
+              value={rawColormap}
+              options={colormaps}
               onChange={onLayerColormapChange}
             />
             {role === 'overlay' ? (
@@ -3573,14 +3589,14 @@ function LayerColormapSelect({
   disabled = false,
   itemId,
   value,
-  options = COLORMAP_OPTIONS,
+  options,
   onChange,
 }: {
   ariaLabel: string
   disabled?: boolean
   itemId: string
   value: string
-  options?: ReadonlyArray<{ value: string; label: string }>
+  options: ColormapOption[]
   onChange: (itemId: string, colormap: string) => void
 }): JSX.Element {
   return (
@@ -4585,16 +4601,6 @@ function layerColormapForItem(
   fallback: string,
 ): string {
   return layerSettings[item.id]?.colormap ?? fallback
-}
-
-// Clamp the anatomical base to a grayscale-family map. A volume promoted from
-// overlay to base can carry a leaked pseudocolor setting; the base has no way to
-// display or change one (its dropdown is restricted), so force it grayscale.
-const BASE_COLORMAP_VALUES = new Set<string>(
-  BASE_COLORMAP_OPTIONS.map((option) => option.value),
-)
-function baseColormap(value: string): string {
-  return BASE_COLORMAP_VALUES.has(value) ? value : DEFAULT_BASE_COLORMAP
 }
 
 function overlayColormapForIndex(index: number): string {
