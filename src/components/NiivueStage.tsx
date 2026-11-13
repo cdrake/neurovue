@@ -690,6 +690,12 @@ export function NiivueStage({
   const [loadedVersion, setLoadedVersion] = useState(0)
   const annotationsTargetRef = useRef(annotationsTarget)
   annotationsTargetRef.current = annotationsTarget
+  // A go-to that arrives while a viewer is loading waits for its volumes:
+  // setCrosshairPos before then is lost (a bundle's slice, and so its shapes).
+  const pendingCrosshairRef = useRef<{ mm: [number, number, number] } | null>(
+    null,
+  )
+  const isAttachingRef = useRef(false)
   // Current crosshair location (mirrored from NiiVue) — drives the touch slice
   // slider so it stays in sync with clicks/paging from any source.
   const [location, setLocation] = useState<NiiVueLocation | null>(null)
@@ -845,6 +851,7 @@ export function NiivueStage({
         onLocationChange?.(null)
         return
       }
+      isAttachingRef.current = true
 
       setSnapId(null)
       setIsStatusError(false)
@@ -959,10 +966,15 @@ export function NiivueStage({
         if (annotations && annotations.baseId === primaryItem?.id) {
           nv.loadAnnotationsJSON?.(annotations.json)
         }
+        isAttachingRef.current = false
+        const crosshair = pendingCrosshairRef.current
+        pendingCrosshairRef.current = null
+        if (crosshair) nv.setCrosshairPos?.(crosshair.mm)
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
       } catch (error) {
+        isAttachingRef.current = false
         if (!cancelled) {
           nvRef.current = null
           setIsStatusError(true)
@@ -1353,7 +1365,11 @@ export function NiivueStage({
   // crosshairTarget object identity (one per request) re-fires this.
   useEffect(() => {
     const nv = nvRef.current
-    if (!nv || !crosshairTarget || !nv.setCrosshairPos) return
+    if (!crosshairTarget) return
+    if (!nv?.setCrosshairPos || isAttachingRef.current) {
+      pendingCrosshairRef.current = crosshairTarget
+      return
+    }
     nv.setCrosshairPos(crosshairTarget.mm)
     nv.drawScene()
   }, [crosshairTarget])
