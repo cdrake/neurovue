@@ -176,6 +176,7 @@ export interface StageControlsActions {
   clearDrawing(): void
   send(): void
   exportSVG(): void
+  saveMask(): void
   pen(value: number): void
   brush(size: number): void
   wandTolerance(tolerance: number): void
@@ -376,6 +377,9 @@ export class StageControls implements UIKitOverlayRenderer {
           }),
           this.toolButton('clear-drawing', 'Clear ink', draw.hasDrawing, {
             click: () => this.actions?.clearDrawing(),
+          }),
+          this.toolButton('save-mask', 'Save mask', draw.hasDrawing, {
+            click: () => this.actions?.saveMask(),
           }),
         )
       }

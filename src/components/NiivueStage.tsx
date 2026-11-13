@@ -33,6 +33,7 @@ import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
+import { gzip, saveFile } from '../domain/saveFile'
 import {
   matchingShadingPreset,
   type RenderShading,
@@ -49,7 +50,6 @@ import {
   composeSliceSVG,
   isPlaneSliceType,
   PLANES as SLICE_PLANES,
-  saveSVG,
   sliceIndexAt,
 } from '../domain/svgExport'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
@@ -296,7 +296,7 @@ interface NiiVueLike {
   closeDrawing?(): void
   drawUndo?(): void
   // An empty filename returns the NIfTI bytes instead of downloading them.
-  saveDrawing?(filename: string): Promise<boolean | Uint8Array>
+  saveDrawing?(filename: string): Promise<boolean | Uint8Array<ArrayBuffer>>
   azimuth?: number
   elevation?: number
   volumeIllumination?: number
@@ -1306,6 +1306,13 @@ export function NiivueStage({
     nv.drawScene()
   }
 
+  function exportStem(): string {
+    return (primaryItem?.label ?? 'volume').replace(
+      /\.(nii(\.gz)?|mgz|mgh|nrrd)$/i,
+      '',
+    )
+  }
+
   // The current slice's mask and shapes, as one SVG in world mm.
   async function exportSVG(): Promise<void> {
     const nv = nvRef.current
@@ -1324,10 +1331,22 @@ export function NiivueStage({
       shapes: nv.annotationsToSVG?.(sliceType, depthMm) ?? null,
     })
     if (!svg) return
-    await saveSVG(
-      `${primaryItem?.label ?? 'slice'}-${viewMode}-${sliceIndex}`,
-      svg,
-    )
+    await saveFile({
+      title: 'Export SVG',
+      fileName: `${exportStem()}-${viewMode}-${sliceIndex}.svg`,
+      data: svg,
+    })
+  }
+
+  // The painted mask, as a uint8 NIfTI on the base volume's grid.
+  async function saveMask(): Promise<void> {
+    const drawing = await nvRef.current?.saveDrawing?.('')
+    if (!(drawing instanceof Uint8Array)) return
+    await saveFile({
+      title: 'Save mask',
+      fileName: `${exportStem()}-mask.nii.gz`,
+      data: await gzip(drawing),
+    })
   }
 
   // Go-to: move the crosshair to a requested RAS+ mm position. A fresh
@@ -1880,6 +1899,7 @@ export function NiivueStage({
     clearDrawing,
     send: () => void sendDrawing(),
     exportSVG: () => void exportSVG().catch(console.error),
+    saveMask: () => void saveMask().catch(console.error),
     // A colour picks the pen back up from the eraser, keeping fill or wand.
     pen: (value) => {
       setPenValue(value)
