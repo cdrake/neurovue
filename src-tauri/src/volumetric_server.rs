@@ -3377,8 +3377,10 @@ fn peek_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
 }
 
 /// Frames beyond the spatial dims: the product of dim[4..=dim[0]] (time,
-/// components, ...), at least 1. A 4D file is read whole, so these count
-/// toward the voxel ceiling too.
+/// components, ...), at least 1. A 4D file is read whole, so neurovue-web
+/// counts these toward the voxel ceiling; the desktop app counts one frame,
+/// as it always has, so large 4D runs it opened before still open.
+#[cfg_attr(not(neurovue_web), allow(dead_code))]
 fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
     let little_endian = i32::from_le_bytes(header[0..4].try_into().ok()?) == 348;
     let dim = |index: usize| -> i16 {
@@ -3395,6 +3397,15 @@ fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
     })
 }
 
+/// Frames counted toward the voxel ceiling (see `nifti_frame_count`).
+fn source_frames(header: &[u8; 348]) -> Option<usize> {
+    if cfg!(neurovue_web) {
+        nifti_frame_count(header)
+    } else {
+        Some(1)
+    }
+}
+
 fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     // Peek the header and enforce the voxel ceiling before the (potentially
     // huge) full read, so an oversized volume bails instead of OOMing.
@@ -3403,7 +3414,7 @@ fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     let voxels = usize::from(header.shape[0])
         .checked_mul(usize::from(header.shape[1]))?
         .checked_mul(usize::from(header.shape[2]))?
-        .checked_mul(nifti_frame_count(&header_bytes)?)?;
+        .checked_mul(source_frames(&header_bytes)?)?;
     if voxels > max_source_voxels() {
         return None;
     }
@@ -5246,5 +5257,17 @@ mod tests {
         assert_eq!(all.volumes.len(), 20);
         assert_eq!(all.stats.total_discovered, 21);
         assert!(!all.stats.truncated);
+    }
+
+    #[test]
+    fn desktop_counts_one_frame_toward_the_voxel_ceiling() {
+        // A 4D header: 64 x 64 x 40 spatial, 300 time points.
+        let mut header = [0u8; 348];
+        header[0..4].copy_from_slice(&348i32.to_le_bytes());
+        for (index, value) in [4i16, 64, 64, 40, 300].into_iter().enumerate() {
+            header[40 + 2 * index..42 + 2 * index].copy_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(nifti_frame_count(&header), Some(300));
+        assert_eq!(source_frames(&header), Some(1));
     }
 }
