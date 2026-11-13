@@ -23,6 +23,11 @@ export function provideStageControls(source: () => Live | null): () => void {
   }
 }
 
+const WAND_SCOPES = [
+  { id: 'slice', label: 'Slice' },
+  { id: 'volume', label: 'Volume' },
+]
+
 function segmented(
   id: string,
   label: string,
@@ -69,25 +74,41 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
       segmented('look', 'Look', state.look.presets, state.look.value),
     )
   }
-  if (state.measure) {
-    const { active, enabled } = state.measure
+  const { measure, shapes, draw } = state
+  if (measure) {
     controls.push(
-      toggle('measure', 'Measure', active, enabled),
-      button('clear-measure', 'Clear ruler', enabled),
+      toggle('measure', 'Measure', measure.active, measure.enabled),
+      button('clear-measure', 'Clear ruler', measure.enabled),
     )
+    if (measure.active) {
+      controls.push(
+        segmented('measure-tool', 'Measure tool', measure.tools, measure.tool),
+      )
+    }
   }
-  const { draw } = state
+  if (shapes) {
+    controls.push(toggle('shapes', 'Shapes', shapes.active, shapes.enabled))
+    if (shapes.active) {
+      controls.push(
+        segmented('shape-tool', 'Shape', shapes.tools, shapes.tool),
+        button('shape-undo', 'Undo', true),
+        button('shape-redo', 'Redo', true),
+        button('clear-shapes', 'Clear shapes', true),
+      )
+    }
+  }
   if (draw) {
     controls.push(toggle('draw', 'Draw', draw.active, draw.enabled))
     if (draw.active) {
       controls.push(
-        toggle('erase', 'Erase', draw.eraser, true),
+        segmented('draw-tool', 'Draw tool', draw.tools, draw.tool),
         button('undo', 'Undo', draw.hasDrawing),
         button('clear-drawing', 'Clear ink', draw.hasDrawing),
       )
     }
-    if (draw.canSend) controls.push(button('send', 'Send', true))
   }
+  if (state.canExport) controls.push(button('export-svg', 'Export SVG', true))
+  if (draw?.canSend) controls.push(button('send', 'Send', true))
   const { palette } = state
   if (palette) {
     controls.push(
@@ -102,6 +123,27 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
         'Brush',
         palette.sizes.map((s) => ({ id: String(s.size), label: s.name })),
         String(palette.brushSize),
+      ),
+    )
+  }
+  const { wand } = state
+  if (wand) {
+    controls.push(
+      {
+        id: 'wand-tolerance',
+        kind: 'slider',
+        label: 'Wand tolerance',
+        min: 0.01,
+        max: 0.5,
+        step: 0.01,
+        value: wand.tolerance,
+        enabled: true,
+      },
+      segmented(
+        'wand-scope',
+        'Wand reach',
+        WAND_SCOPES,
+        wand.volume ? 'volume' : 'slice',
       ),
     )
   }
@@ -171,8 +213,8 @@ export function setStageControl(
       // The stage's tool buttons toggle, so press only to change.
       if (value !== control.value) {
         if (id === 'measure') actions.measure()
+        else if (id === 'shapes') actions.shapes()
         else if (id === 'draw') actions.draw()
-        else if (id === 'erase') actions.erase()
       }
       return { ...control, value }
     }
@@ -184,6 +226,10 @@ export function setStageControl(
       }
       if (id === 'view-mode') actions.viewMode(option.id)
       else if (id === 'look') actions.look(option.id)
+      else if (id === 'measure-tool') actions.measureTool(option.id)
+      else if (id === 'shape-tool') actions.shapeTool(option.id)
+      else if (id === 'draw-tool') actions.drawTool(option.id)
+      else if (id === 'wand-scope') actions.wandVolume(option.id === 'volume')
       else if (id === 'pen') actions.pen(Number(option.id))
       else if (id === 'brush') actions.brush(Number(option.id))
       else if (id === 'clip-planes') actions.clipPlane(option.id)
@@ -200,6 +246,10 @@ export function setStageControl(
         const index = Math.round(clamped)
         actions.slice(index)
         return { ...control, value: index }
+      }
+      if (id === 'wand-tolerance') {
+        actions.wandTolerance(clamped)
+        return { ...control, value: clamped }
       }
       const plane = state.clip?.slider
       if (plane) actions.clipDepth(plane.id, clamped)

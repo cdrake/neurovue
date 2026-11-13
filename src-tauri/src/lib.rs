@@ -436,6 +436,12 @@ fn sanitize_share_name(name: &str) -> String {
     }
 }
 
+/// Writes text to a path the person picked in the save dialog (an SVG export).
+#[tauri::command]
+async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|error| format!("{path}: {error}"))
+}
+
 #[tauri::command]
 async fn read_bundle_manifest(path: String) -> Result<serde_json::Value, String> {
     let path = normalize_local_path(&path);
@@ -739,6 +745,7 @@ pub fn run() {
             add_overlay_volume_path,
             read_mesh_file,
             export_dataset_bundle,
+            write_text_file,
             read_bundle_manifest,
             read_document_manifest,
             share_view_via_airdrop,
@@ -779,6 +786,7 @@ pub fn run() {
         add_overlay_volume_path,
         read_mesh_file,
         export_dataset_bundle,
+        write_text_file,
         read_bundle_manifest,
         read_document_manifest,
         share_view_via_airdrop,

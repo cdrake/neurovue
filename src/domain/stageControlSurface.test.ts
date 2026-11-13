@@ -17,14 +17,21 @@ const state: StageControlsState = {
     value: 'standard',
   },
   measure: null,
+  shapes: null,
   draw: {
     active: false,
     enabled: true,
-    eraser: false,
+    tools: [
+      { id: 'pen', label: 'Pen' },
+      { id: 'wand', label: 'Wand' },
+    ],
+    tool: 'pen',
     hasDrawing: false,
     canSend: false,
   },
+  canExport: false,
   palette: null,
+  wand: null,
   slice: { label: 'Axial', value: 3, max: 9 },
   clip: null,
 }
@@ -42,7 +49,8 @@ function recorder(): { calls: string[]; actions: StageControlsActions } {
     measure: log('measure'),
     clearMeasurements: log('clearMeasurements'),
     draw: log('draw'),
-    erase: log('erase'),
+    drawTool: log('drawTool'),
+    wandTolerance: log('wandTolerance'),
     undo: log('undo'),
     clearDrawing: log('clearDrawing'),
     send: log('send'),
@@ -89,4 +97,25 @@ test('refuses in words', () => {
   expect(() => setStageControl(live, 'look', { label: 'x' })).toThrow(
     'only a value',
   )
+})
+
+test('picks the draw tool and sets the wand', () => {
+  const { calls, actions } = recorder()
+  const drawing: StageControlsState = {
+    ...state,
+    draw: {
+      ...(state.draw as NonNullable<StageControlsState['draw']>),
+      active: true,
+      tool: 'wand',
+    },
+    wand: { tolerance: 0.05, volume: false },
+  }
+  const live = { state: drawing, actions }
+  expect(stageControlStates(drawing).map((c) => c.id)).toContain('draw-tool')
+  setStageControl(live, 'draw-tool', { value: 'pen' })
+  expect(setStageControl(live, 'wand-tolerance', { value: 2 }).value).toBe(0.5)
+  expect(() => setStageControl(live, 'draw-tool', { value: 'fill' })).toThrow(
+    'pen, wand',
+  )
+  expect(calls).toEqual(['drawTool:pen', 'wandTolerance:0.5'])
 })

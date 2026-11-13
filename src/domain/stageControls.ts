@@ -95,12 +95,26 @@ export const TOP_RIGHT_CLEARANCE = TOP + CONTROL_HEIGHT + ROW_GAP
 const GAP = 2
 const GROUP_GAP = 10
 const SWATCH = 28
+const WAND_SLIDER = 140
+const WAND_SCOPES = [
+  { value: 'slice', label: 'Slice' },
+  { value: 'volume', label: 'Volume' },
+] as const
+// The tool buttons that open a group, with a wider gap before them.
+const GROUP_STARTS = new Set(['shapes', 'draw', 'export-svg'])
 
 export interface PenColor {
   value: number
   name: string
   /** CSS hex, as #rrggbb. */
   css: string
+}
+
+/** A tool button and, while it is on, its picker. */
+export interface ToolGroup {
+  active: boolean
+  tools: readonly { id: string; label: string }[]
+  tool: string
 }
 
 /** What the stage shows, from NiivueStage's state. Null hides a group. */
@@ -114,21 +128,27 @@ export interface StageControlsState {
     presets: readonly { id: string; label: string }[]
     value: string | null
   } | null
-  measure: { active: boolean; enabled: boolean } | null
-  draw: {
-    active: boolean
-    enabled: boolean
-    eraser: boolean
-    hasDrawing: boolean
-    canSend: boolean
-  } | null
+  measure: (ToolGroup & { enabled: boolean }) | null
+  shapes: (ToolGroup & { enabled: boolean }) | null
+  draw:
+    | (ToolGroup & {
+        enabled: boolean
+        hasDrawing: boolean
+        canSend: boolean
+      })
+    | null
+  /** Export SVG, while drawing or shaping on a slice. */
+  canExport: boolean
   palette: {
     colors: readonly PenColor[]
     penValue: number
+    /** Empty hides the brush sizes (shapes, the wand). */
     sizes: readonly { size: number; name: string }[]
     brushSize: number
     eraser: boolean
   } | null
+  /** The magic wand's tolerance (a fraction of the window) and reach. */
+  wand: { tolerance: number; volume: boolean } | null
   slice: { label: string; value: number; max: number } | null
   clip: {
     planes: readonly { id: string; label: string }[]
@@ -143,14 +163,23 @@ export interface StageControlsActions {
   viewMode(id: string): void
   look(id: string): void
   measure(): void
+  measureTool(id: string): void
   clearMeasurements(): void
+  shapes(): void
+  shapeTool(id: string): void
+  shapeUndo(): void
+  shapeRedo(): void
+  clearShapes(): void
   draw(): void
-  erase(): void
+  drawTool(id: string): void
   undo(): void
   clearDrawing(): void
   send(): void
+  exportSVG(): void
   pen(value: number): void
   brush(size: number): void
+  wandTolerance(tolerance: number): void
+  wandVolume(volume: boolean): void
   slice(index: number): void
   clipPlane(id: string): void
   clipDepth(id: string, depth: number): void
@@ -310,21 +339,38 @@ export class StageControls implements UIKitOverlayRenderer {
         }),
       )
     }
+    const { shapes } = state
+    if (shapes) {
+      row.push(
+        this.toolButton('shapes', 'Shapes', shapes.enabled, {
+          on: shapes.active,
+          click: () => this.actions?.shapes(),
+        }),
+      )
+      if (shapes.active) {
+        row.push(
+          this.toolButton('shape-undo', 'Undo', true, {
+            click: () => this.actions?.shapeUndo(),
+          }),
+          this.toolButton('shape-redo', 'Redo', true, {
+            click: () => this.actions?.shapeRedo(),
+          }),
+          this.toolButton('clear-shapes', 'Clear shapes', true, {
+            click: () => this.actions?.clearShapes(),
+          }),
+        )
+      }
+    }
     const { draw } = state
     if (draw) {
       row.push(
         this.toolButton('draw', 'Draw', draw.enabled, {
           on: draw.active,
           click: () => this.actions?.draw(),
-          groupStart: row.length > 0,
         }),
       )
       if (draw.active) {
         row.push(
-          this.toolButton('erase', 'Erase', true, {
-            on: draw.eraser,
-            click: () => this.actions?.erase(),
-          }),
           this.toolButton('undo', 'Undo', draw.hasDrawing, {
             click: () => this.actions?.undo(),
           }),
@@ -333,6 +379,15 @@ export class StageControls implements UIKitOverlayRenderer {
           }),
         )
       }
+    }
+    if (state.canExport) {
+      row.push(
+        this.toolButton('export-svg', 'Export SVG', true, {
+          click: () => this.actions?.exportSVG(),
+        }),
+      )
+    }
+    if (draw) {
       if (draw.canSend) {
         row.push(
           this.toolButton('send', 'Send', true, {
@@ -344,7 +399,34 @@ export class StageControls implements UIKitOverlayRenderer {
     }
     buttons.push(...row)
 
-    // The pen's colors and brush sizes, under the tools.
+    // The active tool's picker, under the tools.
+    const picked = [
+      {
+        id: 'measure-tool',
+        group: state.measure,
+        pick: this.actions?.measureTool,
+      },
+      { id: 'shape-tool', group: state.shapes, pick: this.actions?.shapeTool },
+      { id: 'draw-tool', group: state.draw, pick: this.actions?.drawTool },
+    ].find((candidate) => candidate.group?.active)
+    if (picked?.group) {
+      segmenteds.push({
+        id: picked.id,
+        x: 0,
+        y: 0,
+        segments: picked.group.tools.map((tool) => ({
+          value: tool.id,
+          label: tool.label,
+        })),
+        value: picked.group.tool,
+        onChange: (value) => {
+          this.segmenteds.blur()
+          picked.pick?.(value)
+        },
+      })
+    }
+
+    // The pen's colors and brush sizes (or the wand's settings), under that.
     const { palette } = state
     if (palette) {
       for (const color of palette.colors) {
@@ -367,18 +449,48 @@ export class StageControls implements UIKitOverlayRenderer {
           onClick: () => this.actions?.pen(color.value),
         })
       }
-      segmenteds.push({
-        id: 'brush',
+      if (palette.sizes.length > 0) {
+        segmenteds.push({
+          id: 'brush',
+          x: 0,
+          y: 0,
+          segments: palette.sizes.map((size) => ({
+            value: String(size.size),
+            label: size.name,
+          })),
+          value: String(palette.brushSize),
+          onChange: (value) => {
+            this.segmenteds.blur()
+            this.actions?.brush(Number(value))
+          },
+        })
+      }
+    }
+    const { wand } = state
+    if (wand) {
+      sliders.push({
+        id: 'wand-tolerance',
+        label: 'Tolerance',
         x: 0,
         y: 0,
-        segments: palette.sizes.map((size) => ({
-          value: String(size.size),
-          label: size.name,
-        })),
-        value: String(palette.brushSize),
+        width: WAND_SLIDER,
+        min: 0.01,
+        max: 0.5,
+        step: 0.01,
+        value: wand.tolerance,
+        showValue: true,
+        format: (value) => `${Math.round(value * 100)}%`,
+        onInput: (value) => this.actions?.wandTolerance(value),
+      })
+      segmenteds.push({
+        id: 'wand-scope',
+        x: 0,
+        y: 0,
+        segments: WAND_SCOPES.map((scope) => ({ ...scope })),
+        value: wand.volume ? 'volume' : 'slice',
         onChange: (value) => {
           this.segmenteds.blur()
-          this.actions?.brush(Number(value))
+          this.actions?.wandVolume(value === 'volume')
         },
       })
     }
@@ -458,7 +570,7 @@ export class StageControls implements UIKitOverlayRenderer {
     const lookWidth = look ? (this.segmenteds.getLayout('look')?.width ?? 0) : 0
     let x = look ? EDGE + lookWidth + GROUP_GAP : EDGE
     for (const spec of row) {
-      if (spec.id === 'draw' && row[0] !== spec) x += GROUP_GAP - GAP
+      if (GROUP_STARTS.has(spec.id) && row[0] !== spec) x += GROUP_GAP - GAP
       rowX.push(x)
       x += (this.buttons.getLayout(spec.id)?.width ?? 0) + GAP
     }
@@ -470,14 +582,36 @@ export class StageControls implements UIKitOverlayRenderer {
       this.buttons.updateButton(spec.id, { x: rowX[index], y: rowY })
     }
     if (look) this.segmenteds.updateSegmented('look', { x: EDGE, y: rowY })
+    let nextY = rowY + CONTROL_HEIGHT + ROW_GAP
+    if (picked) {
+      this.segmenteds.updateSegmented(picked.id, { x: EDGE, y: nextY })
+      nextY += CONTROL_HEIGHT + ROW_GAP
+    }
+    let px = EDGE - GROUP_GAP
     if (palette) {
-      const y = rowY + CONTROL_HEIGHT + ROW_GAP
-      let px = EDGE
+      px = EDGE
       for (const color of palette.colors) {
-        this.buttons.updateButton(`pen-${color.value}`, { x: px, y })
+        this.buttons.updateButton(`pen-${color.value}`, { x: px, y: nextY })
         px += SWATCH + GAP
       }
-      this.segmenteds.updateSegmented('brush', { x: px + GROUP_GAP, y })
+      if (palette.sizes.length > 0) {
+        this.segmenteds.updateSegmented('brush', {
+          x: px + GROUP_GAP,
+          y: nextY,
+        })
+      }
+    }
+    if (wand) {
+      const layout = this.sliders.getLayout('wand-tolerance')
+      const sliderHeight = layout?.height ?? CONTROL_HEIGHT
+      this.sliders.updateSlider('wand-tolerance', {
+        x: px + GROUP_GAP,
+        y: nextY + (CONTROL_HEIGHT - sliderHeight) / 2,
+      })
+      this.segmenteds.updateSegmented('wand-scope', {
+        x: px + 2 * GROUP_GAP + WAND_SLIDER,
+        y: nextY,
+      })
     }
     const bottom = height - clearance.colorbar - 8
     if (slice) {
@@ -522,7 +656,6 @@ export class StageControls implements UIKitOverlayRenderer {
     options: {
       on?: boolean
       click: () => void
-      groupStart?: boolean
       style?: Partial<ButtonStyle>
     },
   ): ButtonSpec {
