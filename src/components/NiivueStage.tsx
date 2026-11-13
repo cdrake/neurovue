@@ -107,6 +107,8 @@ interface NiivueStageProps {
   onSendDrawing?: (drawing: Uint8Array) => void
   /** The brick of the base volume tapped in the exploded view, or null. */
   onBlockSelect?: (selection: BlockSelection | null) => void
+  /** Double-tapping a brick: view it on its own. */
+  onBlockView?: (selection: BlockSelection) => void
 }
 
 export interface NiivueRenderLayer {
@@ -567,6 +569,7 @@ export function NiivueStage({
   onViewer,
   onSendDrawing,
   onBlockSelect,
+  onBlockView,
 }: NiivueStageProps): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -631,6 +634,8 @@ export function NiivueStage({
   )
   const blockSelectionRef = useRef(blockSelection)
   blockSelectionRef.current = blockSelection
+  const onBlockViewRef = useRef(onBlockView)
+  onBlockViewRef.current = onBlockView
   // Null once the uikit overlay is drawing; otherwise why measuring is off.
   const [measureUnavailable, setMeasureUnavailable] = useState<string | null>(
     'Loading measure tool.',
@@ -1241,6 +1246,7 @@ export function NiivueStage({
     const stage = stageRef.current
     if (!stage || !isBlockPickable || !baseItemId) return
     let press: { x: number; y: number; id: number } | null = null
+    let lastTap = { chunkIndex: -1, time: 0 }
     function onDown(event: PointerEvent): void {
       press = event.isPrimary
         ? { x: event.clientX, y: event.clientY, id: event.pointerId }
@@ -1260,20 +1266,34 @@ export function NiivueStage({
         setBlockSelection(null)
         return
       }
-      setBlockSelection((current) =>
+      const current = blockSelectionRef.current
+      const selection =
         current?.chunkIndex === pick.chunkIndex && current.itemId === baseItemId
           ? current
-          : blockSelectionFromPick(baseItemId, pick, matRAS),
-      )
+          : blockSelectionFromPick(baseItemId, pick, matRAS)
+      setBlockSelection(selection)
+      const isDoubleTap =
+        lastTap.chunkIndex === pick.chunkIndex &&
+        event.timeStamp - lastTap.time < DOUBLE_TAP_MS
+      lastTap = isDoubleTap
+        ? { chunkIndex: -1, time: 0 }
+        : { chunkIndex: pick.chunkIndex, time: event.timeStamp }
+      if (isDoubleTap) onBlockViewRef.current?.(selection)
     }
     function onCancel(): void {
       press = null
+    }
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape' && blockSelectionRef.current)
+        setBlockSelection(null)
     }
     const options = { capture: true }
     stage.addEventListener('pointerdown', onDown, options)
     window.addEventListener('pointerup', onUp, options)
     window.addEventListener('pointercancel', onCancel, options)
+    window.addEventListener('keydown', onKeyDown)
     return () => {
+      window.removeEventListener('keydown', onKeyDown)
       stage.removeEventListener('pointerdown', onDown, options)
       window.removeEventListener('pointerup', onUp, options)
       window.removeEventListener('pointercancel', onCancel, options)
@@ -1867,6 +1887,9 @@ function applyBlockExplode(nv: NiiVueLike, blocks: BlockSettings): void {
     volume.chunkExplode = explode
   }
 }
+
+// Two taps on the same brick this close together view it on its own.
+const DOUBLE_TAP_MS = 400
 
 // Outline `selection`'s brick where the render draws it and dim the other
 // bricks of the base volume; null (or an untiled volume) clears both.

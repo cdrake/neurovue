@@ -1329,7 +1329,24 @@ pub fn crop_block(
     fs::write(&temp, &out)
         .and_then(|()| fs::rename(&temp, &dest))
         .map_err(|error| format!("crop_block: {}: {error}", dest.display()))?;
-    register_derived_volume(handle, &source, &dest, "block")
+    let id = register_derived_volume(handle, &source, &dest, "block")?;
+    // "/ block" alone can't tell several blocks of one volume apart.
+    if let Some(volume) = lock_recover(&handle.volumes)
+        .iter_mut()
+        .find(|volume| volume.id == id)
+    {
+        let end = |axis: usize| start[axis] + size[axis] - 1;
+        volume.label = format!(
+            "{label} / block {}–{}, {}–{}, {}–{}",
+            start[0],
+            end(0),
+            start[1],
+            end(1),
+            start[2],
+            end(2)
+        );
+    }
+    Ok(id)
 }
 
 /// The voxel box of a volume (`start`, `size`) covering the given world-mm

@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import {
   blockCornersMM,
+  blockSizeMM,
   boundingBox,
   focusBrickOpacity,
   isTap,
@@ -36,4 +37,18 @@ test('focus keeps one brick and dims the rest', () => {
 test('a small move is still a tap', () => {
   expect(isTap({ x: 10, y: 10 }, { x: 13, y: 14 })).toBe(true)
   expect(isTap({ x: 10, y: 10 }, { x: 30, y: 10 })).toBe(false)
+})
+
+test('block size reads in mm, whatever the voxel size', () => {
+  const cornersMM = blockCornersMM(matRAS, [0, 0, 0], [3, 4, 5])
+  const selection = {
+    itemId: 'a',
+    chunkIndex: 0,
+    mm: [0, 0, 0],
+    cornersMM,
+    voxelDims: [3, 4, 5],
+  } as const
+  expect(
+    blockSizeMM({ ...selection, mm: [0, 0, 0], voxelDims: [3, 4, 5] }),
+  ).toBe('6 × 8 × 10')
 })

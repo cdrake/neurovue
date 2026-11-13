@@ -74,6 +74,12 @@ export function boundingBox(points: readonly (readonly number[])[]): {
   return { min, max }
 }
 
+/** The block's extent in mm, e.g. "69 × 85 × 72". */
+export function blockSizeMM(selection: BlockSelection): string {
+  const { min, max } = boundingBox(selection.cornersMM)
+  return min.map((low, axis) => Math.round(max[axis] - low)).join(' × ')
+}
+
 /** Opacity each brick dims to while another is selected. */
 export const UNSELECTED_BRICK_OPACITY = 0.2
 

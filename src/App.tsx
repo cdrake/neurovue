@@ -82,7 +82,7 @@ import { RenderShadingSection } from './components/RenderShadingSection'
 import { TerminalPanel } from './components/TerminalPanel'
 import { VolumeFilterPanel } from './components/VolumeFilterPanel'
 import { WelcomeScreen } from './components/WelcomeScreen'
-import type { BlockSelection } from './domain/blockPick'
+import { type BlockSelection, blockSizeMM } from './domain/blockPick'
 import {
   BLOCK_GRID_OPTIONS,
   type BlockSettings,
@@ -486,6 +486,11 @@ export function App(): JSX.Element {
     null,
   )
   const [isCuttingBlock, setIsCuttingBlock] = useState(false)
+  // The grid and explode a block was cut from, restored on the way back so the
+  // next brick is one tap away.
+  const [blocksBeforeCut, setBlocksBeforeCut] = useState<BlockSettings | null>(
+    null,
+  )
   const goToCoordinate = useCallback((x: number, y: number, z: number) => {
     setCrosshairTarget({ mm: [x, y, z] })
   }, [])
@@ -883,14 +888,14 @@ export function App(): JSX.Element {
 
   // Makes the picked brick the volume being viewed: the server cuts it out of
   // the full-resolution source as a derived volume, which is then shown whole.
-  async function viewSelectedBlock(): Promise<void> {
-    const selection = blockSelection
+  async function viewSelectedBlock(selection = blockSelection): Promise<void> {
     if (!selection || isCuttingBlock) return
     setIsCuttingBlock(true)
     setStatus('Cutting out the block…')
     try {
       const id = await cropVolumeBlock(selection.itemId, selection.cornersMM)
       await refreshDesktopManifestData()
+      setBlocksBeforeCut(blocks)
       setBlocks((current) => ({ ...current, grid: 1 }))
       showVolume(id)
       setStatus('Viewing the block at full resolution.', 'success')
@@ -2447,6 +2452,7 @@ export function App(): JSX.Element {
                   onRenderStatus={setRenderStatus}
                   onViewer={handleViewer}
                   onBlockSelect={setBlockSelection}
+                  onBlockView={(selection) => void viewSelectedBlock(selection)}
                   onSendDrawing={
                     drawingBase
                       ? (drawing) => void handleSendDrawing(drawing)
@@ -2623,8 +2629,11 @@ export function App(): JSX.Element {
                           onShowWhole={
                             shownBase?.derivation?.operation === 'block' &&
                             shownBase.derivedFrom
-                              ? () =>
+                              ? () => {
                                   showVolume(shownBase.derivedFrom as string)
+                                  if (blocksBeforeCut)
+                                    setBlocks(blocksBeforeCut)
+                                }
                               : undefined
                           }
                           onViewBlock={() => void viewSelectedBlock()}
@@ -2872,7 +2881,7 @@ function BlockControls({
           </button>
           <span>
             {selection
-              ? `Block ${selection.chunkIndex + 1} of ${blocks.grid ** 3} selected`
+              ? `${blockSizeMM(selection)} mm block selected. Double-tap it or press View block.`
               : 'Tap a block in the 3D view to select it.'}
           </span>
         </div>
