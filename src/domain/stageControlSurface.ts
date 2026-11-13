@@ -104,6 +104,7 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
         segmented('draw-tool', 'Draw tool', draw.tools, draw.tool),
         button('undo', 'Undo', draw.hasDrawing),
         button('clear-drawing', 'Clear ink', draw.hasDrawing),
+        button('save-mask', 'Save mask', draw.hasDrawing),
       )
     }
   }

@@ -436,10 +436,22 @@ fn sanitize_share_name(name: &str) -> String {
     }
 }
 
-/// Writes text to a path the person picked in the save dialog (an SVG export).
+/// Writes to a path the person picked in the save dialog (SVG, mask exports).
 #[tauri::command]
-async fn write_text_file(path: String, contents: String) -> Result<(), String> {
-    std::fs::write(&path, contents).map_err(|error| format!("{path}: {error}"))
+async fn write_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    // Raw body: u32 LE path length, the UTF-8 path, then the file's bytes.
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("write_file: expected the file's bytes".to_string());
+    };
+    let (length, rest) = body
+        .split_first_chunk::<4>()
+        .ok_or("write_file: empty body")?;
+    let length = u32::from_le_bytes(*length) as usize;
+    let path = rest
+        .get(..length)
+        .and_then(|path| std::str::from_utf8(path).ok())
+        .ok_or("write_file: bad path")?;
+    std::fs::write(path, &rest[length..]).map_err(|error| format!("{path}: {error}"))
 }
 
 #[tauri::command]
@@ -745,7 +757,7 @@ pub fn run() {
             add_overlay_volume_path,
             read_mesh_file,
             export_dataset_bundle,
-            write_text_file,
+            write_file,
             read_bundle_manifest,
             read_document_manifest,
             share_view_via_airdrop,
@@ -786,7 +798,7 @@ pub fn run() {
         add_overlay_volume_path,
         read_mesh_file,
         export_dataset_bundle,
-        write_text_file,
+        write_file,
         read_bundle_manifest,
         read_document_manifest,
         share_view_via_airdrop,

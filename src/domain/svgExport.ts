@@ -1,6 +1,3 @@
-import { invoke, isTauri } from '@tauri-apps/api/core'
-import { save } from '@tauri-apps/plugin-dialog'
-
 // NiiVue's single-plane slice types and their RAS axes: the two in-plane axes
 // (as drawingToSVG's rect x/y and annotationsToSVG's mm x/y) and the depth.
 export const PLANES = {
@@ -97,31 +94,4 @@ export function composeSliceSVG(params: {
 ${layers.join('\n')}
 </svg>
 `
-}
-
-/**
- * Saves `svg` where the person picks (the save dialog), or downloads it in a
- * browser. Returns where it went, or null if they cancelled.
- */
-export async function saveSVG(
-  name: string,
-  svg: string,
-): Promise<string | null> {
-  const fileName = `${name.replace(/[^\w.-]+/g, '_')}.svg`
-  if (!isTauri()) {
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
-    link.download = fileName
-    link.click()
-    URL.revokeObjectURL(link.href)
-    return fileName
-  }
-  const path = await save({
-    title: 'Export SVG',
-    defaultPath: fileName,
-    filters: [{ name: 'SVG', extensions: ['svg'] }],
-  })
-  if (!path) return null
-  await invoke('write_text_file', { path, contents: svg })
-  return path
 }
