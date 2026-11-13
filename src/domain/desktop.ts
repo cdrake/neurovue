@@ -399,6 +399,17 @@ export async function closeDataset(): Promise<void> {
   await invoke('close_dataset')
 }
 
+/**
+ * Cuts the block with these world-mm corners out of a volume at full
+ * resolution; the server adds it as a derived volume and returns its id.
+ */
+export async function cropVolumeBlock(
+  volumeId: string,
+  corners: [number, number, number][],
+): Promise<string> {
+  return invoke<string>('crop_volume_block', { volumeId, corners })
+}
+
 export async function addOverlayVolumeByPath(
   path: string,
 ): Promise<OverlayAddResult> {

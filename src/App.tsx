@@ -82,6 +82,7 @@ import { RenderShadingSection } from './components/RenderShadingSection'
 import { TerminalPanel } from './components/TerminalPanel'
 import { VolumeFilterPanel } from './components/VolumeFilterPanel'
 import { WelcomeScreen } from './components/WelcomeScreen'
+import type { BlockSelection } from './domain/blockPick'
 import {
   BLOCK_GRID_OPTIONS,
   type BlockSettings,
@@ -123,6 +124,7 @@ import type {
 } from './domain/desktop'
 import {
   addOverlayVolumeByPath,
+  cropVolumeBlock,
   defaultClipPlanes,
   fetchVolumeMetadata,
   isBundledSampleDataset,
@@ -479,6 +481,11 @@ export function App(): JSX.Element {
   // Block (volume-chunk explode) settings, applied across every loaded layer and
   // persisted into the bundle/session.
   const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
+  // The brick picked in the exploded view, and whether it's being cut out.
+  const [blockSelection, setBlockSelection] = useState<BlockSelection | null>(
+    null,
+  )
+  const [isCuttingBlock, setIsCuttingBlock] = useState(false)
   const goToCoordinate = useCallback((x: number, y: number, z: number) => {
     setCrosshairTarget({ mm: [x, y, z] })
   }, [])
@@ -872,6 +879,26 @@ export function App(): JSX.Element {
   function showVolume(itemId: string): void {
     setRemovedBaseId(null)
     setSelectedId(itemId)
+  }
+
+  // Makes the picked brick the volume being viewed: the server cuts it out of
+  // the full-resolution source as a derived volume, which is then shown whole.
+  async function viewSelectedBlock(): Promise<void> {
+    const selection = blockSelection
+    if (!selection || isCuttingBlock) return
+    setIsCuttingBlock(true)
+    setStatus('Cutting out the block…')
+    try {
+      const id = await cropVolumeBlock(selection.itemId, selection.cornersMM)
+      await refreshDesktopManifestData()
+      setBlocks((current) => ({ ...current, grid: 1 }))
+      showVolume(id)
+      setStatus('Viewing the block at full resolution.', 'success')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    } finally {
+      setIsCuttingBlock(false)
+    }
   }
 
   /** View ▸ Clear All: closes the dataset, overlays and meshes, back to the welcome screen. */
@@ -2419,6 +2446,7 @@ export function App(): JSX.Element {
                   onViewModeChange={setViewMode}
                   onRenderStatus={setRenderStatus}
                   onViewer={handleViewer}
+                  onBlockSelect={setBlockSelection}
                   onSendDrawing={
                     drawingBase
                       ? (drawing) => void handleSendDrawing(drawing)
@@ -2588,7 +2616,20 @@ export function App(): JSX.Element {
                           onChange={setShading}
                         />
 
-                        <BlockControls blocks={blocks} onChange={setBlocks} />
+                        <BlockControls
+                          blocks={blocks}
+                          isCutting={isCuttingBlock}
+                          onChange={setBlocks}
+                          onShowWhole={
+                            shownBase?.derivation?.operation === 'block' &&
+                            shownBase.derivedFrom
+                              ? () =>
+                                  showVolume(shownBase.derivedFrom as string)
+                              : undefined
+                          }
+                          onViewBlock={() => void viewSelectedBlock()}
+                          selection={blockSelection}
+                        />
                       </>
                     ) : (
                       <section className="nv-control-section">
@@ -2752,9 +2793,19 @@ export function App(): JSX.Element {
 function BlockControls({
   blocks,
   onChange,
+  selection,
+  isCutting,
+  onViewBlock,
+  onShowWhole,
 }: {
   blocks: BlockSettings
   onChange: (blocks: BlockSettings) => void
+  // The brick tapped in the exploded view, if any.
+  selection: BlockSelection | null
+  isCutting: boolean
+  onViewBlock: () => void
+  // Shown while viewing a block: goes back to the volume it was cut from.
+  onShowWhole?: () => void
 }): JSX.Element {
   const tiled = blocksAreTiled(blocks)
   return (
@@ -2809,9 +2860,35 @@ function BlockControls({
         />
       </label>
 
+      {tiled ? (
+        <div className="nv-block-pick">
+          <button
+            disabled={!selection || isCutting}
+            onClick={onViewBlock}
+            title="Cut the selected block out at full resolution and view it on its own"
+            type="button"
+          >
+            {isCutting ? 'Cutting out…' : 'View block'}
+          </button>
+          <span>
+            {selection
+              ? `Block ${selection.chunkIndex + 1} of ${blocks.grid ** 3} selected`
+              : 'Tap a block in the 3D view to select it.'}
+          </span>
+        </div>
+      ) : null}
+
+      {onShowWhole ? (
+        <div className="nv-block-pick">
+          <button onClick={onShowWhole} type="button">
+            Back to the whole volume
+          </button>
+        </div>
+      ) : null}
+
       <p className="nv-block-hint">
         Splits every layer into bricks and spreads them apart in the 3D render.
-        Pick a grid, then raise Explode.
+        Pick a grid, then raise Explode. Tap a block to view it on its own.
       </p>
     </section>
   )

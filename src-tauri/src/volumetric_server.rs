@@ -1238,6 +1238,171 @@ pub fn attach_drawing(
     register_derived_volume(handle, &source, &dest, "drawing")
 }
 
+/// Cuts the part of a volume inside `corners_mm` (a block's corners in the
+/// viewer's world mm) out of its full-resolution source as a new NIfTI, keeping
+/// its data type and every frame, and adds it as a volume derived from it. The
+/// corners may come from any pyramid level: they are mapped through the
+/// source's own affine. Returns the new volume's id; the error is a sentence
+/// for the status line.
+pub fn crop_block(
+    handle: &ServerHandle,
+    vol_id: &str,
+    corners_mm: &[[f64; 3]],
+) -> Result<String, String> {
+    let (source, label) = lock_recover(&handle.volumes)
+        .iter()
+        .find(|volume| volume.id == vol_id)
+        .and_then(|volume| Some((volume.source_path.clone()?, volume.label.clone())))
+        .ok_or_else(|| "That volume isn't open any more.".to_string())?;
+    let (header, bytes) = read_nifti_file(&source)
+        .ok_or_else(|| format!("Couldn't read {label} to cut the block from it."))?;
+    let source_header: [u8; 348] = bytes
+        .get(..348)
+        .and_then(|head| head.try_into().ok())
+        .ok_or_else(|| format!("Couldn't read {label} to cut the block from it."))?;
+    let dims = header.shape.map(usize::from);
+    let (start, size) = block_voxel_box(&nifti_affine(&source_header), corners_mm, dims)
+        .ok_or_else(|| format!("The block lies outside {label}."))?;
+    let voxel_bytes = usize::try_from(header.bitpix)
+        .ok()
+        .filter(|bits| *bits > 0 && bits % 8 == 0)
+        .map(|bits| bits / 8)
+        .ok_or_else(|| format!("{label} stores bits, which a block can't be cut from."))?;
+    let frames = nifti_frame_count(&source_header).unwrap_or(1);
+    let data = bytes
+        .get(header.vox_offset..)
+        .ok_or_else(|| format!("{label} is shorter than its header says."))?;
+    let frame_len = dims[0] * dims[1] * dims[2] * voxel_bytes;
+    let row_len = size[0] * voxel_bytes;
+
+    let le = header.little_endian;
+    let mut block_header = source_header;
+    for (axis, length) in size.iter().enumerate() {
+        put_header_i16(&mut block_header, 42 + 2 * axis, *length as i16, le);
+    }
+    put_header_f32(&mut block_header, 108, 352.0, le);
+    reposition_nifti_grid(&mut block_header, start.map(|voxel| voxel as f64), 1.0);
+
+    let mut out = Vec::with_capacity(352 + row_len * size[1] * size[2] * frames);
+    out.extend_from_slice(&block_header);
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    for frame in 0..frames {
+        for z in start[2]..start[2] + size[2] {
+            for y in start[1]..start[1] + size[1] {
+                let offset =
+                    frame * frame_len + ((z * dims[1] + y) * dims[0] + start[0]) * voxel_bytes;
+                let row = data
+                    .get(offset..offset + row_len)
+                    .ok_or_else(|| format!("{label} is shorter than its header says."))?;
+                out.extend_from_slice(row);
+            }
+        }
+    }
+
+    // Kept with other user work, like drawings, so a block can be reopened.
+    let dir = data_root().join("blocks");
+    fs::create_dir_all(&dir).map_err(|error| format!("crop_block: {}: {error}", dir.display()))?;
+    let stem = strip_nifti_file_suffix(
+        source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("volume"),
+    );
+    let dest = dir.join(format!(
+        "{stem}_block_{}-{}-{}_{}x{}x{}.nii",
+        start[0], start[1], start[2], size[0], size[1], size[2]
+    ));
+    // The same block again: show the one already open.
+    let existing = lock_recover(&handle.volumes)
+        .iter()
+        .find(|volume| {
+            volume
+                .source_path
+                .as_deref()
+                .is_some_and(|path| same_canonical_path(path, &dest))
+        })
+        .map(|volume| volume.id.clone());
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let temp = dest.with_extension(format!("nii.tmp.{}", std::process::id()));
+    fs::write(&temp, &out)
+        .and_then(|()| fs::rename(&temp, &dest))
+        .map_err(|error| format!("crop_block: {}: {error}", dest.display()))?;
+    register_derived_volume(handle, &source, &dest, "block")
+}
+
+/// The voxel box of a volume (`start`, `size`) covering the given world-mm
+/// corners, through `affine` (voxel to mm). Corners on voxel edges pick out
+/// whole voxels, so adjacent blocks tile without overlap. None when the box
+/// misses the volume.
+fn block_voxel_box(
+    affine: &[[f64; 4]; 3],
+    corners_mm: &[[f64; 3]],
+    dims: [usize; 3],
+) -> Option<([usize; 3], [usize; 3])> {
+    let inverse = invert_3x3([
+        [affine[0][0], affine[0][1], affine[0][2]],
+        [affine[1][0], affine[1][1], affine[1][2]],
+        [affine[2][0], affine[2][1], affine[2][2]],
+    ])?;
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for corner in corners_mm {
+        let offset = [
+            corner[0] - affine[0][3],
+            corner[1] - affine[1][3],
+            corner[2] - affine[2][3],
+        ];
+        for axis in 0..3 {
+            let voxel = (0..3).map(|c| inverse[axis][c] * offset[c]).sum::<f64>();
+            low[axis] = low[axis].min(voxel);
+            high[axis] = high[axis].max(voxel);
+        }
+    }
+    let mut start = [0; 3];
+    let mut size = [0; 3];
+    for axis in 0..3 {
+        // Voxel i spans [i - 0.5, i + 0.5); the epsilon absorbs float error at
+        // an exact edge.
+        let first = (low[axis] + 0.5 + 1e-4).floor().max(0.0);
+        let end = (high[axis] + 0.5 + 1e-4).floor().min(dims[axis] as f64);
+        if !first.is_finite() || !end.is_finite() || end <= first {
+            return None;
+        }
+        start[axis] = first as usize;
+        size[axis] = (end - first) as usize;
+    }
+    Some((start, size))
+}
+
+fn invert_3x3(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
+    let cofactor =
+        |r0: usize, r1: usize, c0: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+    let det = m[0][0] * cofactor(1, 2, 1, 2) - m[0][1] * cofactor(1, 2, 0, 2)
+        + m[0][2] * cofactor(1, 2, 0, 1);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    Some([
+        [
+            cofactor(1, 2, 1, 2) / det,
+            -cofactor(0, 2, 1, 2) / det,
+            cofactor(0, 1, 1, 2) / det,
+        ],
+        [
+            -cofactor(1, 2, 0, 2) / det,
+            cofactor(0, 2, 0, 2) / det,
+            -cofactor(0, 1, 0, 2) / det,
+        ],
+        [
+            cofactor(1, 2, 0, 1) / det,
+            -cofactor(0, 2, 0, 1) / det,
+            cofactor(0, 1, 0, 1) / det,
+        ],
+    ])
+}
+
 /// Stream `source` into the bundle zip under a unique `data/<name>` entry,
 /// hashing as it goes. Returns the entry path, byte count, and SHA-256 — so the
 /// file is read exactly once for both the archive and its integrity hash.
@@ -2663,7 +2828,8 @@ pub(crate) fn iso8601_utc_now() -> String {
 
 const DEFAULT_MAX_VOLUMES: usize = 512;
 const MAX_PYRAMID_LEVEL: u8 = 3;
-const PYRAMID_CACHE_NAME: &str = "nifti-pyramid-v3";
+// v4: levels carry an affine scaled to their voxel size.
+const PYRAMID_CACHE_NAME: &str = "nifti-pyramid-v4";
 const PREVIEW_DISK_CACHE_NAME: &str = "preview-cache-v2";
 
 struct VolumeDiscovery {
@@ -3380,7 +3546,6 @@ fn peek_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
 /// components, ...), at least 1. A 4D file is read whole, so neurovue-web
 /// counts these toward the voxel ceiling; the desktop app counts one frame,
 /// as it always has, so large 4D runs it opened before still open.
-#[cfg_attr(not(neurovue_web), allow(dead_code))]
 fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
     let little_endian = i32::from_le_bytes(header[0..4].try_into().ok()?) == 348;
     let dim = |index: usize| -> i16 {
@@ -3693,8 +3858,13 @@ fn build_pyramid_levels(
             }
         }
 
+        // Each level voxel averages a factor-wide cube starting at x * factor,
+        // so its centre sits (factor - 1) / 2 source voxels in.
+        let mut level_header = source_header;
+        let centre = (factor as f64 - 1.0) / 2.0;
+        reposition_nifti_grid(&mut level_header, [centre; 3], factor as f64);
         let temp_path = cache_path.with_extension(format!("nii.tmp.{}", std::process::id()));
-        write_nifti_f32(&temp_path, &source_header, shape, spacing, &voxels)?;
+        write_nifti_f32(&temp_path, &level_header, shape, spacing, &voxels)?;
         fs::rename(&temp_path, &cache_path)
             .or_else(|_| {
                 fs::copy(&temp_path, &cache_path)?;
@@ -4077,6 +4247,158 @@ fn sanitize_cache_component(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn header_is_little_endian(header: &[u8; 348]) -> bool {
+    i32::from_le_bytes([header[0], header[1], header[2], header[3]]) == 348
+}
+
+fn get_header_f32(header: &[u8; 348], offset: usize, le: bool) -> f64 {
+    let bytes = [
+        header[offset],
+        header[offset + 1],
+        header[offset + 2],
+        header[offset + 3],
+    ];
+    f64::from(if le {
+        f32::from_le_bytes(bytes)
+    } else {
+        f32::from_be_bytes(bytes)
+    })
+}
+
+fn get_header_i16(header: &[u8; 348], offset: usize, le: bool) -> i16 {
+    let bytes = [header[offset], header[offset + 1]];
+    if le {
+        i16::from_le_bytes(bytes)
+    } else {
+        i16::from_be_bytes(bytes)
+    }
+}
+
+fn put_header_f32(header: &mut [u8; 348], offset: usize, value: f32, le: bool) {
+    let bytes = if le {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    };
+    header[offset..offset + 4].copy_from_slice(&bytes);
+}
+
+fn put_header_i16(header: &mut [u8; 348], offset: usize, value: i16, le: bool) {
+    let bytes = if le {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    };
+    header[offset..offset + 2].copy_from_slice(&bytes);
+}
+
+/// The qform's voxel-to-mm affine (rows of a 4x4), computed as NiiVue does.
+fn qform_affine(header: &[u8; 348], le: bool) -> [[f64; 4]; 3] {
+    let (mut b, mut c, mut d) = (
+        get_header_f32(header, 256, le),
+        get_header_f32(header, 260, le),
+        get_header_f32(header, 264, le),
+    );
+    let norm = b * b + c * c + d * d;
+    let a = if norm > 1.0 {
+        let scale = 1.0 / norm.sqrt();
+        (b, c, d) = (b * scale, c * scale, d * scale);
+        0.0
+    } else {
+        (1.0 - norm).sqrt()
+    };
+    let rotation = [
+        [
+            a * a + b * b - c * c - d * d,
+            2.0 * (b * c - a * d),
+            2.0 * (b * d + a * c),
+        ],
+        [
+            2.0 * (b * c + a * d),
+            a * a + c * c - b * b - d * d,
+            2.0 * (c * d - a * b),
+        ],
+        [
+            2.0 * (b * d - a * c),
+            2.0 * (c * d + a * b),
+            a * a + d * d - c * c - b * b,
+        ],
+    ];
+    let qfac = match get_header_f32(header, 76, le) {
+        0.0 => 1.0,
+        qfac => qfac,
+    };
+    let pixdim = [
+        get_header_f32(header, 80, le),
+        get_header_f32(header, 84, le),
+        get_header_f32(header, 88, le) * qfac,
+    ];
+    let offsets = [268, 272, 276];
+    std::array::from_fn(|row| {
+        [
+            rotation[row][0] * pixdim[0],
+            rotation[row][1] * pixdim[1],
+            rotation[row][2] * pixdim[2],
+            get_header_f32(header, offsets[row], le),
+        ]
+    })
+}
+
+/// The sform's voxel-to-mm affine (its three srow rows).
+fn sform_affine(header: &[u8; 348], le: bool) -> [[f64; 4]; 3] {
+    std::array::from_fn(|row| {
+        std::array::from_fn(|col| get_header_f32(header, 280 + (row * 4 + col) * 4, le))
+    })
+}
+
+/// A NIfTI-1 header's voxel-to-mm affine, chosen the way NiiVue chooses it so
+/// server-side geometry matches what the viewer draws: the qform when its code
+/// is set and the sform's is lower, else the sform, else plain voxel sizes.
+fn nifti_affine(header: &[u8; 348]) -> [[f64; 4]; 3] {
+    let le = header_is_little_endian(header);
+    let qform_code = get_header_i16(header, 252, le);
+    let sform_code = get_header_i16(header, 254, le);
+    if qform_code > 0 && sform_code < qform_code {
+        qform_affine(header, le)
+    } else if sform_code > 0 {
+        sform_affine(header, le)
+    } else {
+        let pixdim = [
+            get_header_f32(header, 80, le),
+            get_header_f32(header, 84, le),
+            get_header_f32(header, 88, le),
+        ];
+        std::array::from_fn(|row| {
+            let mut out = [0.0; 4];
+            out[row] = pixdim[row];
+            out
+        })
+    }
+}
+
+/// Moves both the qform and sform of `header` so voxel `[0, 0, 0]` lands where
+/// voxel `start` (in the old grid, possibly fractional) was, and scales the
+/// sform's voxel size by `scale`. A crop passes its first voxel and 1; a
+/// pyramid level passes its first cell's centre and the level factor (the
+/// qform's voxel size comes from pixdim, which the level sets itself).
+fn reposition_nifti_grid(header: &mut [u8; 348], start: [f64; 3], scale: f64) {
+    let le = header_is_little_endian(header);
+    let qform = qform_affine(header, le);
+    for (row, offset) in [268, 272, 276].into_iter().enumerate() {
+        let moved = qform[row][3] + (0..3).map(|c| qform[row][c] * start[c]).sum::<f64>();
+        put_header_f32(header, offset, moved as f32, le);
+    }
+    let sform = sform_affine(header, le);
+    for (row, srow) in sform.iter().enumerate() {
+        let base = 280 + row * 16;
+        for (col, value) in srow.iter().take(3).enumerate() {
+            put_header_f32(header, base + col * 4, (value * scale) as f32, le);
+        }
+        let moved = srow[3] + (0..3).map(|c| srow[c] * start[c]).sum::<f64>();
+        put_header_f32(header, base + 12, moved as f32, le);
+    }
 }
 
 fn write_nifti_f32(
@@ -5257,6 +5579,82 @@ mod tests {
         assert_eq!(all.volumes.len(), 20);
         assert_eq!(all.stats.total_discovered, 21);
         assert!(!all.stats.truncated);
+    }
+
+    #[test]
+    fn block_box_maps_edge_corners_to_whole_voxels() {
+        // 2 mm voxels, voxel [0,0,0] at (-10, -20, -30) mm.
+        let affine = [
+            [2.0, 0.0, 0.0, -10.0],
+            [0.0, 2.0, 0.0, -20.0],
+            [0.0, 0.0, 2.0, -30.0],
+        ];
+        // Edges of voxels 4..7, 0..5, 2..3 (half a voxel past the centres).
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|bits: usize| {
+                let pick = |axis: usize, low: f64, high: f64| {
+                    if bits >> axis & 1 == 1 {
+                        high
+                    } else {
+                        low
+                    }
+                };
+                [
+                    pick(0, -10.0 + 2.0 * 3.5, -10.0 + 2.0 * 6.5),
+                    pick(1, -20.0 - 1.0, -20.0 + 2.0 * 4.5),
+                    pick(2, -30.0 + 2.0 * 1.5, -30.0 + 2.0 * 2.5),
+                ]
+            })
+            .collect();
+        assert_eq!(
+            block_voxel_box(&affine, &corners, [10, 10, 10]),
+            Some(([4, 0, 2], [3, 5, 1]))
+        );
+        // Clamped to the volume, and None when it misses entirely.
+        let past_end: Vec<[f64; 3]> = vec![[-10.0, -20.0, -30.0], [100.0, 100.0, 100.0]];
+        assert_eq!(
+            block_voxel_box(&affine, &past_end, [10, 10, 10]),
+            Some(([0, 0, 0], [10, 10, 10]))
+        );
+        assert_eq!(
+            block_voxel_box(&affine, &[[500.0, 500.0, 500.0]; 2], [10, 10, 10]),
+            None
+        );
+    }
+
+    #[test]
+    fn repositioned_grid_moves_both_affines_to_the_new_first_voxel() {
+        let mut header = [0u8; 348];
+        header[0..4].copy_from_slice(&348i32.to_le_bytes());
+        put_header_f32(&mut header, 76, 1.0, true);
+        for (offset, value) in [(80, 2.0), (84, 3.0), (88, 4.0)] {
+            put_header_f32(&mut header, offset, value, true);
+        }
+        // Identity rotation (b = c = d = 0), offset (1, 2, 3).
+        for (offset, value) in [(268, 1.0), (272, 2.0), (276, 3.0)] {
+            put_header_f32(&mut header, offset, value, true);
+        }
+        let srow = [
+            [2.0, 0.0, 0.0, 1.0],
+            [0.0, 3.0, 0.0, 2.0],
+            [0.0, 0.0, 4.0, 3.0],
+        ];
+        for (row, values) in srow.iter().enumerate() {
+            for (col, value) in values.iter().enumerate() {
+                put_header_f32(&mut header, 280 + (row * 4 + col) * 4, *value, true);
+            }
+        }
+        put_header_i16(&mut header, 252, 1, true);
+        put_header_i16(&mut header, 254, 2, true);
+
+        reposition_nifti_grid(&mut header, [10.0, 0.0, 1.0], 2.0);
+        let qform = qform_affine(&header, true);
+        assert_eq!([qform[0][3], qform[1][3], qform[2][3]], [21.0, 2.0, 7.0]);
+        let sform = sform_affine(&header, true);
+        assert_eq!(sform[0], [4.0, 0.0, 0.0, 21.0]);
+        assert_eq!(sform[2], [0.0, 0.0, 8.0, 7.0]);
+        // sform_code (2) >= qform_code (1): NiiVue reads the sform.
+        assert_eq!(nifti_affine(&header), sform);
     }
 
     #[test]

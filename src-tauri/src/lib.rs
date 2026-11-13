@@ -372,6 +372,23 @@ async fn attach_drawing(
     .map_err(|error| format!("attach_drawing: join error: {error}"))?
 }
 
+/// Cuts a block (given by its world-mm corners) out of a volume at full
+/// resolution and adds it as a derived volume; returns the new volume's id.
+#[tauri::command]
+async fn crop_volume_block(
+    window: tauri::Window,
+    state: tauri::State<'_, NeuroVueState>,
+    volume_id: String,
+    corners: Vec<[f64; 3]>,
+) -> Result<String, String> {
+    let server = state.server(window.label());
+    tauri::async_runtime::spawn_blocking(move || {
+        volumetric_server::crop_block(&server, &volume_id, &corners)
+    })
+    .await
+    .map_err(|error| format!("crop_volume_block: join error: {error}"))?
+}
+
 #[tauri::command]
 async fn share_view_via_airdrop(
     app: tauri::AppHandle,
@@ -732,6 +749,7 @@ pub fn run() {
             send_view_to_device,
             send_drawing_to_device,
             attach_drawing,
+            crop_volume_block,
             niimath::validate_niimath_mask_path,
             niimath::run_niimath_task,
             terminal::terminal_start,
@@ -770,7 +788,8 @@ pub fn run() {
         list_send_targets,
         send_view_to_device,
         send_drawing_to_device,
-        attach_drawing
+        attach_drawing,
+        crop_volume_block
     ]);
 
     let app = builder

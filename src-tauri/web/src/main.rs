@@ -219,7 +219,7 @@ async fn rpc(
         .and_then(|Json(args)| args.get("path"))
         .and_then(Value::as_str)
         .map(normalize_local_path);
-    let reply = tokio::task::spawn_blocking(move || dispatch(&server, &command, path))
+    let reply = tokio::task::spawn_blocking(move || dispatch(&server, &command, path, &args))
         .await
         .unwrap_or_else(|error| Err(format!("rpc join error: {error}")));
     match reply {
@@ -233,7 +233,12 @@ async fn rpc(
 
 /// The Tauri commands the web version supports, by name; the rest reject, and
 /// the page falls back as it does in any browser.
-fn dispatch(server: &ServerHandle, command: &str, path: Option<String>) -> Result<Reply, String> {
+fn dispatch(
+    server: &ServerHandle,
+    command: &str,
+    path: Option<String>,
+    args: &Value,
+) -> Result<Reply, String> {
     let required = || {
         path.clone()
             .ok_or_else(|| format!("{command}: missing path"))
@@ -263,6 +268,18 @@ fn dispatch(server: &ServerHandle, command: &str, path: Option<String>) -> Resul
         "take_opened_files" => Ok(Reply::Json(json!([]))),
         "keep_picked_file" => Ok(Reply::Json(json!(required()?))),
         "list_dir" => list_dir(path.as_deref()),
+        "crop_volume_block" => {
+            let volume_id = args
+                .get("volumeId")
+                .and_then(Value::as_str)
+                .ok_or("crop_volume_block: missing volumeId")?;
+            let corners: Vec<[f64; 3]> = args
+                .get("corners")
+                .cloned()
+                .and_then(|corners| serde_json::from_value(corners).ok())
+                .ok_or("crop_volume_block: missing corners")?;
+            json(volumetric_server::crop_block(server, volume_id, &corners))
+        }
         _ => Err(format!("{command} isn't available in the web version.")),
     }
 }

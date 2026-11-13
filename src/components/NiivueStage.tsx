@@ -12,6 +12,14 @@ import {
   useRef,
   useState,
 } from 'react'
+import {
+  type BlockSelection,
+  blockSelectionFromPick,
+  boundingBox,
+  type ExplodedBlockPick,
+  focusBrickOpacity,
+  isTap,
+} from '../domain/blockPick'
 import type { BlockSettings } from '../domain/blocks'
 import { blocksAreTiled } from '../domain/blocks'
 import type {
@@ -97,6 +105,8 @@ interface NiivueStageProps {
   /** Offers to send the drawing (a NIfTI label map over the base volume) on;
    *  without it, the draw tools have no Send button. */
   onSendDrawing?: (drawing: Uint8Array) => void
+  /** The brick of the base volume tapped in the exploded view, or null. */
+  onBlockSelect?: (selection: BlockSelection | null) => void
 }
 
 export interface NiivueRenderLayer {
@@ -154,7 +164,26 @@ interface NiiVueLike {
     chunkPlan?: ChunkPlan | undefined
     // Draw-time per-brick spacing for the tiled 3D render.
     chunkExplode?: NiiVueChunkExplode
+    // Row-major voxel (RAS grid) to world-mm matrix.
+    matRAS?: ArrayLike<number>
   }>
+  // Exploded-brick picking and focus (see domain/blockPick).
+  pickExplodedBlock?(clientX: number, clientY: number): ExplodedBlockPick | null
+  chunkBrickIndexAt?(mm: ArrayLike<number>): number
+  chunkBrickCornersAt?(
+    mm: ArrayLike<number>,
+  ): Array<[number, number, number]> | null
+  setVolumeBrickOpacity?(
+    volumeIndex: number,
+    opacity: ArrayLike<number> | null,
+  ): void
+  // An outlined world-mm box on the 3D render; null clears it.
+  focusBox?: {
+    min: [number, number, number]
+    max: [number, number, number]
+    color: number[]
+    thickness: number
+  } | null
   // Rebuild the GPU volume texture(s) from current volume state (e.g. after a
   // chunkPlan change). Chunked/exploded rendering needs this to take effect.
   updateGLVolume?(): Promise<void>
@@ -537,6 +566,7 @@ export function NiivueStage({
   onRenderStatus,
   onViewer,
   onSendDrawing,
+  onBlockSelect,
 }: NiivueStageProps): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -594,6 +624,13 @@ export function NiivueStage({
   // Measure tool: press-drag-release on a 2D slice places a ruler. Off by
   // default so a click still moves the crosshair.
   const [isMeasuring, setIsMeasuring] = useState(false)
+  // The brick tapped in the exploded view; kept in a ref too so the tiling
+  // effect can re-apply its highlight after it rebuilds the bricks.
+  const [blockSelection, setBlockSelection] = useState<BlockSelection | null>(
+    null,
+  )
+  const blockSelectionRef = useRef(blockSelection)
+  blockSelectionRef.current = blockSelection
   // Null once the uikit overlay is drawing; otherwise why measuring is off.
   const [measureUnavailable, setMeasureUnavailable] = useState<string | null>(
     'Loading measure tool.',
@@ -1155,7 +1192,9 @@ export function NiivueStage({
     if (!nv || !chunkVolumeGrid) return
     let cancelled = false
     void applyBlockTiling(nv, chunkVolumeGrid, blocks).then(() => {
-      if (!cancelled) nv.drawScene()
+      if (cancelled) return
+      applyBlockHighlight(nv, blockSelectionRef.current)
+      nv.drawScene()
     })
     return () => {
       cancelled = true
@@ -1171,6 +1210,75 @@ export function NiivueStage({
     applyBlockExplode(nv, blocks)
     nv.drawScene()
   }, [blocks.explode])
+
+  // A new grid or layer stack makes a picked brick meaningless.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: grid and layer stack are the triggers, not values read here.
+  useEffect(() => {
+    setBlockSelection(null)
+  }, [blocks.grid, layerLoadKey])
+
+  useEffect(() => {
+    onBlockSelect?.(blockSelection)
+  }, [blockSelection, onBlockSelect])
+
+  // Outline the picked brick and dim the rest; follows the explode, which
+  // moves the brick. Runs after the explode effect above.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: blocks.explode moves the outline, so it re-runs on it.
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv) return
+    applyBlockHighlight(nv, blockSelection)
+    nv.drawScene()
+  }, [blockSelection, blocks.explode])
+
+  // Tap a brick of the exploded view to pick it (mouse, touch or pencil: a
+  // press that barely moves, so dragging still turns the render). A tap that
+  // misses every brick clears the pick.
+  const isBlockPickable =
+    blocksAreTiled(blocks) && !isDrawActive && !isMeasuring
+  const baseItemId = layers[0]?.item.id ?? null
+  useEffect(() => {
+    const stage = stageRef.current
+    if (!stage || !isBlockPickable || !baseItemId) return
+    let press: { x: number; y: number; id: number } | null = null
+    function onDown(event: PointerEvent): void {
+      press = event.isPrimary
+        ? { x: event.clientX, y: event.clientY, id: event.pointerId }
+        : null
+    }
+    function onUp(event: PointerEvent): void {
+      const start = press
+      press = null
+      if (!start || event.pointerId !== start.id || !baseItemId) return
+      if (!isTap(start, { x: event.clientX, y: event.clientY })) return
+      if (stageControlsRef.current?.isOverControl(event.clientX, event.clientY))
+        return
+      const nv = nvRef.current
+      const pick = nv?.pickExplodedBlock?.(event.clientX, event.clientY)
+      const matRAS = pick ? nv?.volumes?.[pick.volumeIndex]?.matRAS : null
+      if (!pick || pick.volumeIndex !== 0 || !matRAS) {
+        setBlockSelection(null)
+        return
+      }
+      setBlockSelection((current) =>
+        current?.chunkIndex === pick.chunkIndex && current.itemId === baseItemId
+          ? current
+          : blockSelectionFromPick(baseItemId, pick, matRAS),
+      )
+    }
+    function onCancel(): void {
+      press = null
+    }
+    const options = { capture: true }
+    stage.addEventListener('pointerdown', onDown, options)
+    window.addEventListener('pointerup', onUp, options)
+    window.addEventListener('pointercancel', onCancel, options)
+    return () => {
+      stage.removeEventListener('pointerdown', onDown, options)
+      window.removeEventListener('pointerup', onUp, options)
+      window.removeEventListener('pointercancel', onCancel, options)
+    }
+  }, [isBlockPickable, baseItemId])
 
   // Shading is plain draw-time state: set it and repaint. loadedVersion
   // reapplies it to a fresh instance after a backend/layer change.
@@ -1757,6 +1865,35 @@ function applyBlockExplode(nv: NiiVueLike, blocks: BlockSettings): void {
   for (const volume of volumes) {
     if (!blocksAreTiled(blocks) && volume.chunkPlan === undefined) continue
     volume.chunkExplode = explode
+  }
+}
+
+// Outline `selection`'s brick where the render draws it and dim the other
+// bricks of the base volume; null (or an untiled volume) clears both.
+function applyBlockHighlight(
+  nv: NiiVueLike,
+  selection: BlockSelection | null,
+): void {
+  const base = nv.volumes?.[0]
+  const brickCount =
+    (base?.chunkPlan as { chunks?: unknown[] } | undefined)?.chunks?.length ?? 0
+  const corners =
+    selection && brickCount > 0 ? nv.chunkBrickCornersAt?.(selection.mm) : null
+  const index =
+    selection && corners ? (nv.chunkBrickIndexAt?.(selection.mm) ?? -1) : -1
+  if ('focusBox' in nv || corners) {
+    nv.focusBox = corners
+      ? { ...boundingBox(corners), color: [1, 0.75, 0.1, 1], thickness: 2 }
+      : null
+  }
+  if (brickCount === 0) return
+  try {
+    nv.setVolumeBrickOpacity?.(
+      0,
+      index >= 0 ? focusBrickOpacity(brickCount, index) : null,
+    )
+  } catch {
+    // An unchunked volume refuses per-brick opacity; nothing to dim.
   }
 }
 
