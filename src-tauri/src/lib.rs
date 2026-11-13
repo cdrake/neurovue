@@ -472,6 +472,16 @@ async fn read_document_manifest(path: String) -> Result<serde_json::Value, Strin
         .map_err(|error| format!("read_document_manifest: join error: {error}"))?
 }
 
+/// The raw bytes of a saved mask, to paint over again.
+#[tauri::command]
+async fn read_mask_file(path: String) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_mask_bytes(&path).map(tauri::ipc::Response::new)
+    })
+    .await
+    .map_err(|error| format!("read_mask_file: join error: {error}"))?
+}
+
 /// The raw bytes of a surface mesh. Meshes skip the volume server: the viewer
 /// hands the bytes straight to NiiVue, which parses the format itself.
 #[tauri::command]
@@ -756,6 +766,7 @@ pub fn run() {
             close_dataset,
             add_overlay_volume_path,
             read_mesh_file,
+            read_mask_file,
             export_dataset_bundle,
             write_file,
             read_bundle_manifest,
@@ -797,6 +808,7 @@ pub fn run() {
         open_dataset_path,
         add_overlay_volume_path,
         read_mesh_file,
+        read_mask_file,
         export_dataset_bundle,
         write_file,
         read_bundle_manifest,

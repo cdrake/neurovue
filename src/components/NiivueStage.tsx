@@ -33,7 +33,7 @@ import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import type { MeshLayer } from '../domain/meshes'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
-import { gzip, saveFile } from '../domain/saveFile'
+import { gzip, pickNifti, saveFile } from '../domain/saveFile'
 import {
   matchingShadingPreset,
   type RenderShading,
@@ -43,7 +43,6 @@ import {
   StageControls,
   type StageControlsActions,
   type StageControlsState,
-  TITLE_CLEARANCE,
   TOP_RIGHT_CLEARANCE,
 } from '../domain/stageControls'
 import {
@@ -297,6 +296,7 @@ interface NiiVueLike {
   drawUndo?(): void
   // An empty filename returns the NIfTI bytes instead of downloading them.
   saveDrawing?(filename: string): Promise<boolean | Uint8Array<ArrayBuffer>>
+  loadDrawing?(source: File): Promise<boolean>
   azimuth?: number
   elevation?: number
   volumeIllumination?: number
@@ -732,6 +732,7 @@ export function NiivueStage({
   const [brushSize, setBrushSize] = useState<number>(DRAW_SIZES[1].size)
   // Whether the current viewer holds a drawing, for Undo/Clear/Send.
   const [hasDrawing, setHasDrawing] = useState(false)
+  const hasMaskErrorRef = useRef(false)
   const primaryItem = layers[0]?.item ?? item
   // Meshes with no volume still need a viewer; with volumes, adding a mesh
   // goes through the in-place mesh effect instead of a reload.
@@ -948,17 +949,9 @@ export function NiivueStage({
         // display re-apply below maps each layer to its volume by identity.
         loadedLayerIdsRef.current = layers.map((layer) => layer.item.id)
         loadedLabelColormapsRef.current = labelColormaps
-        // The views start below the floating title bar (it hid the 2D "A"
-        // label), and an atlas legend below the view modes, not under them.
-        const hasLegend = layers.some(
-          (layer) => layer.isAtlas && labelColormaps[layer.item.id],
-        )
-        nv.layoutInset = [
-          0,
-          hasLegend ? TOP_RIGHT_CLEARANCE : TITLE_CLEARANCE,
-          0,
-          0,
-        ]
+        // The views start below the first control row, so neither the tools
+        // nor the view modes hide the 2D orientation label or an atlas legend.
+        nv.layoutInset = [0, TOP_RIGHT_CLEARANCE, 0, 0]
         if (!cancelled) {
           if (nv.setVolume) unannouncedViewerRef.current = nv
           else onViewer?.(nv)
@@ -1368,6 +1361,30 @@ export function NiivueStage({
       fileName: `${exportStem()}-mask.nii.gz`,
       data: await gzip(drawing),
     })
+  }
+
+  // A saved mask back into the draw layer, to keep painting it.
+  async function loadMask(): Promise<void> {
+    if (hasMaskErrorRef.current) {
+      hasMaskErrorRef.current = false
+      setIsStatusError(false)
+      setStatus('')
+    }
+    try {
+      const file = await pickNifti('Load mask')
+      const nv = nvRef.current
+      if (!file || !nv) return
+      if (!(await nv.loadDrawing?.(file))) {
+        throw new Error(
+          `${file.name} isn't a mask for this volume: it needs to be a uint8 NIfTI on the same grid.`,
+        )
+      }
+      setHasDrawing(true)
+    } catch (error) {
+      hasMaskErrorRef.current = true
+      setIsStatusError(true)
+      setStatus(error instanceof Error ? error.message : String(error))
+    }
   }
 
   // Go-to: move the crosshair to a requested RAS+ mm position. A fresh
@@ -1929,6 +1946,7 @@ export function NiivueStage({
     send: () => void sendDrawing(),
     exportSVG: () => void exportSVG().catch(console.error),
     saveMask: () => void saveMask().catch(console.error),
+    loadMask: () => void loadMask(),
     // A colour picks the pen back up from the eraser, keeping fill or wand.
     pen: (value) => {
       setPenValue(value)

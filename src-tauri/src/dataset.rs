@@ -131,6 +131,16 @@ pub fn read_mesh_bytes(path: &str) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|error| format!("Couldn't read {}: {error}", path.display()))
 }
 
+/// A drawing mask: NIfTI only, as NiiVue's `loadDrawing` reads.
+pub fn read_mask_bytes(path: &str) -> Result<Vec<u8>, String> {
+    let path = PathBuf::from(normalize_local_path(path));
+    let name = path.to_string_lossy().to_ascii_lowercase();
+    if !(name.ends_with(".nii") || name.ends_with(".nii.gz")) {
+        return Err(format!("{} is not a NIfTI mask.", path.display()));
+    }
+    std::fs::read(&path).map_err(|error| format!("Couldn't read {}: {error}", path.display()))
+}
+
 pub fn open_dataset_at_path(
     server: &volumetric_server::ServerHandle,
     root: &Path,
