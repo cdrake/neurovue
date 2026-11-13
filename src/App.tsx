@@ -168,7 +168,11 @@ import {
 import { useAgentClient } from './hooks/useAgentClient'
 import { useClipPlanes } from './hooks/useClipPlanes'
 import { useDatasetManifest } from './hooks/useDatasetManifest'
-import { useExpressMenuLabel, useNativeMenu } from './hooks/useNativeMenu'
+import {
+  EXPRESS_VIEW_SHORTCUT,
+  useExpressMenuLabel,
+  useNativeMenu,
+} from './hooks/useNativeMenu'
 import {
   isInContainerTemp,
   rebaseContainerPath,
@@ -2152,18 +2156,17 @@ export function App(): JSX.Element {
             </button>
           )}
           <button
-            aria-label="Express view"
-            aria-pressed={isExpress}
-            className={`nv-icon-button nv-desktop-only ${isExpress ? 'is-active' : ''}`}
+            className="nv-tool-button nv-desktop-only"
             onClick={toggleUiMode}
             title={
               isExpress
-                ? 'Back to the dataset workbench (⌥⌘V)'
-                : 'Express view: one viewer and one tool panel (⌥⌘V)'
+                ? `Back to the dataset workbench (${EXPRESS_VIEW_SHORTCUT})`
+                : `Express view: one viewer and one tool panel (${EXPRESS_VIEW_SHORTCUT})`
             }
             type="button"
           >
-            <LayoutPanelLeft size={16} />
+            <LayoutPanelLeft size={15} />
+            <span>{isExpress ? 'Dataset' : 'Express'}</span>
           </button>
           {isTerminalAvailable && !isExpress ? (
             <button
