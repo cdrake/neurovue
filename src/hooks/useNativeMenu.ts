@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useEffect, useRef } from 'react'
 
@@ -52,12 +52,32 @@ export function useNativeMenu(handlers: NativeMenuHandlers): void {
         unlisten = null
       })
 
+    // A plain browser has no menu bar, so its one shortcut is bound here.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.altKey &&
+        (event.metaKey || event.ctrlKey) &&
+        event.code === 'KeyV'
+      ) {
+        event.preventDefault()
+        void handlersRef.current['express-view']()
+      }
+    }
+    const inBrowser = !isTauri()
+    if (inBrowser) window.addEventListener('keydown', onKeyDown)
+
     return () => {
       cancelled = true
       unlisten?.()
+      if (inBrowser) window.removeEventListener('keydown', onKeyDown)
     }
   }, [])
 }
+
+/** The layout switch's shortcut as this platform writes it. */
+export const EXPRESS_VIEW_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
+  ? '⌥⌘V'
+  : 'Ctrl+Alt+V'
 
 /**
  * Keeps the View menu's switch named for the view it leads to (Dataset View
