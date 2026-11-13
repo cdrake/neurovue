@@ -45,6 +45,13 @@ import {
   TITLE_CLEARANCE,
   TOP_RIGHT_CLEARANCE,
 } from '../domain/stageControls'
+import {
+  composeSliceSVG,
+  isPlaneSliceType,
+  PLANES as SLICE_PLANES,
+  saveSVG,
+  sliceIndexAt,
+} from '../domain/svgExport'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 
 // The window NiiVue actually applied for a layer, plus the volume's robust
@@ -79,6 +86,9 @@ interface NiivueStageProps {
   // A fresh object identity re-triggers the move (so going to the same
   // coordinate twice still fires).
   crosshairTarget?: { mm: [number, number, number] } | null
+  // Annotations (NiiVue's getAnnotationsJSON) restored from a bundle, applied
+  // whenever its base volume loads.
+  annotationsTarget?: { baseId: string; json: string } | null
   onClipPlaneDepthChange: (planeId: string, depth: number) => void
   // Make a clip plane the active (on-screen depth-slider / wheel) target.
   onClipPlaneActivate?: (planeId: string) => void
@@ -255,6 +265,18 @@ interface NiiVueLike {
   isAnnotationDrawn?: boolean
   readonly annotationScreenShapes?: readonly AnnotationScreenShape[]
   clearAnnotations?(): void
+  // Measurements and shapes are kept apart by group, so each clears alone.
+  annotationActiveGroup?: string
+  annotationActiveLabel?: number
+  annotationMergesOverlaps?: boolean
+  annotationStyle?: AnnotationStyle
+  readonly annotations?: readonly { id: string; group: string }[]
+  removeAnnotation?(id: string): void
+  annotationUndo?(): void
+  annotationRedo?(): void
+  getAnnotationsJSON?(): string
+  loadAnnotationsJSON?(json: string): void
+  annotationsToSVG?(sliceType: number, slicePositionMm: number): string | null
   // Returns the unregister function.
   registerOverlayRenderer?(renderer: UIKitOverlayRenderer): () => void
   // Raster drawing (the draw tool). Pen value 0 erases.
@@ -262,6 +284,13 @@ interface NiiVueLike {
   drawPenValue?: number
   drawPenSize?: number
   drawPenShape?: number
+  drawPenFilled?: boolean
+  // The magic wand: a click grows a region within tolerance (a fraction of
+  // the display window), on the clicked slice or through the volume.
+  drawIsClickToSegment?: boolean
+  drawClickToSegmentTolerance?: number
+  drawClickToSegmentIs2D?: boolean
+  drawingToSVG?(sliceType: number, sliceIndex: number): string | null
   readonly drawingVolume?: unknown
   createEmptyDrawing?(): void
   closeDrawing?(): void
@@ -416,6 +445,43 @@ const DRAW_SIZES = [
   { size: 7, name: 'Broad', shortName: 'Broad' },
 ] as const
 
+const DRAW_TOOLS = [
+  { id: 'pen', label: 'Pen' },
+  { id: 'fill', label: 'Fill' },
+  { id: 'wand', label: 'Wand' },
+  { id: 'eraser', label: 'Erase' },
+] as const
+type DrawToolId = (typeof DRAW_TOOLS)[number]['id']
+
+// NiiVue annotation tools; shapes take the pen's colour.
+const SHAPE_TOOLS = [
+  { id: 'freehand', label: 'Free' },
+  { id: 'rectangle', label: 'Rect' },
+  { id: 'ellipse', label: 'Ellipse' },
+  { id: 'arrow', label: 'Arrow' },
+  { id: 'spline', label: 'Spline' },
+  { id: 'livewire', label: 'Livewire' },
+] as const
+const MEASURE_TOOLS = [
+  { id: 'measureLine', label: 'Line' },
+  { id: 'measureRect', label: 'Rect' },
+  { id: 'measureEllipse', label: 'Ellipse' },
+  { id: 'measureCircle', label: 'Circle' },
+  { id: 'measureBidirectional', label: 'Bidir' },
+] as const
+// NiiVue's default annotation look, kept for measurements.
+const MEASURE_STYLE: AnnotationStyle = {
+  fillColor: [1, 0, 0, 0.3],
+  strokeColor: [1, 0, 0, 1],
+  strokeWidth: 2,
+}
+
+interface AnnotationStyle {
+  fillColor: number[]
+  strokeColor: number[]
+  strokeWidth: number
+}
+
 // PEN_SHAPE.CIRCLE: a round brush, as a pencil makes.
 const PEN_SHAPE_CIRCLE = 1
 
@@ -558,6 +624,7 @@ export function NiivueStage({
   onShadingChange,
   meshes,
   crosshairTarget,
+  annotationsTarget,
   onClipPlaneDepthChange,
   onClipPlaneActivate,
   onClipPlaneCycle,
@@ -621,12 +688,20 @@ export function NiivueStage({
   // re-runs once NiiVue has computed per-volume stats (robust range / peak) —
   // needed to seed a stat overlay's default threshold from its data.
   const [loadedVersion, setLoadedVersion] = useState(0)
+  const annotationsTargetRef = useRef(annotationsTarget)
+  annotationsTargetRef.current = annotationsTarget
   // Current crosshair location (mirrored from NiiVue) — drives the touch slice
   // slider so it stays in sync with clicks/paging from any source.
   const [location, setLocation] = useState<NiiVueLocation | null>(null)
   // Measure tool: press-drag-release on a 2D slice places a ruler. Off by
   // default so a click still moves the crosshair.
-  const [isMeasuring, setIsMeasuring] = useState(false)
+  // One of measure, shapes and draw at a time; each keeps its picked tool.
+  const [toolMode, setToolMode] = useState<
+    'measure' | 'shapes' | 'draw' | null
+  >(null)
+  const isMeasuring = toolMode === 'measure'
+  const [measureTool, setMeasureTool] = useState<string>(MEASURE_TOOLS[0].id)
+  const [shapeTool, setShapeTool] = useState<string>(SHAPE_TOOLS[0].id)
   // The brick tapped in the exploded view; kept in a ref too so the tiling
   // effect can re-apply its highlight after it rebuilds the bricks.
   const [blockSelection, setBlockSelection] = useState<BlockSelection | null>(
@@ -642,7 +717,9 @@ export function NiivueStage({
   )
   // Draw tool: a pen (or eraser) on 2D slices, painting a label map over the
   // base volume. Like measuring, off by default so a tap moves the crosshair.
-  const [drawTool, setDrawTool] = useState<'pen' | 'eraser' | null>(null)
+  const [drawTool, setDrawTool] = useState<DrawToolId>('pen')
+  const [wandTolerance, setWandTolerance] = useState(0.05)
+  const [wandVolume, setWandVolume] = useState(false)
   // The pen's label value (its color in DRAW_COLORS) and brush size.
   const [penValue, setPenValue] = useState(1)
   const [brushSize, setBrushSize] = useState<number>(DRAW_SIZES[1].size)
@@ -657,6 +734,10 @@ export function NiivueStage({
     VIEW_MODES.find((mode) => mode.id === viewMode) ??
     VIEW_MODES[VIEW_MODES.length - 1]
   ).label
+  const currentSliceType = (
+    VIEW_MODES.find((mode) => mode.id === viewMode) ??
+    VIEW_MODES[VIEW_MODES.length - 1]
+  ).sliceType
   const layerLoadKey = layers.map(layerLoadSignature).join('|')
 
   // Fetch the coarse volume the instant it is selected — at high priority, in
@@ -873,6 +954,11 @@ export function NiivueStage({
           if (nv.setVolume) unannouncedViewerRef.current = nv
           else onViewer?.(nv)
         }
+        // A new instance starts without annotations.
+        const annotations = annotationsTargetRef.current
+        if (annotations && annotations.baseId === primaryItem?.id) {
+          nv.loadAnnotationsJSON?.(annotations.json)
+        }
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
@@ -1030,35 +1116,75 @@ export function NiivueStage({
     // this effect first ran), so re-apply once the instance/volumes exist.
   }, [viewMode, primaryItem, loadedVersion])
 
-  // Measure mode: hand left-drag to NiiVue's measureLine annotation tool. 2D
-  // only, since there is no slice plane to measure on in the 3D render.
-  const isMeasureActive =
-    isMeasuring && !isRenderMode && measureUnavailable === null
+  // Measure and shapes: hand left-drag to a NiiVue annotation tool. 2D only,
+  // since there is no slice plane to annotate in the 3D render.
+  const isAnnotationReady = !isRenderMode && measureUnavailable === null
+  const isMeasureActive = isMeasuring && isAnnotationReady
+  const isShapesActive = toolMode === 'shapes' && isAnnotationReady
   // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion re-applies on a fresh instance.
   useEffect(() => {
     const nv = nvRef.current
     if (!nv) return
-    nv.annotationTool = 'measureLine'
-    nv.annotationIsEnabled = isMeasureActive
-  }, [isMeasureActive, loadedVersion])
+    // Overlapping shapes stay separate, as drawn.
+    nv.annotationMergesOverlaps = false
+    if (isShapesActive) {
+      const rgb = [
+        DRAW_LABEL_COLORMAP.R[penValue],
+        DRAW_LABEL_COLORMAP.G[penValue],
+        DRAW_LABEL_COLORMAP.B[penValue],
+      ].map((channel) => channel / 255)
+      nv.annotationTool = shapeTool
+      nv.annotationActiveGroup = 'shape'
+      nv.annotationActiveLabel = penValue
+      nv.annotationStyle = {
+        fillColor: [...rgb, 0.3],
+        strokeColor: [...rgb, 1],
+        strokeWidth: 2,
+      }
+    } else if (isMeasureActive) {
+      nv.annotationTool = measureTool
+      nv.annotationActiveGroup = 'measure'
+      nv.annotationStyle = MEASURE_STYLE
+    }
+    nv.annotationIsEnabled = isMeasureActive || isShapesActive
+  }, [
+    isMeasureActive,
+    isShapesActive,
+    measureTool,
+    shapeTool,
+    penValue,
+    loadedVersion,
+  ])
 
   // Draw mode, once the volumes have loaded: refinement swaps in a finer
   // volume, and a drawing must match the volume it was started on. A new
   // viewer (another volume, or a layer added) starts without one.
-  const isDrawActive = drawTool !== null && !isRenderMode && loadedVersion > 0
+  const isDrawActive = toolMode === 'draw' && !isRenderMode && loadedVersion > 0
   // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion re-applies on a fresh instance.
   useEffect(() => {
     const nv = nvRef.current
     if (!nv || nv.drawIsEnabled === undefined) return
     if (isDrawActive && !nv.drawingVolume) nv.createEmptyDrawing?.()
     nv.drawIsEnabled = isDrawActive
+    nv.drawIsClickToSegment = isDrawActive && drawTool === 'wand'
     if (isDrawActive) {
       nv.drawPenValue = drawTool === 'eraser' ? 0 : penValue
       nv.drawPenSize = brushSize
       nv.drawPenShape = PEN_SHAPE_CIRCLE
+      nv.drawPenFilled = drawTool === 'fill'
+      nv.drawClickToSegmentTolerance = wandTolerance
+      nv.drawClickToSegmentIs2D = !wandVolume
     }
     setHasDrawing(Boolean(nv.drawingVolume))
-  }, [isDrawActive, drawTool, penValue, brushSize, loadedVersion])
+  }, [
+    isDrawActive,
+    drawTool,
+    penValue,
+    brushSize,
+    wandTolerance,
+    wandVolume,
+    loadedVersion,
+  ])
 
   // Apple Pencil: pressure and tilt set the brush for each point of a stroke
   // (NiiVue reads the size per move), like pressing harder or shading with
@@ -1131,15 +1257,14 @@ export function NiivueStage({
     })
   }, [isDrawActive])
 
-  // From the 3D render, drawing starts on one big axial slice.
-  function toggleDrawing(): void {
-    setIsMeasuring(false)
+  // From the 3D render, drawing or shaping starts on one big axial slice.
+  function toggleMode(next: 'measure' | 'shapes' | 'draw'): void {
     if (isRenderMode) {
       onViewModeChange('axial')
-      setDrawTool('pen')
+      setToolMode(next)
       return
     }
-    setDrawTool((current) => (current ? null : 'pen'))
+    setToolMode((current) => (current === next ? null : next))
   }
 
   function undoDrawing(): void {
@@ -1160,20 +1285,49 @@ export function NiivueStage({
     if (drawing instanceof Uint8Array) onSendDrawing?.(drawing)
   }
 
-  // Escape leaves measure mode, like finishing with any other tool.
+  // Escape leaves measure or shapes, like finishing with any other tool.
+  const isAnnotating = isMeasureActive || isShapesActive
   useEffect(() => {
-    if (!isMeasureActive) return
+    if (!isAnnotating) return
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key !== 'Escape' || isEditableTarget(event.target)) return
-      setIsMeasuring(false)
+      setToolMode(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isMeasureActive])
+  }, [isAnnotating])
 
-  function clearMeasurements(): void {
+  function clearAnnotationGroup(group: 'measure' | 'shape'): void {
     const nv = nvRef.current
-    nv?.clearAnnotations?.()
+    if (!nv) return
+    for (const annotation of [...(nv.annotations ?? [])]) {
+      if (annotation.group === group) nv.removeAnnotation?.(annotation.id)
+    }
+    nv.drawScene()
+  }
+
+  // The current slice's mask and shapes, as one SVG in world mm.
+  async function exportSVG(): Promise<void> {
+    const nv = nvRef.current
+    const volume = nv?.volumes?.[0]
+    const sliceType = currentSliceType
+    if (!nv || !volume?.matRAS || !volume.dimsRAS || !location) return
+    if (!isPlaneSliceType(sliceType)) return
+    const depthMm = location.mm[SLICE_PLANES[sliceType].depth]
+    const sliceIndex = sliceIndexAt(sliceType, volume.matRAS, depthMm)
+    const svg = composeSliceSVG({
+      sliceType,
+      matRAS: volume.matRAS,
+      dimsRAS: volume.dimsRAS,
+      sliceIndex,
+      drawing: nv.drawingToSVG?.(sliceType, sliceIndex) ?? null,
+      shapes: nv.annotationsToSVG?.(sliceType, depthMm) ?? null,
+    })
+    if (!svg) return
+    await saveSVG(
+      `${primaryItem?.label ?? 'slice'}-${viewMode}-${sliceIndex}`,
+      svg,
+    )
   }
 
   // Go-to: move the crosshair to a requested RAS+ mm position. A fresh
@@ -1184,6 +1338,17 @@ export function NiivueStage({
     nv.setCrosshairPos(crosshairTarget.mm)
     nv.drawScene()
   }, [crosshairTarget])
+
+  // A bundle opened over volumes already shown: no reload brings its
+  // annotations in, so apply them here. An instance still loading (no
+  // volumes yet) gets them from the attach effect.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new target applies; a load applies it in attach.
+  useEffect(() => {
+    const nv = nvRef.current
+    if (!nv?.volumes?.length || !annotationsTarget) return
+    if (annotationsTarget.baseId !== primaryItem?.id) return
+    nv.loadAnnotationsJSON?.(annotationsTarget.json)
+  }, [annotationsTarget])
 
   // Block tiling: (re)build or clear each loaded volume's chunk plan. Keyed on
   // the grid and on loadedVersion — the attach effect rebuilds the instance on a
@@ -1240,7 +1405,7 @@ export function NiivueStage({
   // press that barely moves, so dragging still turns the render). A tap that
   // misses every brick clears the pick.
   const isBlockPickable =
-    blocksAreTiled(blocks) && !isDrawActive && !isMeasuring
+    blocksAreTiled(blocks) && !isDrawActive && !isShapesActive && !isMeasuring
   const baseItemId = layers[0]?.item.id ?? null
   useEffect(() => {
     const stage = stageRef.current
@@ -1619,28 +1784,52 @@ export function NiivueStage({
     measure:
       isRenderMode || !primaryItem
         ? null
-        : { active: isMeasureActive, enabled: measureUnavailable === null },
+        : {
+            active: isMeasureActive,
+            enabled: measureUnavailable === null,
+            tools: MEASURE_TOOLS,
+            tool: measureTool,
+          },
+    shapes: primaryItem
+      ? {
+          active: isShapesActive,
+          enabled: measureUnavailable === null,
+          tools: SHAPE_TOOLS,
+          tool: shapeTool,
+        }
+      : null,
     draw: primaryItem
       ? {
           active: isDrawActive,
           enabled: loadedVersion > 0,
-          eraser: drawTool === 'eraser',
+          tools: DRAW_TOOLS,
+          tool: drawTool,
           hasDrawing,
           canSend: Boolean(onSendDrawing) && hasDrawing,
         }
       : null,
-    palette: isDrawActive
-      ? {
-          colors: DRAW_COLORS,
-          penValue,
-          sizes: DRAW_SIZES.map((option) => ({
-            size: option.size,
-            name: option.shortName,
-          })),
-          brushSize,
-          eraser: drawTool === 'eraser',
-        }
-      : null,
+    canExport:
+      (isDrawActive || isShapesActive) && isPlaneSliceType(currentSliceType),
+    palette:
+      isDrawActive || isShapesActive
+        ? {
+            colors: DRAW_COLORS,
+            penValue,
+            sizes:
+              isDrawActive && drawTool !== 'wand'
+                ? DRAW_SIZES.map((option) => ({
+                    size: option.size,
+                    name: option.shortName,
+                  }))
+                : [],
+            brushSize,
+            eraser: isDrawActive && drawTool === 'eraser',
+          }
+        : null,
+    wand:
+      isDrawActive && drawTool === 'wand'
+        ? { tolerance: wandTolerance, volume: wandVolume }
+        : null,
     slice: showSliceSlider
       ? {
           label: currentViewLabel.replace(/ slice$/, ''),
@@ -1674,22 +1863,31 @@ export function NiivueStage({
       const preset = SHADING_PRESETS.find((candidate) => candidate.id === id)
       if (preset) onShadingChange(preset.shading)
     },
-    measure: () => {
-      setDrawTool(null)
-      setIsMeasuring((current) => !current)
+    measure: () => toggleMode('measure'),
+    measureTool: setMeasureTool,
+    clearMeasurements: () => clearAnnotationGroup('measure'),
+    shapes: () => toggleMode('shapes'),
+    shapeTool: setShapeTool,
+    shapeUndo: () => nvRef.current?.annotationUndo?.(),
+    shapeRedo: () => nvRef.current?.annotationRedo?.(),
+    clearShapes: () => clearAnnotationGroup('shape'),
+    draw: () => toggleMode('draw'),
+    drawTool: (id) => {
+      const tool = DRAW_TOOLS.find((candidate) => candidate.id === id)
+      if (tool) setDrawTool(tool.id)
     },
-    clearMeasurements,
-    draw: toggleDrawing,
-    erase: () =>
-      setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser')),
     undo: undoDrawing,
     clearDrawing,
     send: () => void sendDrawing(),
+    exportSVG: () => void exportSVG().catch(console.error),
+    // A colour picks the pen back up from the eraser, keeping fill or wand.
     pen: (value) => {
       setPenValue(value)
-      setDrawTool('pen')
+      setDrawTool((current) => (current === 'eraser' ? 'pen' : current))
     },
     brush: setBrushSize,
+    wandTolerance: setWandTolerance,
+    wandVolume: setWandVolume,
     slice: pageToSlice,
     clipPlane: (id) => onClipPlaneActivate?.(id),
     clipDepth: (id, depth) => {

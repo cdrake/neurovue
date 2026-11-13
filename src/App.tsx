@@ -490,6 +490,11 @@ export function App(): JSX.Element {
   const [crosshairTarget, setCrosshairTarget] = useState<{
     mm: [number, number, number]
   } | null>(null)
+  // A bundle's annotations, restored over its base volume.
+  const [annotationsTarget, setAnnotationsTarget] = useState<{
+    baseId: string
+    json: string
+  } | null>(null)
   // Block (volume-chunk explode) settings, applied across every loaded layer and
   // persisted into the bundle/session.
   const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
@@ -1116,6 +1121,11 @@ export function App(): JSX.Element {
           ? [crosshairMm[0], crosshairMm[1], crosshairMm[2]]
           : null,
       blocks,
+      annotations: JSON.parse(
+        (
+          viewerRef.current as { getAnnotationsJSON?(): string } | null
+        )?.getAnnotationsJSON?.() ?? '[]',
+      ),
     })
     return { volumeIds: view.volumes.map((volume) => volume.id), view }
   }
@@ -1730,6 +1740,11 @@ export function App(): JSX.Element {
       setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
       applyClipPlanes(view.scene?.clipPlanes ?? [])
       if (nextBase) setSelectedId(nextBase)
+      setAnnotationsTarget(
+        nextBase && view.annotations?.length
+          ? { baseId: nextBase, json: JSON.stringify(view.annotations) }
+          : null,
+      )
       const crosshair = view.scene?.crosshairPos
       if (Array.isArray(crosshair) && crosshair.length >= 3) {
         setCrosshairTarget({ mm: [crosshair[0], crosshair[1], crosshair[2]] })
@@ -2461,6 +2476,7 @@ export function App(): JSX.Element {
                   blocks={blocks}
                   clipPlanes={clipPlanes}
                   crosshairTarget={crosshairTarget}
+                  annotationsTarget={annotationsTarget}
                   isActive={mouseContext === 'niivue'}
                   item={selected}
                   layers={renderLayers}

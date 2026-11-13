@@ -78,6 +78,8 @@ export interface BundleViewState {
    * it, and the importer falls back to the untiled default.
    */
   blocks?: BlockSettings
+  /** Vector shapes and measurements, as NiiVue's getAnnotationsJSON. */
+  annotations?: unknown[]
 }
 
 /**
@@ -95,6 +97,7 @@ export function buildBundleViewState(params: {
   clipPlanes: ClipPlane[]
   crosshairPos: [number, number, number] | null
   blocks?: BlockSettings
+  annotations?: unknown[]
 }): BundleViewState {
   const toVolume = (
     id: string,
@@ -134,6 +137,7 @@ export function buildBundleViewState(params: {
     viewMode: params.viewMode,
     backend: params.backend,
     ...(params.blocks ? { blocks: params.blocks } : {}),
+    ...(params.annotations?.length ? { annotations: params.annotations } : {}),
   }
 }
 
