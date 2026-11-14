@@ -30,6 +30,7 @@ const state: StageControlsState = {
     canSend: false,
   },
   canExport: false,
+  magnify: null,
   palette: null,
   wand: null,
   slice: { label: 'Axial', value: 3, max: 9 },

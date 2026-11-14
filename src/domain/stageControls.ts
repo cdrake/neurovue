@@ -117,6 +117,8 @@ export interface ToolGroup {
 
 /** What the stage shows, from NiivueStage's state. Null hides a group. */
 export interface StageControlsState {
+  /** The magnifying lens: on or off; null hides the button. */
+  magnify: boolean | null
   viewModes: readonly { id: string; label: string }[]
   viewMode: string
   /** False before a volume is selected: the view modes show, dimmed. */
@@ -158,6 +160,7 @@ export interface StageControlsState {
 
 /** What the controls do; NiivueStage passes fresh closures each render. */
 export interface StageControlsActions {
+  magnify(): void
   viewMode(id: string): void
   look(id: string): void
   measure(): void
@@ -329,6 +332,14 @@ export class StageControls implements UIKitOverlayRenderer {
       })
     }
     const row: ButtonSpec[] = []
+    if (state.magnify !== null) {
+      row.push(
+        this.toolButton('magnify', 'Magnify', true, {
+          on: state.magnify,
+          click: () => this.actions?.magnify(),
+        }),
+      )
+    }
     if (state.measure) {
       row.push(
         this.toolButton('measure', 'Measure', state.measure.enabled, {
