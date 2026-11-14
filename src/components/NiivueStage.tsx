@@ -30,6 +30,7 @@ import type {
   VolumeMetadata,
 } from '../domain/desktop'
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
+import { interpolateMaskSlices } from '../domain/maskInterpolation'
 import type { MeshLayer } from '../domain/meshes'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
@@ -290,10 +291,12 @@ interface NiiVueLike {
   drawClickToSegmentTolerance?: number
   drawClickToSegmentIs2D?: boolean
   drawingToSVG?(sliceType: number, sliceIndex: number): string | null
-  readonly drawingVolume?: unknown
+  readonly drawingVolume?: { readonly img: Uint8Array } | null
   createEmptyDrawing?(): void
   closeDrawing?(): void
   drawUndo?(): void
+  drawAddUndoBitmap?(): void
+  refreshDrawing?(): void
   // An empty filename returns the NIfTI bytes instead of downloading them.
   saveDrawing?(filename: string): Promise<boolean | Uint8Array<ArrayBuffer>>
   loadDrawing?(source: File): Promise<boolean>
@@ -732,7 +735,7 @@ export function NiivueStage({
   const [brushSize, setBrushSize] = useState<number>(DRAW_SIZES[1].size)
   // Whether the current viewer holds a drawing, for Undo/Clear/Send.
   const [hasDrawing, setHasDrawing] = useState(false)
-  const hasMaskErrorRef = useRef(false)
+  const maskErrorTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const primaryItem = layers[0]?.item ?? item
   // Meshes with no volume still need a viewer; with volumes, adding a mesh
   // goes through the in-place mesh effect instead of a reload.
@@ -1352,6 +1355,24 @@ export function NiivueStage({
     })
   }
 
+  // Fills the slices between painted ones, across the view's depth (axial
+  // depth in MPR and 3D), as one undoable edit.
+  function interpolateDrawing(): void {
+    const nv = nvRef.current
+    const dimsRAS = nv?.volumes?.[0]?.dimsRAS
+    const img = nv?.drawingVolume?.img
+    if (!nv || !dimsRAS || !img) return
+    const axis = isPlaneSliceType(currentSliceType)
+      ? SLICE_PLANES[currentSliceType].depth
+      : 2
+    const bitmap = img.slice()
+    const dims = [dimsRAS[1], dimsRAS[2], dimsRAS[3]] as const
+    if (interpolateMaskSlices(bitmap, dims, axis) === 0) return
+    nv.drawAddUndoBitmap?.()
+    img.set(bitmap)
+    nv.refreshDrawing?.()
+  }
+
   // The painted mask, as a uint8 NIfTI on the base volume's grid.
   async function saveMask(): Promise<void> {
     const drawing = await nvRef.current?.saveDrawing?.('')
@@ -1364,12 +1385,17 @@ export function NiivueStage({
   }
 
   // A saved mask back into the draw layer, to keep painting it.
+  // The mask error clears itself: it sits over the draw tools.
+  function clearMaskError(): void {
+    if (maskErrorTimerRef.current === undefined) return
+    clearTimeout(maskErrorTimerRef.current)
+    maskErrorTimerRef.current = undefined
+    setIsStatusError(false)
+    setStatus('')
+  }
+
   async function loadMask(): Promise<void> {
-    if (hasMaskErrorRef.current) {
-      hasMaskErrorRef.current = false
-      setIsStatusError(false)
-      setStatus('')
-    }
+    clearMaskError()
     try {
       const file = await pickNifti('Load mask')
       const nv = nvRef.current
@@ -1381,9 +1407,9 @@ export function NiivueStage({
       }
       setHasDrawing(true)
     } catch (error) {
-      hasMaskErrorRef.current = true
       setIsStatusError(true)
       setStatus(error instanceof Error ? error.message : String(error))
+      maskErrorTimerRef.current = setTimeout(clearMaskError, 6000)
     }
   }
 
@@ -1947,6 +1973,7 @@ export function NiivueStage({
     exportSVG: () => void exportSVG().catch(console.error),
     saveMask: () => void saveMask().catch(console.error),
     loadMask: () => void loadMask(),
+    interpolate: interpolateDrawing,
     // A colour picks the pen back up from the eraser, keeping fill or wand.
     pen: (value) => {
       setPenValue(value)
