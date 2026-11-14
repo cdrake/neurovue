@@ -293,7 +293,6 @@ interface NiiVueLike {
   drawingToSVG?(sliceType: number, sliceIndex: number): string | null
   readonly drawingVolume?: { readonly img: Uint8Array } | null
   createEmptyDrawing?(): void
-  closeDrawing?(): void
   drawUndo?(): void
   drawAddUndoBitmap?(): void
   refreshDrawing?(): void
@@ -1288,13 +1287,14 @@ export function NiivueStage({
     nvRef.current?.drawUndo?.()
   }
 
+  // Erases in place rather than closing the drawing, so Undo brings it back.
   function clearDrawing(): void {
     const nv = nvRef.current
-    if (!nv) return
-    nv.closeDrawing?.()
-    if (isDrawActive) nv.createEmptyDrawing?.()
-    setHasDrawing(Boolean(nv.drawingVolume))
-    nv.drawScene()
+    const img = nv?.drawingVolume?.img
+    if (!nv || !img) return
+    nv.drawAddUndoBitmap?.()
+    img.fill(0)
+    nv.refreshDrawing?.()
   }
 
   async function sendDrawing(): Promise<void> {
