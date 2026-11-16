@@ -42,6 +42,13 @@ const MENU_OPEN_FILE: &str = "file-open-file";
 #[cfg(desktop)]
 const MENU_OPEN_FOLDER: &str = "file-open-folder";
 #[cfg(desktop)]
+const MENU_OPEN_RECENT: &str = "file-open-recent";
+// A recent entry's id carries its path, so the click needs no lookup.
+#[cfg(desktop)]
+const MENU_RECENT_PREFIX: &str = "file-recent:";
+#[cfg(desktop)]
+const MENU_CLEAR_RECENT: &str = "file-clear-recent";
+#[cfg(desktop)]
 const MENU_OPEN_MESH: &str = "file-open-mesh";
 #[cfg(desktop)]
 const MENU_OPEN_BUNDLE: &str = "file-open-bundle";
@@ -512,6 +519,20 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
+    // Filled by the frontend (set_recent_menu), which owns the recents list.
+    let open_recent = Submenu::with_id_and_items(
+        handle,
+        MENU_OPEN_RECENT,
+        "Open Recent",
+        true,
+        &[&MenuItem::with_id(
+            handle,
+            MENU_CLEAR_RECENT,
+            "Clear Menu",
+            false,
+            None::<&str>,
+        )?],
+    )?;
     let open_mesh = MenuItem::with_id(
         handle,
         MENU_OPEN_MESH,
@@ -555,6 +576,7 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
     let items: Vec<&dyn tauri::menu::IsMenuItem<R>> = vec![
         &open_file,
         &open_folder,
+        &open_recent,
         &open_mesh,
         &open_bundle,
         &open_sample,
@@ -662,6 +684,50 @@ fn set_express_menu_label(window: tauri::WebviewWindow, express: bool) {
             "Express View"
         });
     }
+}
+
+/// Lists `paths` (newest first) under File > Open Recent. The menu bar is
+/// shared, so only the window in front sets it.
+#[cfg(desktop)]
+#[tauri::command]
+fn set_recent_menu(window: tauri::WebviewWindow, paths: Vec<String>) -> tauri::Result<()> {
+    if !window.is_focused().unwrap_or(false) {
+        return Ok(());
+    }
+    fn find<R: tauri::Runtime>(items: Vec<tauri::menu::MenuItemKind<R>>) -> Option<Submenu<R>> {
+        items.into_iter().find_map(|item| {
+            let submenu = item.as_submenu()?;
+            if item.id() == MENU_OPEN_RECENT {
+                return Some(submenu.clone());
+            }
+            find(submenu.items().ok()?)
+        })
+    }
+    let handle = window.app_handle();
+    let Some(submenu) = handle.menu().and_then(|menu| find(menu.items().ok()?)) else {
+        return Ok(());
+    };
+    for item in submenu.items()? {
+        submenu.remove(&item)?;
+    }
+    for path in &paths {
+        let name = Path::new(path)
+            .file_name()
+            .map_or(path.clone(), |name| name.to_string_lossy().into_owned());
+        let id = format!("{MENU_RECENT_PREFIX}{path}");
+        submenu.append(&MenuItem::with_id(handle, id, name, true, None::<&str>)?)?;
+    }
+    if !paths.is_empty() {
+        submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+    }
+    let clear = MenuItem::with_id(
+        handle,
+        MENU_CLEAR_RECENT,
+        "Clear Menu",
+        !paths.is_empty(),
+        None::<&str>,
+    )?;
+    submenu.append(&clear)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -799,7 +865,8 @@ pub fn run() {
             neuroflow::neuroflow_read_run,
             neuroflow::neuroflow_check_path,
             neuroflow::neuroflow_reveal,
-            set_express_menu_label
+            set_express_menu_label,
+            set_recent_menu
         ]);
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
