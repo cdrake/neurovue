@@ -15,6 +15,7 @@ export type NativeMenuAction =
   | 'pipelines'
   | 'clear-all'
   | 'clear-recent'
+  | 'controls'
 
 export type NativeMenuHandlers = Record<
   NativeMenuAction,

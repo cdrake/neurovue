@@ -32,9 +32,9 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(desktop)]
 use tauri::{Emitter, EventTarget};
 
-// File and View menu item ids. Each click is forwarded to the frontend as a
-// `neurovue-menu` event whose payload is the id minus its `file-` or `view-`
-// prefix (see `src/hooks/useNativeMenu.ts`).
+// File, View and Help menu item ids. Each click is forwarded to the frontend
+// as a `neurovue-menu` event whose payload is the id minus its `file-`,
+// `view-` or `help-` prefix (see `src/hooks/useNativeMenu.ts`).
 #[cfg(desktop)]
 const MENU_EVENT: &str = "neurovue-menu";
 #[cfg(desktop)]
@@ -64,6 +64,8 @@ const MENU_EXPRESS_VIEW: &str = "view-express-view";
 const MENU_PIPELINES: &str = "view-pipelines";
 #[cfg(desktop)]
 const MENU_CLEAR_ALL: &str = "view-clear-all";
+#[cfg(desktop)]
+const MENU_CONTROLS: &str = "help-controls";
 
 /// The label of the window NeuroVue opens at launch.
 const MAIN_WINDOW: &str = "main";
@@ -653,6 +655,23 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
             menu.append(&view_menu)?;
         }
     }
+    // Help: macOS's default has one (with the search field); others may not.
+    let controls = MenuItem::with_id(
+        handle,
+        MENU_CONTROLS,
+        "Mouse && Keyboard Controls",
+        true,
+        None::<&str>,
+    )?;
+    let existing_help = menu.items()?.into_iter().find_map(|item| {
+        item.as_submenu()
+            .filter(|submenu| submenu.text().is_ok_and(|text| text == "Help"))
+            .cloned()
+    });
+    match existing_help {
+        Some(help_menu) => help_menu.prepend(&controls)?,
+        None => menu.append(&Submenu::with_items(handle, "Help", true, &[&controls])?)?,
+    }
     Ok(menu)
 }
 
@@ -806,6 +825,7 @@ pub fn run() {
         if let Some(action) = id
             .strip_prefix("file-")
             .or_else(|| id.strip_prefix("view-"))
+            .or_else(|| id.strip_prefix("help-"))
         {
             // To the window in front only: each window has its own dataset.
             let focused = app
