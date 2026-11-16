@@ -240,6 +240,8 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
 
   // The runner: one tools/call in flight; each settled row re-renders and starts the next.
   const busy = useRef(false)
+  // Overlay loads still in flight; agents see the batch running until they land.
+  const loadingOutputs = useRef(0)
   const handle = useRef<RunHandle | null>(null)
   const cancelling = useRef(false)
   const batchEntry = useRef<CatalogEntry | null>(null)
@@ -288,6 +290,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
         if (structured.status === 'completed') {
           const p = latest.current
           // Not awaited: overlay loads mustn't hold the queue or fail the row.
+          loadingOutputs.current++
           void p
             .onRunOutputs(
               structured,
@@ -302,6 +305,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
             )
             .then(addReveals(row.key))
             .catch(() => {})
+            .finally(() => loadingOutputs.current--)
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e)
@@ -478,7 +482,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
         )
       return {
         pipeline: b.title,
-        running: isActive(b),
+        running: isActive(b) || loadingOutputs.current > 0,
         rows: b.rows.map((r) => {
           const f = r.run?.finished
           const s = f && 'structured' in f ? f.structured : null

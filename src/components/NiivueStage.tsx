@@ -4,6 +4,7 @@ import type {
   NiiVueLocation,
   UIKitOverlayRenderer,
 } from '@niivue/niivue'
+import { UIKitMagnifierOverlay } from '@niivue/uikit'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
@@ -679,6 +680,11 @@ export function NiivueStage({
     state: StageControlsState
     actions: StageControlsActions
   } | null>(null)
+  // The magnifying lens follows the pointer only while Magnify is on.
+  const [isMagnifying, setIsMagnifying] = useState(false)
+  const isMagnifyingRef = useRef(false)
+  isMagnifyingRef.current = isMagnifying
+  const magnifierRef = useRef<UIKitMagnifierOverlay | null>(null)
   const [status, setStatus] = useState('Waiting for a dataset selection.')
   // True only when the volume failed to load; routine progress stays hidden.
   const [isStatusError, setIsStatusError] = useState(false)
@@ -798,6 +804,9 @@ export function NiivueStage({
     let detachPointLabels: (() => void) | null = null
     let stageControls: StageControls | null = null
     let detachStageControls: (() => void) | null = null
+    let magnifier: UIKitMagnifierOverlay | null = null
+    let unregisterMagnifier: (() => void) | null = null
+    let detachMagnifier: (() => void) | null = null
 
     // Draw annotations with uikit once its font is in. Core's own annotation
     // draw stays on until then, and stays as the fallback if the font fails.
@@ -818,9 +827,20 @@ export function NiivueStage({
           nv.isAnnotationDrawn = false
           setMeasureUnavailable(null)
           detachPointLabels = attachPointLabels(nv, font)
-          // The stage's controls go last, so they draw over everything.
           const clientToCanvas = nv.clientToCanvas
           if (clientToCanvas) {
+            // Registered before the controls so the lens never covers them;
+            // off, the host reports the pointer outside and the lens hides.
+            magnifier = new UIKitMagnifierOverlay()
+            unregisterMagnifier = register.call(nv, magnifier)
+            detachMagnifier = magnifier.attach({
+              canvas: nv.canvas ?? null,
+              clientToCanvas: (x, y) =>
+                isMagnifyingRef.current ? clientToCanvas.call(nv, x, y) : null,
+              drawScene: () => nv.drawScene(),
+            })
+            magnifierRef.current = magnifier
+            // The stage's controls go last, so they draw over everything.
             stageControls = new StageControls(font)
             detachStageControls = stageControls.attach(
               {
@@ -871,6 +891,9 @@ export function NiivueStage({
 
         const nv = new loaded.NiiVue({
           backend,
+          // Anti-aliasing is on by default, and about 4x slower on WebKit's
+          // WebGPU (niivue #381).
+          isAntiAlias: backend !== 'webgpu',
           backgroundColor: [0.02, 0.024, 0.018, 1],
           clipPlaneColor: [0.95, 0.2, 0.12, 0.7],
           isResizeCanvas: true,
@@ -993,6 +1016,10 @@ export function NiivueStage({
       detachPointLabels?.()
       detachStageControls?.()
       stageControls?.destroy()
+      detachMagnifier?.()
+      unregisterMagnifier?.()
+      magnifier?.destroy()
+      if (magnifierRef.current === magnifier) magnifierRef.current = null
       if (stageControlsRef.current === stageControls) {
         stageControlsRef.current = null
       }
@@ -1859,6 +1886,7 @@ export function NiivueStage({
   const showClipControl = isRenderMode && enabledClipPlanes.length > 0
 
   const stageControlsState: StageControlsState = {
+    magnify: primaryItem ? isMagnifying : null,
     viewModes: VIEW_MODES.map((mode) => ({
       id: mode.id,
       label: mode.shortLabel,
@@ -1954,6 +1982,7 @@ export function NiivueStage({
       const preset = SHADING_PRESETS.find((candidate) => candidate.id === id)
       if (preset) onShadingChange(preset.shading)
     },
+    magnify: () => setIsMagnifying((on) => !on),
     measure: () => toggleMode('measure'),
     measureTool: setMeasureTool,
     clearMeasurements: () => clearAnnotationGroup('measure'),
@@ -1994,6 +2023,10 @@ export function NiivueStage({
     state: stageControlsState,
     actions: stageControlsActions,
   }
+  // Turning Magnify off hides a lens still showing under the pointer.
+  useEffect(() => {
+    if (!isMagnifying) magnifierRef.current?.pointerMove(-1, -1)
+  }, [isMagnifying])
   // Every render: the controls skip a redraw when nothing they show changed.
   useEffect(() => {
     const input = stageControlsInputRef.current

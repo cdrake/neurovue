@@ -299,8 +299,19 @@ interface LayerSettings {
 /** Resolves after `count` animation frames, once React's updates have laid out. */
 function nextFrames(count: number): Promise<void> {
   return new Promise((resolve) => {
-    const step = (left: number) =>
-      left === 0 ? resolve() : requestAnimationFrame(() => step(left - 1))
+    const step = (left: number) => {
+      if (left === 0) return resolve()
+      // WebKit pauses rAF while the window is offscreen; the timer keeps agent calls from hanging.
+      let done = false
+      const next = () => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        step(left - 1)
+      }
+      const timer = setTimeout(next, 100)
+      requestAnimationFrame(next)
+    }
     step(count)
   })
 }
