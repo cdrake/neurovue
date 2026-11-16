@@ -737,3 +737,15 @@ because bundle filenames are pre-uniquified).
 
 - [ ] Prune merged remote feature branches on origin
   (`git push origin --delete <branch> …`).
+
+## Bugs found 2026-11-16
+
+- [ ] **[P1] (S) `.trk` with LAS voxel order is misplaced.** A DIPY tractogram
+  (`voxel_order` LAS, `vox_to_ras` with -2.2 in x) loads shifted to the left of
+  the FA volume it was tracked on. The same streamlines saved as `.tck` (plain
+  RASmm) line up. Likely the TRK reader in NiiVue applying the voxel-order flip
+  wrong. Repro: `~/Documents/melissa_2026-11-13_bids/derivatives/neuroflow/
+  sub-melissa/ses-20261113/dwi/*_tractography.trk` over the `trackingfa` map.
+  Cause: NiiVue's TRK reader built `zoom · vox_to_ras` instead of
+  `vox_to_ras · zoom` (any non-1 mm voxels). Fixed in niivue/mono
+  `fix/trk-vox2ras` (62b888f5); close once a niivue rc with it is in package.json.
