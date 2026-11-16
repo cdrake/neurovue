@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 const RECENT_DATASETS_KEY = 'neurovue.recentDatasets.v1'
 const MAX_RECENT_DATASETS = 10
@@ -99,6 +99,7 @@ export interface RecentDatasets {
   promoteRecent: (path: string) => void
   /** Drop `path` from the recents list (and persist). */
   removeRecent: (path: string) => void
+  clearRecents: () => void
   /** One-time cleanup of pre-fix entries pointing into `<cacheRoot>/imports/`. */
   pruneExtractedBundleDirs: (cacheRoot: string) => void
   /** Move iOS entries into the current container and drop ones in its tmp. */
@@ -136,6 +137,20 @@ export function useRecentDatasets(): RecentDatasets {
     )
   }
 
+  // Another window changed the list; its own state would otherwise be stale.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === RECENT_DATASETS_KEY)
+        setRecentDatasets(loadRecentDatasets())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  function clearRecents(): void {
+    setRecentDatasets(persistRecentDatasets([]))
+  }
+
   // Stable identity, and returns `previous` untouched when there's nothing to
   // drop — otherwise the caller's effect would loop on a fresh array each render.
   const pruneExtractedBundleDirs = useCallback((cacheRoot: string): void => {
@@ -168,6 +183,7 @@ export function useRecentDatasets(): RecentDatasets {
     recentDatasets,
     promoteRecent,
     removeRecent,
+    clearRecents,
     pruneExtractedBundleDirs,
     rebaseContainerPaths,
     reopenLast,

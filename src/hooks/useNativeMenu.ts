@@ -14,11 +14,15 @@ export type NativeMenuAction =
   | 'share'
   | 'pipelines'
   | 'clear-all'
+  | 'clear-recent'
 
 export type NativeMenuHandlers = Record<
   NativeMenuAction,
   () => void | Promise<void>
->
+> & { 'open-recent': (path: string) => void | Promise<void> }
+
+// File > Open Recent entries send `recent:<path>` (see `set_recent_menu`).
+const RECENT_PREFIX = 'recent:'
 
 /**
  * Routes clicks in the desktop File and View menus to the same handlers the toolbar
@@ -40,6 +44,12 @@ export function useNativeMenu(handlers: NativeMenuHandlers): void {
     void Promise.resolve()
       .then(() =>
         getCurrentWebviewWindow().listen<string>('neurovue-menu', (event) => {
+          if (event.payload.startsWith(RECENT_PREFIX)) {
+            void handlersRef.current['open-recent'](
+              event.payload.slice(RECENT_PREFIX.length),
+            )
+            return
+          }
           const handler = handlersRef.current[event.payload as NativeMenuAction]
           if (handler) void handler()
         }),
@@ -85,10 +95,21 @@ export const EXPRESS_VIEW_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
  * window, so each one renames it when it comes to the front.
  */
 export function useExpressMenuLabel(express: boolean): void {
+  useFocusedMenuSync('set_express_menu_label', { express })
+}
+
+/** Keeps File > Open Recent listing `paths`, as useExpressMenuLabel does its label. */
+export function useRecentMenu(paths: string[]): void {
+  useFocusedMenuSync('set_recent_menu', { paths })
+}
+
+/** Runs a menu command now and whenever this window comes to the front. */
+function useFocusedMenuSync(command: string, args: Record<string, unknown>) {
+  const key = JSON.stringify(args)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` stands for `args`, a fresh object every render.
   useEffect(() => {
-    // No such command on mobile or in a plain browser; nothing to rename.
-    const sync = () =>
-      invoke('set_express_menu_label', { express }).catch(() => {})
+    // No such command on mobile or in a plain browser; nothing to sync.
+    const sync = () => invoke(command, args).catch(() => {})
     void sync()
     let unlisten: (() => void) | null = null
     let cancelled = false
@@ -107,5 +128,5 @@ export function useExpressMenuLabel(express: boolean): void {
       cancelled = true
       unlisten?.()
     }
-  }, [express])
+  }, [command, key])
 }

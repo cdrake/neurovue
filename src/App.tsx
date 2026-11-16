@@ -172,6 +172,7 @@ import {
   EXPRESS_VIEW_SHORTCUT,
   useExpressMenuLabel,
   useNativeMenu,
+  useRecentMenu,
 } from './hooks/useNativeMenu'
 import {
   isInContainerTemp,
@@ -375,6 +376,7 @@ export function App(): JSX.Element {
     recentDatasets,
     promoteRecent,
     removeRecent,
+    clearRecents,
     pruneExtractedBundleDirs,
     rebaseContainerPaths,
     reopenLast,
@@ -1288,6 +1290,7 @@ export function App(): JSX.Element {
   }
 
   useExpressMenuLabel(isExpress)
+  useRecentMenu(recentDatasets)
   useNativeMenu({
     'express-view': toggleUiMode,
     'open-file': openLocalVolumeFile,
@@ -1309,6 +1312,8 @@ export function App(): JSX.Element {
       showLeftPane('pipelines')
     },
     'clear-all': clearAll,
+    'clear-recent': clearRecents,
+    'open-recent': (path) => void openRecentEntry(path),
   })
 
   // The live NiiVue instance for agent tools, set once its volumes load.
