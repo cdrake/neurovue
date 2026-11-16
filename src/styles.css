@@ -3302,3 +3302,105 @@ button {
   background: none;
   cursor: pointer;
 }
+
+/* Says what the wheel does in the 3D view, where you scroll; with a clip plane
+   bound, a click hands the wheel back to zoom. */
+.nv-wheel-badge {
+  position: absolute;
+  /* Above the colorbar; the other corners hold the title, the viewer's own
+     toolbar, the view switch and the orientation cube. */
+  right: 14px;
+  bottom: 52px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-3) 82%, transparent);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+
+.nv-wheel-badge.is-plane {
+  border-color: var(--amber);
+  color: var(--amber);
+  cursor: pointer;
+}
+
+.nv-wheel-badge.is-plane:hover,
+.nv-wheel-badge.is-plane:focus-visible {
+  background: var(--panel-2);
+  outline: none;
+}
+
+.nv-controls-help {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: 16px 20px 20px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.nv-controls-help::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.nv-controls-help header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nv-controls-help h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 16px;
+}
+
+.nv-controls-hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.nv-controls-help h3 {
+  margin: 16px 0 6px;
+  color: var(--amber);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.nv-controls-help h3 small {
+  margin-left: 8px;
+  color: var(--faint);
+  text-transform: none;
+}
+
+.nv-controls-help dl {
+  margin: 0;
+}
+
+.nv-controls-help dl > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 40%) 1fr;
+  gap: 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.nv-controls-help dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+.nv-controls-help kbd {
+  font-family: inherit;
+  white-space: pre;
+}

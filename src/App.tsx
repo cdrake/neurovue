@@ -21,6 +21,7 @@ import {
   FolderOpen,
   GripHorizontal,
   GripVertical,
+  Keyboard,
   Layers,
   LayoutPanelLeft,
   LoaderCircle,
@@ -63,6 +64,11 @@ import {
   useState,
 } from 'react'
 import neurovueIconUrl from '../src-tauri/icons/neurovue-icon.svg?url'
+import {
+  ControlsHelp,
+  useControlsHelpKey,
+  WheelBadge,
+} from './components/ControlsHelp'
 import {
   DatasetDesktop,
   MAX_DESKTOP_ZOOM,
@@ -1290,6 +1296,8 @@ export function App(): JSX.Element {
   }
 
   useExpressMenuLabel(isExpress)
+  const [isControlsHelpOpen, setIsControlsHelpOpen] = useState(false)
+  useControlsHelpKey(() => setIsControlsHelpOpen((open) => !open))
   useRecentMenu(recentDatasets)
   useNativeMenu({
     'express-view': toggleUiMode,
@@ -1313,6 +1321,7 @@ export function App(): JSX.Element {
     },
     'clear-all': clearAll,
     'clear-recent': clearRecents,
+    controls: () => setIsControlsHelpOpen(true),
     'open-recent': (path) => void openRecentEntry(path),
   })
 
@@ -2219,6 +2228,15 @@ export function App(): JSX.Element {
             <LayoutPanelLeft size={15} />
             <span>{isExpress ? 'Dataset' : 'Express'}</span>
           </button>
+          <button
+            aria-label="Mouse and keyboard controls"
+            className="nv-icon-button"
+            onClick={() => setIsControlsHelpOpen(true)}
+            title="Mouse & keyboard controls (?)"
+            type="button"
+          >
+            <Keyboard size={16} />
+          </button>
           {isTerminalAvailable && !isExpress ? (
             <button
               aria-label="Python terminal"
@@ -2254,6 +2272,10 @@ export function App(): JSX.Element {
           )}
         </fieldset>
       </header>
+      <ControlsHelp
+        open={isControlsHelpOpen}
+        onClose={() => setIsControlsHelpOpen(false)}
+      />
 
       {showWelcome ? (
         <WelcomeScreen
@@ -2486,6 +2508,16 @@ export function App(): JSX.Element {
                     <Maximize2 size={16} />
                   )}
                 </button>
+                {viewMode === 'render' && selected ? (
+                  <WheelBadge
+                    planeLabel={
+                      renderWheelMode === 'clip-plane'
+                        ? activeClipPlane?.label
+                        : undefined
+                    }
+                    onZoom={() => setRenderWheelMode('zoom')}
+                  />
+                ) : null}
                 <NiivueStage
                   activeClipPlaneId={activeClipPlaneId}
                   backend={backend}

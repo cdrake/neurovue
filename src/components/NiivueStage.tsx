@@ -54,6 +54,7 @@ import {
   sliceIndexAt,
 } from '../domain/svgExport'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
+import { isEditableTarget } from './ControlsHelp'
 
 // The window NiiVue actually applied for a layer, plus the volume's robust
 // range (the "no threshold" target for a show-all reset).
@@ -2365,12 +2366,6 @@ const SLICE_AXIS_INDEX: Partial<Record<ViewModeId, number>> = {
   axial: 2,
   coronal: 1,
   sagittal: 0,
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  return ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)
 }
 
 async function loadRenderVolumeLods({
