@@ -24,7 +24,7 @@
     "@medview/neuroflow-react": "^0.1.0",
     "@niivue/niivue": "^1.0.0-rc.219",
     "@niivue/nv-mcp": "1.0.0-rc.199",
-    "@niivue/uikit": "^1.0.0-rc.217",
+    "@niivue/uikit": "^1.0.0-rc.219",
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@xterm/addon-fit": "^0.11.0",
