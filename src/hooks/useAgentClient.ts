@@ -2,6 +2,10 @@ import type { Handlers, NiiVueHost } from '@niivue/nv-mcp/browser'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useRef, useState } from 'react'
+import {
+  type ConsoleLevel,
+  read as readConsole,
+} from '../domain/consoleCapture'
 import { setPointLabels } from '../domain/pointLabels'
 import { stageControlSurface } from '../domain/stageControlSurface'
 import type { VolumeFilterValues } from './useVolumeFilters'
@@ -281,6 +285,15 @@ function neuroVueHandlers(actions: () => NeuroVueAgentActions): Handlers {
       })
     },
     'neurovue.pipeline_status': async () => actions().pipelineStatus(),
+    'neurovue.console_log': async (params) =>
+      readConsole({
+        levels: Array.isArray(params.levels)
+          ? (params.levels as ConsoleLevel[])
+          : undefined,
+        since: typeof params.since === 'number' ? params.since : undefined,
+        limit: typeof params.limit === 'number' ? params.limit : 100,
+        clear: params.clear === true,
+      }),
     'neurovue.focus_window': async () => {
       const focused = await invoke<string>('focus_window')
       await untilVisible()
