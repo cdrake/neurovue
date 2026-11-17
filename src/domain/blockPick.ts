@@ -5,6 +5,8 @@
 // source file's own affine to cut the block out at full resolution, whatever
 // pyramid level the viewer happens to hold.
 
+import type { SubVolumeBox } from '@niivue/niivue'
+
 /** NiiVue's answer to a tap on an exploded brick (its `ExplodedBlockPick`). */
 export interface ExplodedBlockPick {
   volumeIndex: number
@@ -106,6 +108,26 @@ export function blockSelectionFromPick(
     mm: pick.mm,
     cornersMM: blockCornersMM(matRAS, pick.voxelOrigin, pick.voxelDims),
     voxelDims: pick.voxelDims,
+  }
+}
+
+/** The selection a sub-volume box of `itemId`'s base volume describes. */
+export function blockSelectionFromBox(
+  itemId: string,
+  box: SubVolumeBox,
+  matRAS: ArrayLike<number>,
+): BlockSelection {
+  return {
+    itemId,
+    // Not a brick of the chunk plan.
+    chunkIndex: -1,
+    mm: [0, 1, 2].map((axis) => (box.minMM[axis] + box.maxMM[axis]) / 2) as [
+      number,
+      number,
+      number,
+    ],
+    cornersMM: blockCornersMM(matRAS, box.voxelOrigin, box.voxelDims),
+    voxelDims: box.voxelDims,
   }
 }
 

@@ -40,7 +40,8 @@ const SECTIONS: readonly { title: string; note?: string; rows: Row[] }[] = [
     title: 'Everywhere',
     rows: [
       ['Wheel on the dataset desktop', 'Zoom the thumbnails'],
-      ['Esc', 'Leave full screen, measure or shapes'],
+      ['Box, then right-click twice', 'Cut out the box between the clicks'],
+      ['Esc', 'Leave full screen, measure, shapes or box'],
       ['?', 'This sheet'],
     ],
   },

@@ -74,7 +74,8 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
       segmented('look', 'Look', state.look.presets, state.look.value),
     )
   }
-  const { measure, shapes, draw } = state
+  const { box, measure, shapes, draw } = state
+  if (box) controls.push(toggle('box', 'Box', box.active, box.enabled))
   if (measure) {
     controls.push(
       toggle('measure', 'Measure', measure.active, measure.enabled),
@@ -215,7 +216,8 @@ export function setStageControl(
       }
       // The stage's tool buttons toggle, so press only to change.
       if (value !== control.value) {
-        if (id === 'measure') actions.measure()
+        if (id === 'box') actions.box()
+        else if (id === 'measure') actions.measure()
         else if (id === 'shapes') actions.shapes()
         else if (id === 'draw') actions.draw()
       }

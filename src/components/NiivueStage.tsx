@@ -4,7 +4,11 @@ import type {
   NiiVueLocation,
   UIKitOverlayRenderer,
 } from '@niivue/niivue'
-import { UIKitMagnifierOverlay } from '@niivue/uikit'
+import {
+  type SubvolumeSelectorHost,
+  UIKitMagnifierOverlay,
+  UIKitSubvolumeSelector,
+} from '@niivue/uikit'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
@@ -15,6 +19,7 @@ import {
 } from 'react'
 import {
   type BlockSelection,
+  blockSelectionFromBox,
   blockSelectionFromPick,
   boundingBox,
   type ExplodedBlockPick,
@@ -713,7 +718,7 @@ export function NiivueStage({
   // default so a click still moves the crosshair.
   // One of measure, shapes and draw at a time; each keeps its picked tool.
   const [toolMode, setToolMode] = useState<
-    'measure' | 'shapes' | 'draw' | null
+    'measure' | 'shapes' | 'draw' | 'box' | null
   >(null)
   const isMeasuring = toolMode === 'measure'
   const [measureTool, setMeasureTool] = useState<string>(MEASURE_TOOLS[0].id)
@@ -1301,9 +1306,10 @@ export function NiivueStage({
     })
   }, [isDrawActive])
 
-  // From the 3D render, drawing or shaping starts on one big axial slice.
-  function toggleMode(next: 'measure' | 'shapes' | 'draw'): void {
-    if (isRenderMode) {
+  // From the 3D render, drawing or shaping starts on one big axial slice; a
+  // box can be picked in either.
+  function toggleMode(next: 'measure' | 'shapes' | 'draw' | 'box'): void {
+    if (isRenderMode && next !== 'box') {
       onViewModeChange('axial')
       setToolMode(next)
       return
@@ -1330,8 +1336,9 @@ export function NiivueStage({
     if (drawing instanceof Uint8Array) onSendDrawing?.(drawing)
   }
 
-  // Escape leaves measure or shapes, like finishing with any other tool.
-  const isAnnotating = isMeasureActive || isShapesActive
+  const isBoxActive = toolMode === 'box' && loadedVersion > 0
+  // Escape leaves measure, shapes or box, like finishing with any other tool.
+  const isAnnotating = isMeasureActive || isShapesActive || isBoxActive
   useEffect(() => {
     if (!isAnnotating) return
     function onKeyDown(event: KeyboardEvent): void {
@@ -1526,6 +1533,31 @@ export function NiivueStage({
   const isBlockPickable =
     blocksAreTiled(blocks) && !isDrawActive && !isShapesActive && !isMeasuring
   const baseItemId = layers[0]?.item.id ?? null
+
+  // Box: two right-clicks span a sub-volume, which is then cut out of the
+  // full-resolution source and shown, as a double-tapped brick is. It owns
+  // the right button (contrast, clip plane) while on.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion re-attaches to a fresh instance.
+  useEffect(() => {
+    const nv = nvRef.current
+    const matRAS = nv?.volumes?.[0]?.matRAS
+    if (!isBoxActive || !nv || !baseItemId || !matRAS) return
+    const selector = new UIKitSubvolumeSelector({
+      onSelect: (box) => {
+        setToolMode(null)
+        onBlockViewRef.current?.(blockSelectionFromBox(baseItemId, box, matRAS))
+      },
+    })
+    // The live NiiVue instance; NiiVueLike types only what the stage uses.
+    const detach = selector.attach(nv as unknown as SubvolumeSelectorHost)
+    const unregister = nv.registerOverlayRenderer?.(selector)
+    return () => {
+      detach()
+      unregister?.()
+      nv.drawScene()
+    }
+  }, [isBoxActive, baseItemId, loadedVersion])
+
   useEffect(() => {
     const stage = stageRef.current
     if (!stage || !isBlockPickable || !baseItemId) return
@@ -1888,6 +1920,10 @@ export function NiivueStage({
 
   const stageControlsState: StageControlsState = {
     magnify: primaryItem ? isMagnifying : null,
+    box:
+      primaryItem && onBlockView
+        ? { active: isBoxActive, enabled: loadedVersion > 0 }
+        : null,
     viewModes: VIEW_MODES.map((mode) => ({
       id: mode.id,
       label: mode.shortLabel,
@@ -1984,6 +2020,7 @@ export function NiivueStage({
       if (preset) onShadingChange(preset.shading)
     },
     magnify: () => setIsMagnifying((on) => !on),
+    box: () => toggleMode('box'),
     measure: () => toggleMode('measure'),
     measureTool: setMeasureTool,
     clearMeasurements: () => clearAnnotationGroup('measure'),
