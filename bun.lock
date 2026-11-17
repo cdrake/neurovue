@@ -6,7 +6,7 @@
       "name": "neurovue",
       "dependencies": {
         "@medview/neuroflow-react": "^0.1.0",
-        "@niivue/niivue": "^1.0.0-rc.219",
+        "@niivue/niivue": "1.0.0-rc.221",
         "@niivue/nv-mcp": "1.0.0-rc.199",
         "@niivue/uikit": "^1.0.0-rc.219",
         "@tauri-apps/api": "~2.11.0",
@@ -165,7 +165,7 @@
 
     "@napi-rs/lzma-linux-x64-gnu": ["@napi-rs/lzma-linux-x64-gnu@1.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ=="],
 
-    "@niivue/niivue": ["@niivue/niivue@1.0.0-rc.219", "", { "dependencies": { "cbor-x": "^1.6.0", "clipper2-ts": "^2.0.1-13", "earcut": "^3.0.2", "gl-matrix": "^3.4.4", "nifti-reader-js": "^0.8.1" }, "peerDependencies": { "@webgpu/types": ">=0.1.69" } }, "sha512-XLB5E6UFr10JNwXZNPMPWVY1t1ktksECqDf61upmBR97oWJq9RNI2bHqsxCM9Y+bHrHgZF5hXxwi8f/OMjYCxg=="],
+    "@niivue/niivue": ["@niivue/niivue@1.0.0-rc.221", "", { "dependencies": { "cbor-x": "^1.6.0", "clipper2-ts": "^2.0.1-13", "earcut": "^3.0.2", "gl-matrix": "^3.4.4", "nifti-reader-js": "^0.8.1" }, "peerDependencies": { "@webgpu/types": ">=0.1.69" } }, "sha512-4jXSb88haLfhZj5ShuqQNibosaEh+9wXHlaxb5mDjPw07ToyH3Tws5iQbMnR+WbiRfCqv1v/ysn3Y1QxGzuptQ=="],
 
     "@niivue/nv-mcp": ["@niivue/nv-mcp@1.0.0-rc.199", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "zod": "^4.6.5" }, "peerDependencies": { "@niivue/niivue": "1.0.0-rc.204", "@niivue/uikit": "1.0.0-rc.202" }, "optionalPeers": ["@niivue/niivue", "@niivue/uikit"] }, "sha512-pZy0MvE56WlALaXrTOYM/KZn2NvbGo86axi2+KDMqX8prdoDc8abyj/p+OZx/d4I3nvUbbrL/WtkP7uKTZJ/FQ=="],
 
