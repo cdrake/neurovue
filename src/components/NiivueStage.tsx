@@ -837,15 +837,28 @@ export function NiivueStage({
           if (clientToCanvas) {
             // Registered before the controls so the lens never covers them;
             // off, the host reports the pointer outside and the lens hides.
-            magnifier = new UIKitMagnifierOverlay()
-            unregisterMagnifier = register.call(nv, magnifier)
-            detachMagnifier = magnifier.attach({
-              canvas: nv.canvas ?? null,
-              clientToCanvas: (x, y) =>
-                isMagnifyingRef.current ? clientToCanvas.call(nv, x, y) : null,
-              drawScene: () => nv.drawScene(),
+            const lens = new UIKitMagnifierOverlay({
+              // A press exits the lens and unwires it: untick Magnify and
+              // wire it again, idle, for the next time it is turned on.
+              onExit: () => {
+                isMagnifyingRef.current = false
+                setIsMagnifying(false)
+                detachMagnifier = wireLens()
+              },
             })
-            magnifierRef.current = magnifier
+            const wireLens = (): (() => void) =>
+              lens.attach({
+                canvas: nv.canvas ?? null,
+                clientToCanvas: (x, y) =>
+                  isMagnifyingRef.current
+                    ? clientToCanvas.call(nv, x, y)
+                    : null,
+                drawScene: () => nv.drawScene(),
+              })
+            magnifier = lens
+            unregisterMagnifier = register.call(nv, lens)
+            detachMagnifier = wireLens()
+            magnifierRef.current = lens
             // The stage's controls go last, so they draw over everything.
             stageControls = new StageControls(font)
             detachStageControls = stageControls.attach(
