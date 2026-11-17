@@ -8,6 +8,7 @@
 import type { ToolReply } from '@niivue/nv-mcp/server'
 import type { ZodType } from 'zod'
 import addOverlayPath from './tools/add-overlay-path.neuroflow.json'
+import consoleLog from './tools/console-log.neuroflow.json'
 import dataset from './tools/dataset.neuroflow.json'
 import filterDataset from './tools/filter-dataset.neuroflow.json'
 import focusWindow from './tools/focus-window.neuroflow.json'
@@ -72,6 +73,7 @@ export const DOCUMENTS = {
   listPipelines,
   runPipeline,
   pipelineStatus,
+  consoleLog,
 } satisfies Record<string, ToolDocument>
 
 /** The MCP tool name of each document, by id, for `instead`. */

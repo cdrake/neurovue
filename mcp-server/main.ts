@@ -183,6 +183,19 @@ const neurovue: Extension = {
       context.answer('neurovue.focus_window', {}, { tab }),
     )
 
+    register(
+      server,
+      DOCUMENTS.consoleLog,
+      {
+        levels: z.array(z.enum(['log', 'info', 'warn', 'error', 'gpu'])),
+        since: z.number(),
+        limit: z.number().int().min(1).max(500),
+        clear: z.boolean(),
+      },
+      ({ tab, ...query }) =>
+        context.answer('neurovue.console_log', query, { tab }),
+    )
+
     register(server, DOCUMENTS.listDevices, {}, ({ tab }) =>
       context.answer('neurovue.list_devices', {}, { tab }),
     )

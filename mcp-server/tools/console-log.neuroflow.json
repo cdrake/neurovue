@@ -1,0 +1,63 @@
+{
+  "$schema": "https://niivue.github.io/neuroflow-spec/schemas/0.1/tool.schema.json",
+  "neuroflow": "0.1.1",
+  "kind": "tool",
+  "id": "org.neurovue/console-log",
+  "version": "1.0.0",
+  "description": "Reads a NeuroVue window's recent console output and WebGPU errors (uncaptured validation errors and device loss), newest last, from a buffer of the last 500 entries.",
+  "inputs": {
+    "levels": {
+      "type": "core:array<core:string>",
+      "description": "Only these levels: log, info, warn, error, or gpu (WebGPU errors). All otherwise.",
+      "optional": true
+    },
+    "since": {
+      "type": "core:number",
+      "description": "Only entries at or after this time, in milliseconds since the epoch; a previous answer's now reads only what came after it.",
+      "optional": true
+    },
+    "limit": {
+      "type": "core:number",
+      "description": "At most this many entries, the newest. 100 otherwise.",
+      "optional": true
+    },
+    "clear": {
+      "type": "core:boolean",
+      "description": "Empty the buffer after reading.",
+      "optional": true
+    }
+  },
+  "outputs": {
+    "entries": {
+      "type": "core:json",
+      "description": "Each entry's time (ms since the epoch), level and text."
+    },
+    "dropped": {
+      "type": "core:number",
+      "description": "Entries pushed out of the buffer since it was last cleared."
+    },
+    "now": {
+      "type": "core:number",
+      "description": "The page's time when it answered, for the next call's since."
+    }
+  },
+  "extensions": {
+    "neuroflow/mcp": {
+      "name": "console_log",
+      "title": "Read a NeuroVue window's console and WebGPU errors",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    "neuroflow/usage": {
+      "useWhen": [
+        "A render goes blank or wrong and you want the WebGPU validation errors behind it.",
+        "Check what a change logged: take now from one call, make the change, then read with since."
+      ],
+      "effects": ["None, unless clear is set."]
+    }
+  }
+}
