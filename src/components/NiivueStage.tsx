@@ -1790,6 +1790,8 @@ export function NiivueStage({
   }
 
   function handleWheelCapture(event: ReactWheelEvent<HTMLDivElement>): void {
+    // The lens zooms itself on the wheel (at the canvas, after this capture).
+    if (isMagnifyingRef.current) return
     clearSnapSelection()
     const nv = nvRef.current
     if (!nv) return
@@ -1866,7 +1868,13 @@ export function NiivueStage({
       x: event.clientX,
       y: event.clientY,
     })
-    if (pinchPointers.current.size !== 2 || !isRenderMode) return
+    // The lens owns the pinch while Magnify is on.
+    if (
+      pinchPointers.current.size !== 2 ||
+      !isRenderMode ||
+      isMagnifyingRef.current
+    )
+      return
     const span = pinchSpan()
     const previous = pinchDistance.current
     if (!span || !previous) return
