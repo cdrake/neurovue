@@ -121,6 +121,14 @@ button {
   justify-content: flex-start;
   padding: 0 14px;
   box-shadow: none;
+  /* Darker than the top bar by day so the amber/green/red notes keep ~4:1. */
+  background:
+    linear-gradient(100deg, rgb(var(--day-tint) / 0.18), transparent 75%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, #46442f var(--day-pct), #10121c),
+      color-mix(in srgb, #3a3827 var(--day-pct), #0a0b12)
+    );
 }
 
 .nv-send-offer {
@@ -177,7 +185,7 @@ button {
 
 /* Errors stay put until the next action, so make them read as errors. */
 .nv-status .nv-status-message.is-error {
-  color: var(--danger);
+  color: color-mix(in srgb, #f49a88 var(--day-pct), var(--danger));
   font-weight: 600;
 }
 
