@@ -128,13 +128,14 @@ function niimathTag(): string | undefined {
 type Final = 'success' | 'failure' | 'error'
 let final: Final | undefined // unset: no public status yet
 const started = Date.now()
+const ref = `refs/remotes/local-macos/${pr}`
 try {
   if (
     !run([
       'git',
       'fetch',
       `https://github.com/${REPO}.git`,
-      `+pull/${pr}/head:refs/remotes/local-macos/${pr}`,
+      `+pull/${pr}/head:${ref}`,
     ])
   )
     throw new Error('fetch failed')
@@ -168,6 +169,8 @@ try {
 } catch (e) {
   console.error(`local-macos: ${(e as Error).message}`)
 }
+// Only the fetch needs it; a kept worktree's HEAD keeps the commit.
+run(['git', 'update-ref', '-d', ref])
 let ok = final === 'success'
 if (ok) run(['git', 'worktree', 'remove', '--force', dir])
 else console.error(`local-macos: worktree kept for the logs at ${dir}`)
