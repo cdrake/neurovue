@@ -121,13 +121,13 @@ button {
   justify-content: flex-start;
   padding: 0 14px;
   box-shadow: none;
-  /* Darker than the top bar by day so the amber/green/red notes keep ~4:1. */
+  /* Stays dark by day, like the cards, so the amber/green/red notes keep contrast. */
   background:
-    linear-gradient(100deg, rgb(var(--day-tint) / 0.18), transparent 75%),
+    linear-gradient(100deg, rgb(var(--day-tint) / 0.12), transparent 60%),
     linear-gradient(
       180deg,
-      color-mix(in srgb, #46442f var(--day-pct), #10121c),
-      color-mix(in srgb, #3a3827 var(--day-pct), #0a0b12)
+      color-mix(in srgb, #1d1e18 var(--day-pct), #10121c),
+      color-mix(in srgb, #151611 var(--day-pct), #0a0b12)
     );
 }
 
@@ -185,7 +185,7 @@ button {
 
 /* Errors stay put until the next action, so make them read as errors. */
 .nv-status .nv-status-message.is-error {
-  color: color-mix(in srgb, #f49a88 var(--day-pct), var(--danger));
+  color: var(--danger);
   font-weight: 600;
 }
 
