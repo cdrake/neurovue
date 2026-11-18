@@ -3555,10 +3555,6 @@ fn peek_nifti_header_bytes(path: &FsPath) -> Option<[u8; 348]> {
     Some(header_bytes)
 }
 
-fn peek_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
-    parse_nifti_header(&peek_nifti_header_bytes(path)?)
-}
-
 /// Frames beyond the spatial dims: the product of dim[4..=dim[0]] (time,
 /// components, ...), at least 1. A 4D file is read whole, so neurovue-web
 /// counts these toward the voxel ceiling; the desktop app counts one frame,
