@@ -104,7 +104,7 @@ const targetDir = join(homedir(), 'Library/Caches/neurovue-local-macos/target')
 const dmgDir = join(targetDir, TARGET, 'release/bundle/dmg')
 const env: Record<string, string | undefined> = {
   ...process.env,
-  CI: '1',
+  CI: 'true', // tauri's --ci parses true|false, as GitHub sets it
   CARGO_TARGET_DIR: targetDir,
 }
 // Keeps tokens out of the PR's environment, and signing off like CI.
