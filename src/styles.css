@@ -6,8 +6,6 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --ink: #f0eee2;
-  --muted: #a6a18f;
-  --faint: #928c79;
   --panel: #181914;
   --panel-2: #202117;
   --panel-3: #12130f;
@@ -23,10 +21,13 @@
   --day-light: 1;
   /* Chrome base, from near-black blue at night to a lit olive at midday. */
   --day-pct: calc(var(--day-light) * 100%);
-  --day-bg-top: color-mix(in srgb, #3b3c2c var(--day-pct), #0a0c16);
-  --day-bg-bottom: color-mix(in srgb, #1d1e15 var(--day-pct), #030409);
-  --day-bar-top: color-mix(in srgb, #34352a var(--day-pct), #10121c);
-  --day-bar-bottom: color-mix(in srgb, #25261d var(--day-pct), #0a0b12);
+  --day-bg-top: color-mix(in srgb, #66634a var(--day-pct), #0a0c16);
+  --day-bg-bottom: color-mix(in srgb, #3c3b2b var(--day-pct), #030409);
+  --day-bar-top: color-mix(in srgb, #5c5a43 var(--day-pct), #10121c);
+  --day-bar-bottom: color-mix(in srgb, #48472f var(--day-pct), #0a0b12);
+  /* Secondary text lightens by day to keep ~4:1 on the lit base. */
+  --muted: color-mix(in srgb, #dcd7c5 var(--day-pct), #a6a18f);
+  --faint: color-mix(in srgb, #c2bca7 var(--day-pct), #928c79);
 }
 
 * {
