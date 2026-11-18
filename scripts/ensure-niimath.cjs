@@ -157,7 +157,8 @@ async function download(url, destination) {
   await new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destination)
     res.pipe(file)
-    file.on('finish', resolve)
+    // 'close', not 'finish': the zip must be closed before it's extracted.
+    file.on('close', resolve)
     file.on('error', reject)
     res.on('error', reject)
   })
@@ -168,17 +169,19 @@ function extractZip(zipPath, extractDir) {
   fs.mkdirSync(extractDir, { recursive: true })
 
   if (process.platform === 'win32') {
-    const result = spawnSync(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-Command',
-        `Expand-Archive -LiteralPath '${escapePowerShell(zipPath)}' -DestinationPath '${escapePowerShell(extractDir)}' -Force`,
-      ],
-      { stdio: 'inherit' },
+    // Windows' own bsdtar reads zips. PowerShell 5.1 Expand-Archive failed
+    // intermittently on CI (MethodCountCouldNotFindBest) yet exited 0, and
+    // Git Bash's GNU tar on PATH can't read zips, hence the full path.
+    const tar = path.join(
+      process.env.SystemRoot || 'C:\\Windows',
+      'System32',
+      'tar.exe',
     )
+    const result = spawnSync(tar, ['-xf', zipPath, '-C', extractDir], {
+      stdio: 'inherit',
+    })
     if (result.status !== 0)
-      throw new Error('PowerShell Expand-Archive failed.')
+      throw new Error('tar.exe failed to extract the zip.')
     return
   }
 
@@ -189,10 +192,6 @@ function extractZip(zipPath, extractDir) {
     throw new Error(
       'unzip failed. Install unzip or provide src-tauri/binaries manually.',
     )
-}
-
-function escapePowerShell(value) {
-  return value.replace(/'/g, "''")
 }
 
 function findExecutable(dir, exe) {
