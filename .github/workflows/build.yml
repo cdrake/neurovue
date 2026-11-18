@@ -10,6 +10,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # labeled/unlabeled let the skip-macos label cancel or restore the macOS build.
+    # Adding or removing any label restarts the run (cancel-in-progress below).
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -67,11 +70,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS
-            os: macos-latest
-            args: --target universal-apple-darwin
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundle: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           - name: Linux
             os: ubuntu-22.04
             args: ''
@@ -122,4 +120,62 @@ jobs:
         with:
           name: neurovue-${{ matrix.name }}
           path: ${{ matrix.bundle }}
+          if-no-files-found: error
+
+  # A PR skips the macOS build when labeled skip-macos AND its head commit has a
+  # passing local-macos status from bun .github/scripts/local-macos.ts <pr>, which
+  # runs the same steps on this Mac (hosted macOS arm64 runners are often out of
+  # capacity). The status is per commit, so a later push builds on macOS again.
+  # Pushes to main always build.
+  macos-gate:
+    # Only labelled PRs; skipped elsewhere, its empty output builds on macOS.
+    if: contains(github.event.pull_request.labels.*.name, 'skip-macos')
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # An API error reads as no local pass, so macOS builds.
+          state=$(gh api "repos/$REPO/commits/$SHA/status" \
+            -q '.statuses[] | select(.context == "local-macos") | .state' || true)
+          skip=false
+          [ "$state" = success ] && skip=true
+          echo "local-macos=${state:-none} skip=$skip"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+  # The build matrix's steps for macOS; keep the two in step (and local-macos.ts).
+  build-macos:
+    name: Build (macOS)
+    needs: macos-gate
+    # !cancelled(): a skipped or failed gate must not skip the build.
+    if: ${{ !cancelled() && needs.macos-gate.outputs.skip != 'true' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Build app
+        run: bunx tauri build --target universal-apple-darwin
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test
+      - uses: actions/upload-artifact@v6
+        with:
+          name: neurovue-macOS
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
