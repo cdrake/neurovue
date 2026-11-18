@@ -18,6 +18,8 @@
   --association: #c59cff;
   --danger: #e26d5a;
   --shadow: rgba(0, 0, 0, 0.42);
+  /* Set from the local time by startDayTint (domain/dayTint.ts); "r g b". */
+  --day-tint: 215 166 66;
 }
 
 * {
@@ -36,7 +38,7 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background:
-    linear-gradient(135deg, rgba(215, 166, 66, 0.07), transparent 34%),
+    linear-gradient(135deg, rgb(var(--day-tint) / 0.1), transparent 38%),
     linear-gradient(180deg, #151611, #090a08);
   color: var(--ink);
 }
@@ -82,7 +84,9 @@ button {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, #1d1e18, #151611);
+  background:
+    linear-gradient(100deg, rgb(var(--day-tint) / 0.07), transparent 45%),
+    linear-gradient(180deg, #1d1e18, #151611);
   box-shadow: 0 8px 30px var(--shadow);
   z-index: 4;
 }
@@ -3195,7 +3199,9 @@ button {
   gap: 9px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, #1d1e18, #151611);
+  background:
+    linear-gradient(100deg, rgb(var(--day-tint) / 0.07), transparent 45%),
+    linear-gradient(180deg, #1d1e18, #151611);
 }
 
 .nv-terminal-interpreter {
