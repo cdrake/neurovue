@@ -29,16 +29,22 @@ export function dayTint(hour: number): string {
   return c0.map((v, k) => Math.round(v + ((c1[k] as number) - v) * t)).join(' ')
 }
 
-/** Sets --day-tint now and every 5 minutes (steps that small are not visible). */
+/** Daylight in [0, 1]: 0 from 19:30 to 05:30, peaking at 12:30. */
+export function dayLight(hour: number): number {
+  return (
+    Math.round(Math.max(0, Math.sin((Math.PI * (hour - 5.5)) / 14)) * 100) / 100
+  )
+}
+
+/** Sets --day-tint and --day-light now and every 5 minutes (steps that small are not visible). */
 export function startDayTint(
   root: HTMLElement = document.documentElement,
 ): void {
   const update = () => {
     const now = new Date()
-    root.style.setProperty(
-      '--day-tint',
-      dayTint(now.getHours() + now.getMinutes() / 60),
-    )
+    const hour = now.getHours() + now.getMinutes() / 60
+    root.style.setProperty('--day-tint', dayTint(hour))
+    root.style.setProperty('--day-light', String(dayLight(hour)))
   }
   update()
   setInterval(update, 5 * 60_000)

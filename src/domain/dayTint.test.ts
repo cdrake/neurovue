@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { dayTint } from './dayTint'
+import { dayLight, dayTint } from './dayTint'
 
 test('hits each key exactly', () => {
   expect(dayTint(2)).toBe('92 108 224')
@@ -19,4 +19,11 @@ test('wraps across midnight between dusk and night', () => {
   )
   expect(dayTint(0)).toBe(want.join(' '))
   expect(dayTint(23.99)).not.toBe(dayTint(2))
+})
+
+test('daylight is dark at night and full near midday', () => {
+  expect(dayLight(2)).toBe(0)
+  expect(dayLight(22)).toBe(0)
+  expect(dayLight(12.5)).toBe(1)
+  expect(dayLight(7)).toBeGreaterThan(0)
 })

@@ -20,6 +20,13 @@
   --shadow: rgba(0, 0, 0, 0.42);
   /* Set from the local time by startDayTint (domain/dayTint.ts); "r g b". */
   --day-tint: 215 166 66;
+  --day-light: 1;
+  /* Chrome base, from near-black blue at night to a lit olive at midday. */
+  --day-pct: calc(var(--day-light) * 100%);
+  --day-bg-top: color-mix(in srgb, #3b3c2c var(--day-pct), #0a0c16);
+  --day-bg-bottom: color-mix(in srgb, #1d1e15 var(--day-pct), #030409);
+  --day-bar-top: color-mix(in srgb, #34352a var(--day-pct), #10121c);
+  --day-bar-bottom: color-mix(in srgb, #25261d var(--day-pct), #0a0b12);
 }
 
 * {
@@ -38,8 +45,17 @@ body {
   min-height: 100vh;
   overflow: hidden;
   background:
-    linear-gradient(135deg, rgb(var(--day-tint) / 0.1), transparent 38%),
-    linear-gradient(180deg, #151611, #090a08);
+    radial-gradient(
+      130% 100% at 0% 0%,
+      rgb(var(--day-tint) / 0.38),
+      transparent 70%
+    ),
+    radial-gradient(
+      80% 60% at 100% 100%,
+      rgb(var(--day-tint) / 0.14),
+      transparent 70%
+    ),
+    linear-gradient(180deg, var(--day-bg-top), var(--day-bg-bottom));
   color: var(--ink);
 }
 
@@ -85,8 +101,8 @@ button {
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
   background:
-    linear-gradient(100deg, rgb(var(--day-tint) / 0.07), transparent 45%),
-    linear-gradient(180deg, #1d1e18, #151611);
+    linear-gradient(100deg, rgb(var(--day-tint) / 0.26), transparent 75%),
+    linear-gradient(180deg, var(--day-bar-top), var(--day-bar-bottom));
   box-shadow: 0 8px 30px var(--shadow);
   z-index: 4;
 }
@@ -3200,8 +3216,8 @@ button {
   padding: 6px 12px;
   border-bottom: 1px solid var(--line);
   background:
-    linear-gradient(100deg, rgb(var(--day-tint) / 0.07), transparent 45%),
-    linear-gradient(180deg, #1d1e18, #151611);
+    linear-gradient(100deg, rgb(var(--day-tint) / 0.26), transparent 75%),
+    linear-gradient(180deg, var(--day-bar-top), var(--day-bar-bottom));
 }
 
 .nv-terminal-interpreter {
