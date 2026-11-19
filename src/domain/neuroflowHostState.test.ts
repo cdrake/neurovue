@@ -81,24 +81,6 @@ describe('reduceRunState', () => {
     expect(s.status).toBe('cancelled')
     expect(s.progress).toBe(1)
   })
-  test('a started run has a ticket, so RunPanel enables Stop', () => {
-    expect(run([{ type: 'start', workflowId: 'w' }]).ticket).toBeTruthy()
-  })
-  test('done takes the step count from the record when progress gave none', () => {
-    const s = run([
-      { type: 'start', workflowId: 'w' },
-      {
-        type: 'done',
-        structured: st('completed'),
-        sessionDir: '/s',
-        record: {
-          runId: 'r1',
-          steps: { a: { tool: 't', status: 'completed' } },
-        },
-      },
-    ])
-    expect(s.total).toBe(1)
-  })
   test('a reused run says so in its summary', () => {
     const s = run([
       { type: 'start', workflowId: 'w' },
