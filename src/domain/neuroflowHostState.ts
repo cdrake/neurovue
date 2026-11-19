@@ -16,8 +16,9 @@ export type RunEv =
   | { type: 'error'; message: string; stderrTail?: string }
   | { type: 'cancelled' }
 
+// RunPanel enables Stop only with a ticket; the host cancels through its own handle.
 const blank = (workflowId: string): HostRunState => ({
-  ticket: null,
+  ticket: workflowId || 'run',
   workflowId,
   status: 'starting',
   progress: 0,
@@ -45,9 +46,12 @@ export function reduceRunState(
         message: ev.message ?? s.message,
       }
     case 'done': {
-      const { structured } = ev
+      const { structured, record } = ev
+      // NeuroFlow reuses a completed run with identical inputs instead of starting one.
+      const reused = (structured as { reused?: boolean }).reused === true
       return {
         ...s,
+        total: Object.keys(record.steps ?? {}).length || s.total,
         status:
           structured.status === 'completed' || structured.status === 'cancelled'
             ? structured.status
@@ -59,7 +63,9 @@ export function reduceRunState(
           runId: structured.runId,
           status: structured.status,
           structured,
-          summary: '',
+          summary: reused
+            ? `Reused run ${structured.runId} (${record.endedAt ?? 'earlier'}): inputs unchanged`
+            : '',
           sessionDir: ev.sessionDir,
           record: ev.record,
         },

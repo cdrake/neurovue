@@ -8,11 +8,13 @@ import {
   type WorkflowDocument,
   wrapToolAsWorkflow,
 } from '@medview/neuroflow-react'
+import { isTauri } from '@tauri-apps/api/core'
 import { type JSX, useEffect, useRef, useState } from 'react'
 import { type DesktopItem, fetchVolumeMetadata } from '../domain/desktop'
 import {
   type CatalogEntry,
   createNeuroflowClient,
+  isNifti,
   type NeuroflowStatus,
   outputArtifacts,
   type RunHandle,
@@ -84,6 +86,13 @@ const runTitle = (b: Batch, t: BatchTarget): string =>
 const sessionDir = (r: BatchRow): string => {
   const f = r.run?.finished
   return f && 'sessionDir' in f ? f.sessionDir : ''
+}
+
+const reusedRun = (r: BatchRow): string => {
+  const f = r.run?.finished
+  return f && 'structured' in f && (f.structured as { reused?: boolean }).reused
+    ? f.summary
+    : ''
 }
 
 export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
@@ -338,6 +347,23 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
     cancelling.current = true
     handle.current?.requestId.then(client.cancel).catch(() => {})
   }
+  // RunPanel's Stop ends only the running row; the queue moves on.
+  const cancelRow = () => {
+    cancelling.current = true
+    handle.current?.requestId.then(client.cancel).catch(() => {})
+  }
+  const restart = (own: Batch, targets: BatchTarget[], rerun: boolean) =>
+    batchEntry.current &&
+    begin(
+      startBatch(
+        own.workflowId,
+        own.title,
+        rerun ? { ...own.inputs, rerun: true } : own.inputs,
+        targets,
+        Date.now(),
+      ),
+      batchEntry.current,
+    )
   const begin = (b: Batch, e: CatalogEntry) => {
     batchEntry.current = e
     setClicked(null)
@@ -644,11 +670,12 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
                 >
                   {r.target.label}
                 </button>
-                <span>
+                <span title={reusedRun(r) || undefined}>
                   {r.status}
                   {r.status === 'running' && r.run?.total
                     ? ` ${r.run.progress}/${r.run.total}`
                     : ''}
+                  {reusedRun(r) ? ' (reused)' : ''}
                 </span>
                 {sessionDir(r) ? (
                   <button
@@ -670,7 +697,8 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
                     title={path}
                     type="button"
                   >
-                    Reveal {path.split('/').pop()}
+                    {isTauri() || !isNifti(path) ? 'Reveal' : 'Load'}{' '}
+                    {path.split('/').pop()}
                   </button>
                 ))}
               </li>
@@ -681,25 +709,34 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
               <button onClick={cancelBatch} type="button">
                 Cancel batch
               </button>
-            ) : retryTargets(own).length && batchEntry.current ? (
-              <button
-                onClick={() =>
-                  batchEntry.current &&
-                  begin(
-                    startBatch(
-                      own.workflowId,
-                      own.title,
-                      own.inputs,
-                      retryTargets(own),
-                      Date.now(),
-                    ),
-                    batchEntry.current,
-                  )
-                }
-                type="button"
-              >
-                Re-run failed
-              </button>
+            ) : batchEntry.current ? (
+              <>
+                {retryTargets(own).length ? (
+                  <button
+                    onClick={() => restart(own, retryTargets(own), false)}
+                    type="button"
+                  >
+                    Re-run failed
+                  </button>
+                ) : null}
+                {own.rows.some((r) => reusedRun(r)) ? (
+                  <button
+                    onClick={() =>
+                      restart(
+                        own,
+                        own.rows
+                          .filter((r) => reusedRun(r))
+                          .map((r) => r.target),
+                        true,
+                      )
+                    }
+                    title="NeuroFlow reused earlier runs with the same inputs; run them anew"
+                    type="button"
+                  >
+                    Run again
+                  </button>
+                ) : null}
+              </>
             ) : null}
           </div>
         </>
@@ -730,7 +767,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
             entry,
           )
         }}
-        onCancel={cancelBatch}
+        onCancel={cancelRow}
         onOpen={props.onReveal}
         targets={strip}
       />
