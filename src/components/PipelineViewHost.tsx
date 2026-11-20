@@ -14,6 +14,7 @@ import { type DesktopItem, fetchVolumeMetadata } from '../domain/desktop'
 import {
   type CatalogEntry,
   createNeuroflowClient,
+  describeStepTools,
   isNifti,
   type NeuroflowStatus,
   outputArtifacts,
@@ -161,7 +162,22 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
           const tool = toolFromDocument(doc as Record<string, unknown>)
           setTools(new Map([[tool.id, tool]]))
           setWorkflow(wrapToolAsWorkflow(doc))
-        } else setWorkflow(doc as WorkflowDocument)
+        } else {
+          const workflow = doc as WorkflowDocument
+          setWorkflow(workflow)
+          // The diagram draws a step's ports from its tools' definitions.
+          return describeStepTools(workflow, client.describe).then((docs) => {
+            if (live)
+              setTools(
+                new Map(
+                  docs.map(([ref, d]) => [
+                    ref,
+                    toolFromDocument(d as Record<string, unknown>),
+                  ]),
+                ),
+              )
+          })
+        }
       })
       .catch((e) => live && setDescribeError(String(e)))
     return () => {

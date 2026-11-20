@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createNeuroflowClient,
+  describeStepTools,
   isNifti,
   outputArtifacts,
 } from './neuroflowClient'
@@ -173,5 +174,27 @@ test('outputArtifacts flattens nested arrays and skips non-artifacts', () => {
     '/p/1',
     '/p/2',
     '/p/3',
+  ])
+})
+
+test('describeStepTools describes each distinct step tool once and skips failures', async () => {
+  const asked: string[] = []
+  const workflow = {
+    steps: {
+      a: { tool: 'x/one', inputs: {} },
+      b: { tool: 'x/two@1.0', inputs: {} },
+      c: { tool: 'x/one', inputs: {} },
+      d: { tool: 'x/missing', inputs: {} },
+    },
+  } as unknown as Parameters<typeof describeStepTools>[0]
+  const docs = await describeStepTools(workflow, async (id) => {
+    asked.push(id)
+    if (id === 'x/missing') throw new Error('unknown document')
+    return { id }
+  })
+  expect(asked).toEqual(['x/one', 'x/two@1.0', 'x/missing'])
+  expect(docs).toEqual([
+    ['x/one', { id: 'x/one' }],
+    ['x/two@1.0', { id: 'x/two@1.0' }],
   ])
 })
