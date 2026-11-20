@@ -3,6 +3,7 @@ import type {
   ArtifactDescriptor,
   RunRecord,
   RunStructured,
+  WorkflowDocument,
 } from '@medview/neuroflow-react'
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
 import { listen as tauriListen } from '@tauri-apps/api/event'
@@ -194,4 +195,18 @@ export function outputArtifacts(s: RunStructured): ArtifactDescriptor[] {
   const walk = (v: unknown): ArtifactDescriptor[] =>
     Array.isArray(v) ? v.flatMap(walk) : isArtifactDescriptor(v) ? [v] : []
   return Object.values(s.outputs).flatMap(walk)
+}
+
+/** Each distinct step tool's document, keyed by the step's ref (the diagram matches a versioned ref only exactly). A tool that fails to describe is left out. */
+export async function describeStepTools(
+  workflow: WorkflowDocument,
+  describe: (id: string) => Promise<unknown>,
+): Promise<[string, unknown][]> {
+  const refs = [...new Set(Object.values(workflow.steps).map((s) => s.tool))]
+  const docs = await Promise.all(
+    refs.map((ref) => describe(ref).catch(() => null)),
+  )
+  return refs.flatMap((ref, i) =>
+    docs[i] ? [[ref, docs[i]] as [string, unknown]] : [],
+  )
 }
