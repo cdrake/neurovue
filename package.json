@@ -1,7 +1,7 @@
 {
   "name": "neurovue",
   "private": true,
-  "version": "0.2.9",
+  "version": "0.2.10",
   "license": "BSD-2-Clause",
   "type": "module",
   "scripts": {
@@ -22,9 +22,9 @@
   },
   "dependencies": {
     "@medview/neuroflow-react": "^0.2.0",
-    "@niivue/niivue": "^1.0.0-rc.222",
-    "@niivue/nv-mcp": "1.0.0-rc.219",
-    "@niivue/uikit": "^1.0.0-rc.221",
+    "@niivue/niivue": "^1.0.0-rc.231",
+    "@niivue/nv-mcp": "1.0.0-rc.228",
+    "@niivue/uikit": "^1.0.0-rc.230",
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@xterm/addon-fit": "^0.11.0",
