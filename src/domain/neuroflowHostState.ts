@@ -45,7 +45,9 @@ export function reduceRunState(
         message: ev.message ?? s.message,
       }
     case 'done': {
-      const { structured } = ev
+      const { structured, record } = ev
+      // NeuroFlow reuses a completed run with identical inputs instead of starting one.
+      const reused = structured.reused === true
       return {
         ...s,
         status:
@@ -59,7 +61,9 @@ export function reduceRunState(
           runId: structured.runId,
           status: structured.status,
           structured,
-          summary: '',
+          summary: reused
+            ? `Reused run ${structured.runId} (${record.endedAt ?? 'earlier'}): inputs unchanged`
+            : '',
           sessionDir: ev.sessionDir,
           record: ev.record,
         },

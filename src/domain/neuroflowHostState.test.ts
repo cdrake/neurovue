@@ -81,4 +81,18 @@ describe('reduceRunState', () => {
     expect(s.status).toBe('cancelled')
     expect(s.progress).toBe(1)
   })
+  test('a reused run says so in its summary', () => {
+    const s = run([
+      { type: 'start', workflowId: 'w' },
+      {
+        type: 'done',
+        structured: { ...st('completed'), reused: true } as RunStructured,
+        sessionDir: '/s',
+        record: { runId: 'r1', endedAt: '2026-11-19T10:00:00Z' },
+      },
+    ])
+    expect(s.finished).toMatchObject({
+      summary: 'Reused run r1 (2026-11-19T10:00:00Z): inputs unchanged',
+    })
+  })
 })

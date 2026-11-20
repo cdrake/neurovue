@@ -1,5 +1,6 @@
 import type { RunStructured } from '@medview/neuroflow-react'
 import type { NiiVueLocation } from '@niivue/niivue'
+import { isTauri } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   AlertTriangle,
@@ -557,6 +558,11 @@ export function App(): JSX.Element {
     void isAvailable().then(setHasPipelines)
   }, [])
   function revealPath(path: string): void {
+    // The browser can't show a file manager; a NIfTI loads as an overlay instead.
+    if (!isTauri() && isNifti(path)) {
+      void addOverlayFromPath(path).catch((error) => setStatus(String(error)))
+      return
+    }
     void createNeuroflowClient()
       .reveal(path)
       .catch((error) => setStatus(String(error)))

@@ -8,11 +8,13 @@ import {
   type WorkflowDocument,
   wrapToolAsWorkflow,
 } from '@medview/neuroflow-react'
+import { isTauri } from '@tauri-apps/api/core'
 import { type JSX, useEffect, useRef, useState } from 'react'
 import { type DesktopItem, fetchVolumeMetadata } from '../domain/desktop'
 import {
   type CatalogEntry,
   createNeuroflowClient,
+  isNifti,
   type NeuroflowStatus,
   outputArtifacts,
   type RunHandle,
@@ -84,6 +86,15 @@ const runTitle = (b: Batch, t: BatchTarget): string =>
 const sessionDir = (r: BatchRow): string => {
   const f = r.run?.finished
   return f && 'sessionDir' in f ? f.sessionDir : ''
+}
+
+// The browser can't reveal files; App loads a NIfTI as an overlay instead.
+const outputAction = (path: string): string =>
+  isTauri() || !isNifti(path) ? 'Reveal' : 'Load'
+
+const reusedRun = (r: BatchRow): string => {
+  const f = r.run?.finished
+  return f && 'structured' in f && f.structured.reused ? f.summary : ''
 }
 
 export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
@@ -338,6 +349,17 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
     cancelling.current = true
     handle.current?.requestId.then(client.cancel).catch(() => {})
   }
+  // RunPanel's Stop ends only the running row; the queue moves on.
+  const cancelRow = () => {
+    cancelling.current = true
+    handle.current?.requestId.then(client.cancel).catch(() => {})
+  }
+  const restart = (own: Batch, targets: BatchTarget[]) =>
+    batchEntry.current &&
+    begin(
+      startBatch(own.workflowId, own.title, own.inputs, targets, Date.now()),
+      batchEntry.current,
+    )
   const begin = (b: Batch, e: CatalogEntry) => {
     batchEntry.current = e
     setClicked(null)
@@ -644,11 +666,12 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
                 >
                   {r.target.label}
                 </button>
-                <span>
+                <span title={reusedRun(r) || undefined}>
                   {r.status}
                   {r.status === 'running' && r.run?.total
                     ? ` ${r.run.progress}/${r.run.total}`
                     : ''}
+                  {reusedRun(r) ? ' (reused)' : ''}
                 </span>
                 {sessionDir(r) ? (
                   <button
@@ -670,7 +693,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
                     title={path}
                     type="button"
                   >
-                    Reveal {path.split('/').pop()}
+                    {outputAction(path)} {path.split('/').pop()}
                   </button>
                 ))}
               </li>
@@ -683,19 +706,7 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
               </button>
             ) : retryTargets(own).length && batchEntry.current ? (
               <button
-                onClick={() =>
-                  batchEntry.current &&
-                  begin(
-                    startBatch(
-                      own.workflowId,
-                      own.title,
-                      own.inputs,
-                      retryTargets(own),
-                      Date.now(),
-                    ),
-                    batchEntry.current,
-                  )
-                }
+                onClick={() => restart(own, retryTargets(own))}
                 type="button"
               >
                 Re-run failed
@@ -723,15 +734,26 @@ export function PipelineViewHost(props: PipelineViewHostProps): JSX.Element {
         run={own ? (shownRow(own, clicked)?.run ?? null) : null}
         lockedInputs={target ? { [target.name]: lockedLabel } : undefined}
         runnable={runnable}
-        onStart={(inputs) => {
+        onStart={(inputs, options) => {
           if (!entry || running || runnable) return
+          // RunPanel's "Run anew" on a reused run: rerun only the rows NeuroFlow reused.
+          const reused = options?.rerun
+            ? (own?.rows.filter((r) => reusedRun(r)).map((r) => r.target) ?? [])
+            : []
           begin(
-            startBatch(entry.id, entry.title, inputs, targets, Date.now()),
+            startBatch(
+              entry.id,
+              entry.title,
+              options?.rerun ? { ...inputs, rerun: true } : inputs,
+              reused.length ? reused : targets,
+              Date.now(),
+            ),
             entry,
           )
         }}
-        onCancel={cancelBatch}
+        onCancel={cancelRow}
         onOpen={props.onReveal}
+        openLabel={outputAction}
         targets={strip}
       />
     </div>
