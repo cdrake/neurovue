@@ -31,6 +31,7 @@ const state: StageControlsState = {
   },
   canExport: false,
   magnify: null,
+  magnifyZoom: null,
   box: null,
   palette: null,
   wand: null,

@@ -75,7 +75,10 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
     )
   }
   const { box, measure, shapes, draw } = state
-  if (box) controls.push(toggle('box', 'Box', box.active, box.enabled))
+  if (box) {
+    controls.push(toggle('box', 'Box', box.active, box.enabled))
+    if (box.active) controls.push(button('box-cut', 'Cut out', true))
+  }
   if (measure) {
     controls.push(
       toggle('measure', 'Measure', measure.active, measure.enabled),

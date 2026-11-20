@@ -119,7 +119,9 @@ export interface ToolGroup {
 export interface StageControlsState {
   /** The magnifying lens: on or off; null hides the button. */
   magnify: boolean | null
-  /** Box: two right-clicks cut out a sub-volume; null hides the button. */
+  /** The lens's enlargement while it is on; null hides the slider. */
+  magnifyZoom: number | null
+  /** Box: an editable sub-volume box to cut out; null hides the button. */
   box: { active: boolean; enabled: boolean } | null
   viewModes: readonly { id: string; label: string }[]
   viewMode: string
@@ -163,7 +165,9 @@ export interface StageControlsState {
 /** What the controls do; NiivueStage passes fresh closures each render. */
 export interface StageControlsActions {
   magnify(): void
+  magnifyZoom(zoom: number): void
   box(): void
+  cutOutBox(): void
   viewMode(id: string): void
   look(id: string): void
   measure(): void
@@ -350,6 +354,13 @@ export class StageControls implements UIKitOverlayRenderer {
           click: () => this.actions?.box(),
         }),
       )
+      if (state.box.active) {
+        row.push(
+          this.toolButton('box-cut', 'Cut out', true, {
+            click: () => this.actions?.cutOutBox(),
+          }),
+        )
+      }
     }
     if (state.measure) {
       row.push(
@@ -498,6 +509,24 @@ export class StageControls implements UIKitOverlayRenderer {
         })
       }
     }
+    const { magnifyZoom } = state
+    if (magnifyZoom !== null) {
+      sliders.push({
+        id: 'magnify-zoom',
+        label: 'Zoom',
+        x: 0,
+        y: 0,
+        width: WAND_SLIDER,
+        // The lens's own pinch range.
+        min: 1.5,
+        max: 10,
+        step: 0.1,
+        value: magnifyZoom,
+        showValue: true,
+        format: (value) => `${value.toFixed(1)}×`,
+        onInput: (value) => this.actions?.magnifyZoom(value),
+      })
+    }
     const { wand } = state
     if (wand) {
       sliders.push({
@@ -617,6 +646,15 @@ export class StageControls implements UIKitOverlayRenderer {
     let nextY = rowY + CONTROL_HEIGHT + ROW_GAP
     if (picked) {
       this.segmenteds.updateSegmented(picked.id, { x: EDGE, y: nextY })
+      nextY += CONTROL_HEIGHT + ROW_GAP
+    }
+    if (magnifyZoom !== null) {
+      const sliderHeight =
+        this.sliders.getLayout('magnify-zoom')?.height ?? CONTROL_HEIGHT
+      this.sliders.updateSlider('magnify-zoom', {
+        x: EDGE,
+        y: nextY + (CONTROL_HEIGHT - sliderHeight) / 2,
+      })
       nextY += CONTROL_HEIGHT + ROW_GAP
     }
     let px = EDGE - GROUP_GAP
