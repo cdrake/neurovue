@@ -1,14 +1,12 @@
-import type {
-  AnnotationScreenShape,
-  ColorMap,
-  NiiVueLocation,
-  UIKitOverlayRenderer,
-} from '@niivue/niivue'
 import {
-  type SubvolumeSelectorHost,
-  UIKitMagnifierOverlay,
-  UIKitSubvolumeSelector,
-} from '@niivue/uikit'
+  type AnnotationScreenShape,
+  type ColorMap,
+  type NiiVueLocation,
+  type NVImage,
+  subVolumeBox,
+  type UIKitOverlayRenderer,
+} from '@niivue/niivue'
+import { UIKitMagnifierOverlay } from '@niivue/uikit'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
@@ -28,6 +26,7 @@ import {
 } from '../domain/blockPick'
 import type { BlockSettings } from '../domain/blocks'
 import { blocksAreTiled } from '../domain/blocks'
+import { BoxEditor, type BoxEditorHost } from '../domain/boxEditor'
 import type {
   Backend,
   ClipPlane,
@@ -691,6 +690,9 @@ export function NiivueStage({
   const isMagnifyingRef = useRef(false)
   isMagnifyingRef.current = isMagnifying
   const magnifierRef = useRef<UIKitMagnifierOverlay | null>(null)
+  // The lens's enlargement; the slider sets it, a pinch or wheel reports it.
+  const [magnifyZoom, setMagnifyZoom] = useState(3)
+  const boxEditorRef = useRef<BoxEditor | null>(null)
   const [status, setStatus] = useState('Waiting for a dataset selection.')
   // True only when the volume failed to load; routine progress stays hidden.
   const [isStatusError, setIsStatusError] = useState(false)
@@ -849,14 +851,22 @@ export function NiivueStage({
             const wireLens = (): (() => void) =>
               lens.attach({
                 canvas: nv.canvas ?? null,
+                // Over a control (the zoom slider) the pointer counts as off
+                // the canvas, so the press reaches the control, not the lens.
                 clientToCanvas: (x, y) =>
-                  isMagnifyingRef.current
+                  isMagnifyingRef.current && !stageControls?.isOverControl(x, y)
                     ? clientToCanvas.call(nv, x, y)
                     : null,
                 drawScene: () => nv.drawScene(),
               })
             magnifier = lens
-            unregisterMagnifier = register.call(nv, lens)
+            // Report a pinch or wheel zoom so the slider follows it.
+            unregisterMagnifier = register.call(nv, {
+              drawOverlay: (frame) => {
+                lens.drawOverlay(frame)
+                setMagnifyZoom(lens.zoom)
+              },
+            })
             detachMagnifier = wireLens()
             magnifierRef.current = lens
             // The stage's controls go last, so they draw over everything.
@@ -1547,29 +1557,35 @@ export function NiivueStage({
     blocksAreTiled(blocks) && !isDrawActive && !isShapesActive && !isMeasuring
   const baseItemId = layers[0]?.item.id ?? null
 
-  // Box: two right-clicks span a sub-volume, which is then cut out of the
-  // full-resolution source and shown, as a double-tapped brick is. It owns
-  // the right button (contrast, clip plane) while on.
+  // Box: an editable box (drag its edges, corners or inside on any slice),
+  // which Cut out crops from the full-resolution source and shows, as a
+  // double-tapped brick is.
   // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion re-attaches to a fresh instance.
   useEffect(() => {
     const nv = nvRef.current
-    const matRAS = nv?.volumes?.[0]?.matRAS
-    if (!isBoxActive || !nv || !baseItemId || !matRAS) return
-    const selector = new UIKitSubvolumeSelector({
-      onSelect: (box) => {
-        setToolMode(null)
-        onBlockViewRef.current?.(blockSelectionFromBox(baseItemId, box, matRAS))
-      },
-    })
+    if (!isBoxActive || !nv?.volumes?.[0]) return
     // The live NiiVue instance; NiiVueLike types only what the stage uses.
-    const detach = selector.attach(nv as unknown as SubvolumeSelectorHost)
-    const unregister = nv.registerOverlayRenderer?.(selector)
+    const editor = new BoxEditor(nv as unknown as BoxEditorHost)
+    const detach = editor.attach()
+    const unregister = nv.registerOverlayRenderer?.(editor)
+    boxEditorRef.current = editor
     return () => {
+      boxEditorRef.current = null
       detach()
       unregister?.()
       nv.drawScene()
     }
-  }, [isBoxActive, baseItemId, loadedVersion])
+  }, [isBoxActive, loadedVersion])
+
+  function cutOutBox(): void {
+    const vol = nvRef.current?.volumes?.[0] as NVImage | undefined
+    const editor = boxEditorRef.current
+    if (!vol?.matRAS || !editor || !baseItemId) return
+    const box = subVolumeBox(vol, editor.box.min, editor.box.max)
+    if (!box) return
+    setToolMode(null)
+    onBlockViewRef.current?.(blockSelectionFromBox(baseItemId, box, vol.matRAS))
+  }
 
   useEffect(() => {
     const stage = stageRef.current
@@ -1941,6 +1957,7 @@ export function NiivueStage({
 
   const stageControlsState: StageControlsState = {
     magnify: primaryItem ? isMagnifying : null,
+    magnifyZoom: primaryItem && isMagnifying ? magnifyZoom : null,
     box:
       primaryItem && onBlockView
         ? { active: isBoxActive, enabled: loadedVersion > 0 }
@@ -2041,7 +2058,14 @@ export function NiivueStage({
       if (preset) onShadingChange(preset.shading)
     },
     magnify: () => setIsMagnifying((on) => !on),
+    magnifyZoom: (zoom) => {
+      const lens = magnifierRef.current
+      if (!lens) return
+      lens.zoom = zoom
+      nvRef.current?.drawScene()
+    },
     box: () => toggleMode('box'),
+    cutOutBox,
     measure: () => toggleMode('measure'),
     measureTool: setMeasureTool,
     clearMeasurements: () => clearAnnotationGroup('measure'),
