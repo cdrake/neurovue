@@ -51,5 +51,6 @@ Any update to this policy is posted on this page with a new effective date.
 
 ## Contact
 
-Open an issue at
+Email [christopher.a.drake@gmail.com](mailto:christopher.a.drake@gmail.com) or
+open an issue at
 [github.com/cdrake/neurovue/issues](https://github.com/cdrake/neurovue/issues).

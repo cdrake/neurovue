@@ -9,7 +9,8 @@ iPad. It is a research tool and is not intended for clinical diagnosis.
 
 ## Get help
 
-Report a problem or ask a question at
+Email [christopher.a.drake@gmail.com](mailto:christopher.a.drake@gmail.com), or
+report a problem at
 [github.com/cdrake/neurovue/issues](https://github.com/cdrake/neurovue/issues).
 Include your device, OS version, NeuroVue version (About NeuroVue) and the steps
 that cause the problem. Don't attach identifiable patient data.
