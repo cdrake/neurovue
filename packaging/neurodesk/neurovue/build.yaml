@@ -1,5 +1,5 @@
 name: neurovue
-version: "0.2.12"
+version: "0.2.13"
 
 architectures:
   - x86_64
@@ -9,8 +9,8 @@ copyright:
     url: https://github.com/cdrake/neurovue/blob/v{{ context.upstream_version }}/LICENSE
 
 variables:
-  upstream_version: "0.2.12"
-  neurovue_web_sha256: "d7fca0e242db66c09f364ee51420d99dfd6f3d1c1cbe9120a7dd38cec4ab9af0"
+  upstream_version: "0.2.13"
+  neurovue_web_sha256: "a360bc6e8604db13c8e119c7d4b278cddb619420dfff779eb600f534cf947b86"
   # Pipelines: the NeuroFlow engine and gallery (same release) and its spec.
   neuroflow_version: "0.7.1"
   neuroflow_mcp_sha256: "cdd8496a368c809347c29702d8fa82c8525ee2cfa174589f3522e747e66044d0"
