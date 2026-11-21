@@ -50,6 +50,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Medical",
+    "copyright": "Copyright (c) 2026, Christopher Drake",
     "externalBin": ["binaries/niimath", "binaries/neurovue-mcp"],
     "resources": ["resources/mni152.nii.gz"],
     "icon": [
