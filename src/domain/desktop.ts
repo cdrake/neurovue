@@ -385,7 +385,7 @@ export async function openOverlayVolume(): Promise<OverlayAddResult | null> {
     ],
   })
   if (!selected || Array.isArray(selected)) return null
-  return addOverlayVolumeByPath(selected)
+  return addOverlayVolumeByPath(await keepPickedFile(selected))
 }
 
 export async function openDatasetByPath(

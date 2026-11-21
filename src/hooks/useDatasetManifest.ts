@@ -421,7 +421,7 @@ export function useDatasetManifest({
 
     void refreshWarmProgress()
     const interval = window.setInterval(() => {
-      void refreshWarmProgress()
+      if (!document.hidden) void refreshWarmProgress()
     }, 1000)
 
     return () => {
