@@ -33,6 +33,9 @@ pub struct ServerHandle {
     pub url: String,
     pub port: u16,
     pub volume_count: usize,
+    /// Per-launch secret every route sits under, so other local accounts that
+    /// can reach 127.0.0.1 can't read the open volumes.
+    token: String,
     volumes: VolumeStore,
     dataset_root: Arc<Mutex<Option<PathBuf>>>,
     discovery_stats: Arc<Mutex<DiscoveryStats>>,
@@ -345,6 +348,7 @@ fn new_handle(discovery: VolumeDiscovery) -> ServerHandle {
     ServerHandle {
         url: String::new(),
         port: 0,
+        token: random_token(),
         volume_count: discovery.volumes.len(),
         volumes: Arc::new(Mutex::new(discovery.volumes)),
         dataset_root: Arc::new(Mutex::new(discovery.root)),
@@ -389,11 +393,12 @@ fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
         .set_nonblocking(true)
         .expect("set NeuroVue listener nonblocking");
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}/{}", server.token);
     let shutdown = Arc::new(tokio::sync::Notify::new());
     let state = app_state(&server, base_url.clone());
 
     let stop = shutdown.clone();
+    let server_token = server.token.clone();
     std::thread::spawn(move || {
         let runtime = Builder::new_multi_thread()
             .enable_all()
@@ -404,7 +409,7 @@ fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
         runtime.block_on(async move {
             let listener =
                 tokio::net::TcpListener::from_std(listener).expect("adopt NeuroVue listener");
-            let app = build_router(state, addr.port());
+            let app = build_router(state, addr.port(), &format!("/{}", server_token));
 
             let stopped = async move { stop.notified().await };
             if let Err(error) = axum::serve(listener, app)
@@ -439,6 +444,12 @@ pub fn revive(server: &ServerHandle) -> Option<ServerHandle> {
         .or_else(|_| TcpListener::bind("127.0.0.1:0"))
         .ok()?;
     Some(serve(listener, server.clone()))
+}
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("NeuroVue server token");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn app_state(server: &ServerHandle, base_url: String) -> AppState {
@@ -486,8 +497,9 @@ pub fn clear_dataset(handle: &ServerHandle) {
     lock_recover(&handle.decoded_level_cache).clear();
 }
 
-fn build_router(state: AppState, port: u16) -> Router {
-    routes()
+fn build_router(state: AppState, port: u16, prefix: &str) -> Router {
+    Router::new()
+        .nest(prefix, routes())
         .layer(app_cors_layer())
         // Outermost, so a foreign Host is refused before any route runs.
         .layer(middleware::from_fn(move |request, next| {
@@ -645,11 +657,15 @@ pub fn data_root() -> PathBuf {
 /// separated).
 fn app_cors_layer() -> CorsLayer {
     let mut origins = vec![
-        "http://127.0.0.1:5175".to_string(),
-        "http://localhost:5175".to_string(),
         "tauri://localhost".to_string(),
         "https://tauri.localhost".to_string(),
     ];
+    if cfg!(debug_assertions) {
+        origins.extend([
+            "http://127.0.0.1:5175".to_string(),
+            "http://localhost:5175".to_string(),
+        ]);
+    }
     if let Ok(extra) = std::env::var("NEUROVUE_ALLOWED_ORIGINS") {
         origins.extend(
             extra
@@ -1122,7 +1138,6 @@ fn write_bundle_zip(
         "source": {
             "datasetName": bids.as_ref().and_then(|info| info.name.clone()),
             "datasetDoi": bids.as_ref().and_then(|info| info.dataset_doi.clone()),
-            "datasetRoot": dataset_root(handle).map(|path| path.display().to_string()),
         },
         "volumes": manifest_volumes,
         "view": view,
@@ -3598,8 +3613,12 @@ fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     }
 
     let bytes = if is_gzipped_nifti(path) {
+        // A gzip bomb can claim a small header and inflate far past it: stop at
+        // the widest voxel (16-byte complex) plus room for header extensions.
+        let limit = (voxels as u64).saturating_mul(16).saturating_add(1 << 20);
         let mut bytes = Vec::new();
         GzDecoder::new(File::open(path).ok()?)
+            .take(limit)
             .read_to_end(&mut bytes)
             .ok()?;
         bytes
@@ -5446,7 +5465,7 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState {
-            base_url: "http://127.0.0.1:4242".to_string(),
+            base_url: "http://127.0.0.1:4242/t0ken".to_string(),
             volumes: Arc::new(Mutex::new(Vec::new())),
             dataset_root: Arc::new(Mutex::new(None)),
             discovery_stats: Arc::new(Mutex::new(DiscoveryStats::default())),
@@ -5460,12 +5479,12 @@ mod tests {
 
     async fn status_for_host(host: Option<&str>) -> StatusCode {
         use tower::ServiceExt;
-        let mut request = axum::http::Request::builder().uri("/api");
+        let mut request = axum::http::Request::builder().uri("/t0ken/api");
         if let Some(host) = host {
             request = request.header(header::HOST, host);
         }
         let request = request.body(axum::body::Body::empty()).unwrap();
-        build_router(test_state(), 4242)
+        build_router(test_state(), 4242, "/t0ken")
             .oneshot(request)
             .await
             .unwrap()
@@ -5492,13 +5511,13 @@ mod tests {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             async fn status(state: &AppState, url: &str) -> StatusCode {
-                let path = url.strip_prefix(&state.base_url).unwrap();
+                let path = url.strip_prefix("http://127.0.0.1:4242").unwrap();
                 let request = axum::http::Request::builder()
                     .uri(path)
                     .header(header::HOST, "127.0.0.1:4242")
                     .body(axum::body::Body::empty())
                     .unwrap();
-                build_router(state.clone(), 4242)
+                build_router(state.clone(), 4242, "/t0ken")
                     .oneshot(request)
                     .await
                     .unwrap()
@@ -5514,6 +5533,24 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root_a);
         let _ = fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn router_requires_the_launch_token() {
+        use tower::ServiceExt;
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let request = axum::http::Request::builder()
+                .uri("/api")
+                .header(header::HOST, "127.0.0.1:4242")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = build_router(test_state(), 4242, "/t0ken")
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        });
     }
 
     #[test]
