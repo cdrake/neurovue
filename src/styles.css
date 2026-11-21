@@ -1510,6 +1510,12 @@ button {
   padding: 16px 12px;
 }
 
+.nv-welcome-privacy {
+  justify-self: start;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
 .nv-welcome-reopen {
   display: inline-flex;
   align-items: center;

@@ -1,3 +1,4 @@
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import {
   Brain,
   FileJson,
@@ -176,6 +177,20 @@ export function WelcomeScreen({
           />
           Reopen the last dataset when NeuroVue starts
         </label>
+        <a
+          className="nv-welcome-privacy"
+          href="https://cdrake.github.io/neurovue/privacy"
+          onClick={(event) => {
+            // The app's webview won't follow external links; the system browser opens it.
+            if (!isTauri()) return
+            event.preventDefault()
+            void invoke('open_privacy_policy')
+          }}
+          rel="noopener"
+          target="_blank"
+        >
+          Privacy policy
+        </a>
       </div>
     </section>
   )

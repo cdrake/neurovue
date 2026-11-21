@@ -67,6 +67,18 @@ const MENU_PIPELINES: &str = "view-pipelines";
 const MENU_CLEAR_ALL: &str = "view-clear-all";
 #[cfg(desktop)]
 const MENU_CONTROLS: &str = "help-controls";
+#[cfg(desktop)]
+const MENU_PRIVACY: &str = "privacy-policy";
+const PRIVACY_POLICY_URL: &str = "https://cdrake.github.io/neurovue/privacy";
+
+/// App Review 5.1.1(i) wants the policy reachable in the app, not just the store.
+#[tauri::command]
+fn open_privacy_policy(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(PRIVACY_POLICY_URL, None::<&str>)
+        .map_err(|error| error.to_string())
+}
 
 /// The label of the window NeuroVue opens at launch.
 const MAIN_WINDOW: &str = "main";
@@ -724,14 +736,23 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         None::<&str>,
     )?;
+    let privacy = MenuItem::with_id(handle, MENU_PRIVACY, "Privacy Policy", true, None::<&str>)?;
     let existing_help = menu.items()?.into_iter().find_map(|item| {
         item.as_submenu()
             .filter(|submenu| submenu.text().is_ok_and(|text| text == "Help"))
             .cloned()
     });
     match existing_help {
-        Some(help_menu) => help_menu.prepend(&controls)?,
-        None => menu.append(&Submenu::with_items(handle, "Help", true, &[&controls])?)?,
+        Some(help_menu) => {
+            help_menu.prepend(&controls)?;
+            help_menu.append(&privacy)?;
+        }
+        None => menu.append(&Submenu::with_items(
+            handle,
+            "Help",
+            true,
+            &[&controls, &privacy],
+        )?)?,
     }
     Ok(menu)
 }
@@ -814,6 +835,7 @@ fn set_recent_menu(window: tauri::WebviewWindow, paths: Vec<String>) -> tauri::R
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_pencil::init())
         .manage(opened::OpenedFiles::default())
         .on_window_event(|window, event| {
@@ -876,6 +898,10 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.menu(neurovue_menu).on_menu_event(|app, event| {
         let id = event.id().as_ref();
+        if id == MENU_PRIVACY {
+            let _ = open_privacy_policy(app.clone());
+            return;
+        }
         if id == mcp::MENU_ALLOW_AGENTS {
             let checked = mcp::allow_agents_item(app).and_then(|item| item.is_checked().ok());
             match checked {
@@ -919,6 +945,7 @@ pub fn run() {
             export_dataset_bundle,
             write_file,
             share_file,
+            open_privacy_policy,
             read_bundle_manifest,
             read_document_manifest,
             share_view_via_airdrop,
@@ -974,6 +1001,7 @@ pub fn run() {
         read_document_manifest,
         share_view_via_airdrop,
         share_file,
+        open_privacy_policy,
         opened::take_opened_files,
         opened::keep_picked_file,
         receive::answer_send_offer,
