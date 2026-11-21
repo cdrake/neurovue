@@ -14,7 +14,7 @@ stays Developer ID DMG. The Mac App Store is deferred to #93.
 | 3 | niimath and MCP sidecars under the sandbox | Defer | #93. They need `com.apple.security.inherit` helper entitlements and their own signing. |
 | 4 | Desktop feature set vs. 2.4.5/2.5.2 (NeuroFlow dev paths, terminal login shell) | Defer | #93. A Mac App Store build likely drops the terminal and NeuroFlow, or gates them behind a build flag. |
 | 5 | iOS `PrivacyInfo.xcprivacy` | Fixed | 122784f. FileTimestamp C617.1 and 3B52.1; no tracking, no collected data. |
-| 6 | Privacy policy and support URLs | Open | #80. Needs hosted pages; this is the owner's action. |
+| 6 | Privacy policy and support URLs | In progress | #80. `docs/privacy.md` and `docs/support.md`; GitHub Pages serves main `/docs`, so they go live when this branch merges: cdrake.github.io/neurovue/privacy and /support. Linked from Welcome and the desktop Help menu. Still to do: enter both URLs in App Store Connect. |
 | 7 | iOS 4D allocation bound; mobile cache budgets | Fixed | This audit. iOS counts 4D frames toward the voxel ceiling. iOS ceiling: 128M voxels. Preview cache: 64 MB. Decoded-level cache: 128 MB. Desktop is unchanged. |
 | 8 | iOS doesn't register `.nvbundle` | Fixed | #84, via `Info.ios.plist` CFBundleDocumentTypes and UTExportedTypeDeclarations. |
 | 9 | Quick Look logs filenames and errors `.public` | Fixed | This audit. Now `.private` in PreviewProvider and ThumbnailProvider. |
@@ -58,7 +58,7 @@ tables, folding the tool-row `gapBefore`, and merging the receive-marker helpers
 
 ## Next steps
 
-1. #80: host the privacy policy and support page, then set the URLs in App Store Connect.
+1. #80: after merge, check that the Pages URLs load, then enter them in App Store Connect.
 2. Device pass on iPhone and iPad (iOS 27):
    - cold-launch "Open in";
    - AirDrop an `.nvbundle`;
