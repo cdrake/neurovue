@@ -121,7 +121,7 @@ export function WelcomeScreen({
               {onReceive ? (
                 <WelcomeAction
                   disabled={busy}
-                  hint="Lets a Mac running NeuroVue send here. Unencrypted: use on trusted networks only."
+                  hint="Lets a Mac running NeuroVue send here. Accept only sends whose code matches the Mac's."
                   icon={<Laptop aria-hidden="true" size={16} />}
                   label="Receive from a Mac"
                   onClick={onReceive}

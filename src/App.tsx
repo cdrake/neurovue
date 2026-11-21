@@ -106,7 +106,6 @@ import {
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
-  confirmationCode,
   type DrawingBase,
   type ExportBundleResult,
   enableReceiving,
@@ -1258,15 +1257,13 @@ export function App(): JSX.Element {
       `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
         `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
     )
-    const code = confirmationCode()
     try {
       const result = await sendViewToDevice({
         target,
         name: shareName,
         volumeIds,
         view,
-        code,
-        onOffered: () =>
+        onOffered: (code) =>
           setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
       })
       setStatus(
@@ -1880,11 +1877,16 @@ export function App(): JSX.Element {
         )
         return
       }
-      const code = confirmationCode()
-      setStatus(
-        `Waiting for ${target.name} to accept the drawing (code ${code})…`,
-      )
-      await sendDrawingToDevice({ target, base: drawingBase, drawing, code })
+      setStatus(`Sending the drawing to ${target.name}…`)
+      await sendDrawingToDevice({
+        target,
+        base: drawingBase,
+        drawing,
+        onOffered: (code) =>
+          setStatus(
+            `Waiting for ${target.name} to accept the drawing (code ${code})…`,
+          ),
+      })
       setStatus(`Sent the drawing to ${target.name}.`, 'success')
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
@@ -2198,7 +2200,6 @@ export function App(): JSX.Element {
                     <div className="nv-recent-item nv-share-looking">
                       <span className="nv-recent-item-path">
                         No device found. On an iPad, choose Receive from a Mac.
-                        Sends are unencrypted: trusted networks only.
                       </span>
                     </div>
                   ) : (
@@ -2889,17 +2890,10 @@ export function App(): JSX.Element {
             wants to send <strong>{sendOffer.offer.name}</strong> (
             {formatBundleBytes(sendOffer.offer.size)}).
           </p>
-          {sendOffer.offer.code ? (
-            <p>
-              Accept only if the sender shows code{' '}
-              <strong>{sendOffer.offer.code}</strong>.
-            </p>
-          ) : (
-            <p>
-              No confirmation code: accept only if you just sent this from your
-              own Mac.
-            </p>
-          )}
+          <p>
+            Accept only if the sender shows code{' '}
+            <strong>{sendOffer.offer.code}</strong>.
+          </p>
           <div className="nv-send-offer-actions">
             <button
               className="nv-tool-button"

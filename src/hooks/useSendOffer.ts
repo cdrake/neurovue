@@ -11,7 +11,7 @@ export interface SendOffer {
   name: string
   from: string
   size: number
-  /** Digits the sender shows; empty from an older NeuroVue. */
+  /** Digits the sender shows too; a match means no one sits in between. */
   code: string
   /** The sender's IP, as this device saw it. */
   address: string

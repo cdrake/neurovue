@@ -38,7 +38,7 @@
   <string>NeuroVue finds your other devices on this network to send and receive datasets and drawings you approve.</string>
   <key>NSBonjourServices</key>
   <array>
-    <string>_neurovue._tcp</string>
+    <string>_neurovue-tls._tcp</string>
   </array>
   <key>UTImportedTypeDeclarations</key>
   <array>

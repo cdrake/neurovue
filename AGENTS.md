@@ -61,8 +61,9 @@ iPhone and iPad both ship (`TARGETED_DEVICE_FAMILY` 1,2). Gotchas:
   harmless.
 - `gen/apple/Sources/neurovue/main.mm` swizzles `TaoSceneDelegate` for UIScene.
 - Data protection is `NSFileProtectionComplete` (the profile requires it).
-- Receiving is opt-in (`receive-enabled` marker in the data root); sends carry a
-  4-digit code and are unencrypted.
+- Receiving is opt-in (`receive-enabled` marker in the data root); sends are TLS 1.3
+  (Network.framework, `src-tauri/src/tls.m`) with a 6-digit code bound to the
+  session; macOS and iOS only.
 - Touch: 44 pt targets on coarse pointers; font sizes in rem, and the root
   follows Dynamic Type (`-apple-system-body`) on touch devices.
 - The canvas stage controls are mirrored in a hidden DOM

@@ -1,4 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { BlockSettings } from './blocks'
 import {
@@ -229,17 +230,8 @@ export async function enableReceiving(): Promise<void> {
   await invoke('enable_receiving')
 }
 
-/** Four digits shown on both ends of a send, so the person can tell their
- *  send from a look-alike on the same network. */
-export function confirmationCode(): string {
-  return String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(
-    4,
-    '0',
-  )
-}
-
-/** Sends the dataset to `target` as a bundle. `onOffered` runs once the
- *  bundle is staged and the person there is being asked. Resolves once they
+/** Sends the dataset to `target` as a bundle. `onOffered` gets the code both
+ *  ends show, once the bundle is staged and the person there is being asked. Resolves once they
  *  have accepted it and it has arrived; rejects with a status-line sentence
  *  if they decline or it fails. */
 export async function sendViewToDevice(params: {
@@ -247,10 +239,9 @@ export async function sendViewToDevice(params: {
   name: string
   volumeIds: string[]
   view: BundleViewState
-  code: string
-  onOffered: () => void
+  onOffered: (code: string) => void
 }): Promise<ExportBundleResult> {
-  const onOffered = new Channel<null>()
+  const onOffered = new Channel<string>()
   onOffered.onmessage = params.onOffered
   return invoke<ExportBundleResult>('send_view_to_device', {
     target: params.target,
@@ -258,7 +249,6 @@ export async function sendViewToDevice(params: {
     view: params.view,
     createdAt: new Date().toISOString(),
     name: params.name,
-    code: params.code,
     onOffered,
   })
 }
@@ -266,19 +256,19 @@ export async function sendViewToDevice(params: {
 /**
  * Sends a drawing (NIfTI bytes) back to `target`, tagged with the volume it
  * was drawn on, and resolves once it has been accepted there. The bytes go as
- * a raw body behind a length-prefixed JSON header (see the Rust command).
+ * a raw body behind a length-prefixed JSON header (see the Rust command), so
+ * the code both ends show comes back as an event rather than on a channel.
  */
 export async function sendDrawingToDevice(params: {
   target: SendTarget
   base: DrawingBase
   drawing: Uint8Array
-  code: string
+  onOffered: (code: string) => void
 }): Promise<void> {
   const meta = new TextEncoder().encode(
     JSON.stringify({
       target: params.target,
       base: params.base,
-      code: params.code,
       createdAt: new Date().toISOString(),
     }),
   )
@@ -286,7 +276,15 @@ export async function sendDrawingToDevice(params: {
   new DataView(body.buffer).setUint32(0, meta.length, true)
   body.set(meta, 4)
   body.set(params.drawing, 4 + meta.length)
-  await invoke('send_drawing_to_device', body)
+  const unlisten = await getCurrentWebviewWindow().listen<string>(
+    'neurovue-send-code',
+    (event) => params.onOffered(event.payload),
+  )
+  try {
+    await invoke('send_drawing_to_device', body)
+  } finally {
+    unlisten()
+  }
 }
 
 /** Lays a received drawing over its base volume; returns the new volume id. */

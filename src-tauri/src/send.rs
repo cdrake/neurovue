@@ -1,13 +1,13 @@
 // The sending half of Send to iPad (a Mac sending a dataset, or an iPad
 // sending a drawing back): offer a staged file to a receiver found by
 // bonjour.rs, wait while the person there accepts or declines, then upload
-// it. The protocol is receive.rs's; the two requests are plain HTTP/1.1 on a
-// TcpStream, which is all a local transfer needs.
+// it. The protocol is receive.rs's: two HTTP/1.1 requests, each on its own
+// TLS connection (tls.rs), the second pinned to the device the first reached.
+#![cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
 
 use std::{
-    fs::File,
     io::{Read, Write},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    net::{SocketAddr, ToSocketAddrs},
     path::Path,
     time::Duration,
 };
@@ -36,18 +36,22 @@ impl SendTarget {
 /// Longer than the receiver waits for an answer (receive.rs OFFER_TIMEOUT),
 /// so its "timed out" reply arrives rather than our own.
 const ANSWER_WAIT: Duration = Duration::from_secs(135);
-const CONNECT_WAIT: Duration = Duration::from_secs(5);
+/// Connecting, the TLS handshake and the code exchange.
+const CONNECT_WAIT: Duration = Duration::from_secs(10);
 /// Per read or write during the upload, not the whole transfer.
 const TRANSFER_STALL: Duration = Duration::from_secs(30);
 
 /// Offers `path` to the receiver at `addresses` and uploads it once accepted.
-/// The error is a sentence for the status line.
+/// `on_secured` hears the code both ends show, once the connection is
+/// encrypted and before the person there is asked. The error is a sentence
+/// for the status line.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) fn send_file(
     addresses: &[SocketAddr],
     device: &str,
     path: &Path,
     from: &str,
-    code: &str,
+    on_secured: impl FnOnce(&str),
 ) -> Result<(), String> {
     let _background = crate::background::BackgroundTask::begin("Send");
     let name = path
@@ -57,10 +61,11 @@ pub(crate) fn send_file(
     let size = std::fs::metadata(path)
         .map_err(|error| format!("send: {error}"))?
         .len();
-    let offer =
-        serde_json::json!({ "name": name, "from": from, "size": size, "code": code }).to_string();
+    let offer = serde_json::json!({ "name": name, "from": from, "size": size }).to_string();
 
-    let mut stream = connect(addresses, device)?;
+    let (address, offered) = connect(addresses, device, None)?;
+    on_secured(&offered.code);
+    let mut stream = offered.stream;
     stream
         .set_read_timeout(Some(ANSWER_WAIT))
         .map_err(|error| format!("send: {error}"))?;
@@ -86,8 +91,9 @@ pub(crate) fn send_file(
         .and_then(|reply| reply["token"].as_str().map(str::to_owned))
         .ok_or_else(|| format!("{device} sent an unexpected answer."))?;
 
-    let mut file = File::open(path).map_err(|error| format!("send: {error}"))?;
-    let mut stream = connect(addresses, device)?;
+    let mut file = std::fs::File::open(path).map_err(|error| format!("send: {error}"))?;
+    let (_, upload) = connect(&[address], device, Some(&offered.certificate))?;
+    let mut stream = upload.stream;
     stream
         .set_read_timeout(Some(TRANSFER_STALL))
         .and_then(|()| stream.set_write_timeout(Some(TRANSFER_STALL)))
@@ -106,18 +112,42 @@ pub(crate) fn send_file(
     Ok(())
 }
 
-fn connect(addresses: &[SocketAddr], device: &str) -> Result<TcpStream, String> {
-    addresses
-        .iter()
-        .find_map(|address| TcpStream::connect_timeout(address, CONNECT_WAIT).ok())
-        // The addresses tried say which of them refused, when a retry works.
-        .ok_or_else(|| format!("Couldn't reach {device} at {addresses:?}. Is NeuroVue open on it?"))
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) fn send_file(
+    _addresses: &[SocketAddr],
+    _device: &str,
+    _path: &Path,
+    _from: &str,
+    _on_secured: impl FnOnce(&str),
+) -> Result<(), String> {
+    Err("Send to iPad needs macOS or iOS.".to_string())
+}
+
+/// The first of `addresses` that completes an encrypted connection.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn connect(
+    addresses: &[SocketAddr],
+    device: &str,
+    pin: Option<&[u8; 32]>,
+) -> Result<(SocketAddr, crate::tls::Connected), String> {
+    let mut failures = Vec::new();
+    for &address in addresses {
+        match crate::tls::connect(address, pin, CONNECT_WAIT) {
+            Ok(connected) => return Ok((address, connected)),
+            Err(error) => failures.push(format!("{address}: {error}")),
+        }
+    }
+    // Which address failed how, for when a retry works.
+    Err(format!(
+        "Couldn't reach {device} ({}). Is NeuroVue open on it?",
+        failures.join("; ")
+    ))
 }
 
 /// Sends one request with a `length`-byte body read from `body`, and returns
 /// the response's status and body.
 fn request(
-    stream: &mut TcpStream,
+    stream: &mut (impl Read + Write),
     request_line: &str,
     content_type: &str,
     length: u64,

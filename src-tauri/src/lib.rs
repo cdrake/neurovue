@@ -19,6 +19,8 @@ mod send;
 mod share;
 #[cfg(desktop)]
 mod terminal;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod tls;
 mod volumetric_server;
 
 use dataset::*;
@@ -329,8 +331,8 @@ async fn list_send_targets(app: tauri::AppHandle) -> Result<Vec<send::SendTarget
 
 /// Stages the dataset as a bundle, like a share, and sends it to `target`,
 /// returning once the person there has accepted it and it has arrived.
-/// `on_offered` hears once staging (slow for a big dataset) is done and the
-/// person there is being asked.
+/// `on_offered` hears the code both ends show, once staging (slow for a big
+/// dataset) is done and the person there is being asked.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn send_view_to_device(
@@ -341,8 +343,7 @@ async fn send_view_to_device(
     view: serde_json::Value,
     created_at: String,
     name: String,
-    code: String,
-    on_offered: tauri::ipc::Channel<()>,
+    on_offered: tauri::ipc::Channel<String>,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
@@ -351,8 +352,15 @@ async fn send_view_to_device(
         if addresses.is_empty() {
             return Err(format!("Couldn't find {} on the network.", target.name));
         }
-        let _ = on_offered.send(());
-        send::send_file(&addresses, &target.name, &dest, &send::device_name(), &code)?;
+        send::send_file(
+            &addresses,
+            &target.name,
+            &dest,
+            &send::device_name(),
+            |code| {
+                let _ = on_offered.send(code.to_string());
+            },
+        )?;
         Ok(ExportBundleResult {
             bundle_path: result.bundle_path,
             volume_count: result.volume_count,
@@ -363,13 +371,19 @@ async fn send_view_to_device(
     .map_err(|error| format!("send_view_to_device: join error: {error}"))?
 }
 
+const SEND_CODE_EVENT: &str = "neurovue-send-code";
+
 /// Sends a drawing back to the device its volume came from, as a drawing
 /// bundle (volumetric_server::export_drawing_bundle). The raw body is a
 /// little-endian u32 length, that many bytes of JSON `{ target, base,
 /// createdAt }`, then the drawing's NIfTI bytes: a drawing is megabytes, too
-/// big to pass as a JSON array of numbers.
+/// big to pass as a JSON array of numbers. The code both ends show arrives as
+/// SEND_CODE_EVENT, since a raw body leaves no room for a channel.
 #[tauri::command]
-async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+async fn send_drawing_to_device(
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
     let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
         return Err("send_drawing_to_device: expected the drawing's bytes".to_string());
     };
@@ -387,7 +401,6 @@ async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), 
         .map_err(|error| format!("send_drawing_to_device: target: {error}"))?;
     let base = meta["base"].clone();
     let created_at = meta["createdAt"].as_str().unwrap_or_default().to_string();
-    let code = meta["code"].as_str().unwrap_or_default().to_string();
     let drawing = drawing.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
         let label = base["label"].as_str().unwrap_or("volume");
@@ -409,7 +422,15 @@ async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), 
         if addresses.is_empty() {
             return Err(format!("Couldn't find {} on the network.", target.name));
         }
-        let sent = send::send_file(&addresses, &target.name, &dest, &send::device_name(), &code);
+        let sent = send::send_file(
+            &addresses,
+            &target.name,
+            &dest,
+            &send::device_name(),
+            |code| {
+                let _ = tauri::Emitter::emit_to(&window, window.label(), SEND_CODE_EVENT, code);
+            },
+        );
         let _ = std::fs::remove_file(&dest);
         sent
     })

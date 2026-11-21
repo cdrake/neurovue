@@ -28,7 +28,7 @@ stays Developer ID DMG. The Mac App Store is deferred to #93.
 | G7 | Privacy labels | Open | App Store Connect: "Data Not Collected" is accurate. Nothing leaves the device except a user-initiated LAN send. |
 | G8 | Store records (support URL, screenshots, review notes) | Open | Owner's action. The review notes should include sample data (MNI152) and say receiving is opt-in. |
 | G9 | Claims and rights | Note | Research-use positioning; no atlases are bundled (AAL licence). Check notices for the MNI template, niimath and the bun runtime. |
-| G10 | Export compliance | Note | The LAN transfer is unencrypted HTTP and uses no proprietary crypto, so the exempt declaration holds. |
+| G10 | Export compliance | Note | The LAN transfer uses the OS's TLS 1.3 (Network.framework) and no crypto of its own, so the exempt declaration (ITSAppUsesNonExemptEncryption false) holds. |
 
 ## Re-audit of bd4b695
 
@@ -86,5 +86,5 @@ tables, folding the tool-row `gapBefore`, and merging the receive-marker helpers
    - At accessibility text sizes the status bar clips and the viewer header crowds.
    - The canvas controls don't follow Dynamic Type.
 5. Security P2/P3 opens above, especially CompleteUnlessOpen.
-6. #88 follow-up: transfers have no TLS or pairing; the 4-digit code only tells look-alike devices apart.
+6. #88: Mac↔iPad sends are TLS 1.3 with a 6-digit code bound to the session (commit-reveal over the TLS exporter), so a matching code rules out a man in the middle; the upload pins the certificate. Windows/Linux sending needs its own mechanism. Needs a Mac↔iPad test on a real LAN.
 7. #93 (Mac App Store): sandbox, bookmarks, helper entitlements, feature gating, then a pkg. A separate project.

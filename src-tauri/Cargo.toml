@@ -23,6 +23,8 @@ required-features = ["cli"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Compiles src/tls.m (Send to iPad's TLS) on Apple targets.
+cc = "1"
 
 [dependencies]
 axum = "0.7"
@@ -62,6 +64,10 @@ portable-pty = "0.8"
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 # poll() for Bonjour discovery (src/bonjour.rs).
 libc = "0.2"
+# Serves Send to iPad's HTTP on each TLS connection's socket (src/receive.rs);
+# both already come with axum.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray"] }
 
