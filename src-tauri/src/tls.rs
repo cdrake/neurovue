@@ -13,7 +13,12 @@ use std::{
 type AcceptFn = extern "C" fn(*mut c_void, c_int, *const c_char, *const c_char);
 
 extern "C" {
-    fn nv_tls_listen(on_accept: AcceptFn, context: *mut c_void, out: *mut *mut c_void) -> u16;
+    fn nv_tls_listen(
+        on_accept: AcceptFn,
+        release: extern "C" fn(*mut c_void),
+        context: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> u16;
     fn nv_tls_listener_alive(handle: *mut c_void) -> bool;
     fn nv_tls_listener_cancel(handle: *mut c_void);
     fn nv_tls_connect(
@@ -42,7 +47,6 @@ type OnAccept = Box<dyn Fn(Accepted) + Send + Sync>;
 /// Listening until dropped.
 pub(crate) struct Listener {
     handle: *mut c_void,
-    on_accept: *mut OnAccept,
     pub port: u16,
 }
 
@@ -51,8 +55,8 @@ unsafe impl Send for Listener {}
 unsafe impl Sync for Listener {}
 
 extern "C" fn accepted(context: *mut c_void, fd: c_int, peer: *const c_char, code: *const c_char) {
-    // SAFETY: context is the Listener's on_accept, alive until the listener
-    // is cancelled; tls.m hands over fd and passes NUL-terminated strings.
+    // SAFETY: context is the OnAccept tls.m holds until it calls release;
+    // tls.m hands over fd and passes NUL-terminated strings.
     let on_accept = unsafe { &*(context as *const OnAccept) };
     let accepted = unsafe {
         Accepted {
@@ -64,24 +68,23 @@ extern "C" fn accepted(context: *mut c_void, fd: c_int, peer: *const c_char, cod
     on_accept(accepted);
 }
 
+extern "C" fn release(context: *mut c_void) {
+    // SAFETY: tls.m calls this once, after the last call to accepted.
+    drop(unsafe { Box::from_raw(context as *mut OnAccept) });
+}
+
 /// Listens on every interface, on a port the system picks.
 pub(crate) fn listen(
     on_accept: impl Fn(Accepted) + Send + Sync + 'static,
 ) -> std::io::Result<Listener> {
     let on_accept: *mut OnAccept = Box::into_raw(Box::new(Box::new(on_accept)));
     let mut handle = std::ptr::null_mut();
-    // SAFETY: on_accept outlives the listener (freed in Drop after cancel).
-    let port = unsafe { nv_tls_listen(accepted, on_accept.cast(), &mut handle) };
+    // SAFETY: tls.m owns on_accept from here and frees it through release.
+    let port = unsafe { nv_tls_listen(accepted, release, on_accept.cast(), &mut handle) };
     if port == 0 {
-        // SAFETY: tls.m keeps no reference when listening fails.
-        drop(unsafe { Box::from_raw(on_accept) });
         return Err(std::io::Error::other("couldn't listen for encrypted sends"));
     }
-    Ok(Listener {
-        handle,
-        on_accept,
-        port,
-    })
+    Ok(Listener { handle, port })
 }
 
 impl Listener {
@@ -95,11 +98,9 @@ impl Listener {
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        // SAFETY: cancel releases tls.m's handle. Connections it accepted
-        // already handed over their fd, so on_accept is no longer needed, but
-        // a handshake in flight may still call it: leak it rather than race.
+        // SAFETY: releases tls.m's handle; on_accept goes once in-flight
+        // handshakes are done with it.
         unsafe { nv_tls_listener_cancel(self.handle) };
-        let _ = self.on_accept;
     }
 }
 
@@ -208,6 +209,28 @@ mod tests {
         sender.stream.read_to_end(&mut reply).unwrap();
         assert_eq!(reply, b"accepted");
         assert!(reader.join().unwrap() == body);
+    }
+
+    #[test]
+    fn dropping_the_listener_frees_its_callback() {
+        let held = std::sync::Arc::new(());
+        let (tx, rx) = mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        let captured = held.clone();
+        let listener = listen(move |accepted| {
+            let _ = &captured;
+            tx.lock().unwrap().send(accepted).unwrap();
+        })
+        .unwrap();
+        let sender = connect(loopback(listener.port), None, Duration::from_secs(5)).unwrap();
+        drop(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        drop(sender);
+        drop(listener);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::sync::Arc::strong_count(&held) > 1 {
+            assert!(std::time::Instant::now() < deadline, "callback leaked");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

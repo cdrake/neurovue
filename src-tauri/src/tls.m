@@ -292,6 +292,20 @@ static nw_parameters_t tlsParameters(void (^configure)(sec_protocol_options_t op
 @implementation NVTLSListener
 @end
 
+/// Rust's accept callback. Every block that may call it holds this object, so
+/// it's released only once the listener and the connections it accepted are
+/// done with it.
+@interface NVTLSCallback : NSObject {
+  @public
+    nv_tls_accept_fn call;
+    void (*release)(void *);
+    void *context;
+}
+@end
+@implementation NVTLSCallback
+- (void)dealloc { release(context); }
+@end
+
 static NSString *peerAddress(nw_connection_t connection) {
     nw_endpoint_t endpoint = nw_connection_copy_endpoint(connection);
     const char *host = endpoint && nw_endpoint_get_type(endpoint) == nw_endpoint_type_address
@@ -303,8 +317,13 @@ static NSString *peerAddress(nw_connection_t connection) {
 }
 
 /// Starts listening and returns the port, or 0. `on_accept` hears, on a
-/// background queue, each connection whose code exchange completed.
-uint16_t nv_tls_listen(nv_tls_accept_fn on_accept, void *context, void **out) {
+/// background queue, each connection whose code exchange completed. Takes
+/// `context`: `release` frees it once nothing can call `on_accept` any more.
+uint16_t nv_tls_listen(nv_tls_accept_fn on_accept, void (*release)(void *), void *context, void **out) {
+    NVTLSCallback *callback = [NVTLSCallback new];
+    callback->call = on_accept;
+    callback->release = release;
+    callback->context = context;
     sec_identity_t identity = listenerIdentity();
     if (!identity) return 0;
     nw_listener_t listener = nw_listener_create(tlsParameters(^(sec_protocol_options_t options) {
@@ -328,7 +347,7 @@ uint16_t nv_tls_listen(nv_tls_accept_fn on_accept, void *context, void **out) {
                 int pair[2];
                 if (!code || !makePair(pair)) return nw_connection_cancel(connection);
                 bridge(connection, pair[1]);
-                on_accept(context, pair[0], peerAddress(connection).UTF8String, code.UTF8String);
+                callback->call(callback->context, pair[0], peerAddress(connection).UTF8String, code.UTF8String);
             });
         });
         nw_connection_start(connection);
