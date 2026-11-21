@@ -100,8 +100,8 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
     if (shapes.active) {
       controls.push(
         segmented('shape-tool', 'Shape', shapes.tools, shapes.tool),
-        button('shape-undo', 'Undo', true),
-        button('shape-redo', 'Redo', true),
+        button('shape-undo', 'Undo shape', true),
+        button('shape-redo', 'Redo shape', true),
         button('clear-shapes', 'Clear shapes', true),
       )
     }
@@ -111,7 +111,7 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
     if (draw.active) {
       controls.push(
         segmented('draw-tool', 'Draw tool', draw.tools, draw.tool),
-        button('undo', 'Undo', draw.hasDrawing),
+        button('undo', 'Undo ink', draw.hasDrawing),
         button('clear-drawing', 'Clear ink', draw.hasDrawing),
         button('interpolate', 'Interpolate', draw.hasDrawing),
         button('save-mask', 'Save mask', draw.hasDrawing),

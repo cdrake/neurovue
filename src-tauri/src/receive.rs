@@ -125,7 +125,8 @@ pub(crate) fn start(app: &tauri::AppHandle) -> std::io::Result<u16> {
             let serve = axum::serve(
                 listener,
                 router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            ).with_graceful_shutdown(async {
+            )
+            .with_graceful_shutdown(async {
                 let _ = stopped.await;
             });
             if let Err(error) = serve.await {
@@ -216,7 +217,12 @@ async fn offer(
                 name: name.clone(),
                 from: request.from.chars().take(80).collect(),
                 size: request.size,
-                code: request.code.chars().filter(char::is_ascii_digit).take(8).collect(),
+                code: request
+                    .code
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .take(8)
+                    .collect(),
                 address: peer.ip().to_canonical().to_string(),
             },
         )

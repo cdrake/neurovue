@@ -1,7 +1,7 @@
 // niimath (a native sidecar) and the integrated terminal (a PTY/shell) both
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod background;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod bonjour;
 mod dataset;
 pub mod headless;
@@ -246,8 +246,6 @@ fn stage_share_bundle(
     Ok((result, dest))
 }
 
-/// Devices on the network that can take a Send to iPad (or, from an iPad, a
-/// drawing sent back).
 /// Set once someone uses Send to iPad here, so the Local Network prompt follows
 /// an action of theirs rather than greeting them at first launch.
 fn receive_marker() -> std::path::PathBuf {
@@ -291,7 +289,8 @@ fn start_receiving(app: &tauri::AppHandle) {
     }
 }
 
-/// Looking for devices means using Send to iPad, so this device starts
+/// Devices on the network that can take a Send to iPad (or, from an iPad, a
+/// drawing sent back). Looking for devices means using Send to iPad, so this device starts
 /// listening too: a Mac for drawings sent back, an iPad for sends.
 #[tauri::command]
 async fn list_send_targets(app: tauri::AppHandle) -> Result<Vec<send::SendTarget>, String> {
@@ -879,8 +878,10 @@ pub fn run() {
         let id = event.id().as_ref();
         if id == mcp::MENU_ALLOW_AGENTS {
             let checked = mcp::allow_agents_item(app).and_then(|item| item.is_checked().ok());
-            if let Some(enabled) = checked {
-                mcp::set_enabled(app, enabled);
+            match checked {
+                Some(true) => mcp::confirm_enable(app),
+                Some(false) => mcp::set_enabled(app, false),
+                None => {}
             }
             return;
         }
@@ -917,7 +918,6 @@ pub fn run() {
             read_mask_file,
             export_dataset_bundle,
             write_file,
-            share_file,
             share_file,
             read_bundle_manifest,
             read_document_manifest,
@@ -973,6 +973,7 @@ pub fn run() {
         read_bundle_manifest,
         read_document_manifest,
         share_view_via_airdrop,
+        share_file,
         opened::take_opened_files,
         opened::keep_picked_file,
         receive::answer_send_offer,

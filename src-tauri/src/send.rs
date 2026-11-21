@@ -57,7 +57,8 @@ pub(crate) fn send_file(
     let size = std::fs::metadata(path)
         .map_err(|error| format!("send: {error}"))?
         .len();
-    let offer = serde_json::json!({ "name": name, "from": from, "size": size, "code": code }).to_string();
+    let offer =
+        serde_json::json!({ "name": name, "from": from, "size": size, "code": code }).to_string();
 
     let mut stream = connect(addresses, device)?;
     stream

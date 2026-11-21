@@ -16,7 +16,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         } catch {
             // We claim every .gz (macOS types .nii.gz as plain gzip). Throwing leaves the panel
             // blank rather than falling back to Quick Look's generic preview, so show file info.
-            log.info("no preview for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+            log.info("no preview for \(url.lastPathComponent, privacy: .private): \(String(describing: error), privacy: .private)")
             return PreviewPage.fileInfoReply(url)
         }
 
@@ -53,7 +53,7 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
         }
         reply.attachments = attachments
         reply.title = url.lastPathComponent
-        log.debug("preview of \(url.lastPathComponent, privacy: .public): \(slices.count) views")
+        log.debug("preview of \(url.lastPathComponent, privacy: .private): \(slices.count) views")
         return reply
     }
 }

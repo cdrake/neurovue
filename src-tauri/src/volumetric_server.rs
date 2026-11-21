@@ -56,8 +56,10 @@ type PyramidLocks = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 /// Total byte budget for the in-memory rendered-preview cache. Cache keys
 /// include client-controlled fields (size, version, region), so without a
 /// ceiling a client could grow this without bound; evict oldest-first past it.
-/// Overridable via NEUROVUE_PREVIEW_CACHE_BYTES (e.g. tighter on mobile).
-const DEFAULT_PREVIEW_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+/// Overridable via NEUROVUE_PREVIEW_CACHE_BYTES. iOS jetsams far below desktop
+/// RAM, so its defaults here and below are a quarter.
+const DEFAULT_PREVIEW_CACHE_MAX_BYTES: usize =
+    if cfg!(target_os = "ios") { 64 } else { 256 } * 1024 * 1024;
 
 fn preview_cache_max_bytes() -> usize {
     static BYTES: OnceLock<usize> = OnceLock::new();
@@ -118,7 +120,8 @@ impl PreviewCache {
 
 /// Total byte budget for cached decoded pyramid-level voxel data. This stores
 /// decompressed coarse levels only, never full source volumes by default.
-const DEFAULT_DECODED_LEVEL_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const DEFAULT_DECODED_LEVEL_CACHE_BYTES: usize =
+    if cfg!(target_os = "ios") { 128 } else { 512 } * 1024 * 1024;
 
 #[derive(Clone)]
 struct DecodedNifti {
@@ -3553,7 +3556,8 @@ fn read_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
 /// memory. A pathologically large file would otherwise OOM the server (the read
 /// alone, plus the f32 working buffers in pyramid/render). Generous enough for
 /// real brain data (~800^3); overridable via NEUROVUE_MAX_SOURCE_VOXELS.
-const DEFAULT_MAX_SOURCE_VOXELS: usize = 512 * 1024 * 1024;
+const DEFAULT_MAX_SOURCE_VOXELS: usize =
+    if cfg!(target_os = "ios") { 128 } else { 512 } * 1024 * 1024;
 
 fn max_source_voxels() -> usize {
     std::env::var("NEUROVUE_MAX_SOURCE_VOXELS")
@@ -3583,9 +3587,9 @@ fn peek_nifti_header_bytes(path: &FsPath) -> Option<[u8; 348]> {
 }
 
 /// Frames beyond the spatial dims: the product of dim[4..=dim[0]] (time,
-/// components, ...), at least 1. A 4D file is read whole, so neurovue-web
-/// counts these toward the voxel ceiling; the desktop app counts one frame,
-/// as it always has, so large 4D runs it opened before still open.
+/// components, ...), at least 1. A 4D file is read whole, so neurovue-web and
+/// iOS count these toward the voxel ceiling; desktop counts one frame, as it
+/// always has, so large 4D runs it opened before still open.
 fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
     let little_endian = i32::from_le_bytes(header[0..4].try_into().ok()?) == 348;
     let dim = |index: usize| -> i16 {
@@ -3604,7 +3608,7 @@ fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
 
 /// Frames counted toward the voxel ceiling (see `nifti_frame_count`).
 fn source_frames(header: &[u8; 348]) -> Option<usize> {
-    if cfg!(neurovue_web) {
+    if cfg!(any(neurovue_web, target_os = "ios")) {
         nifti_frame_count(header)
     } else {
         Some(1)
@@ -3616,18 +3620,19 @@ fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     // huge) full read, so an oversized volume bails instead of OOMing.
     let header_bytes = peek_nifti_header_bytes(path)?;
     let header = parse_nifti_header(&header_bytes)?;
-    let voxels = usize::from(header.shape[0])
+    let spatial_voxels = usize::from(header.shape[0])
         .checked_mul(usize::from(header.shape[1]))?
-        .checked_mul(usize::from(header.shape[2]))?
-        .checked_mul(source_frames(&header_bytes)?)?;
-    if voxels > max_source_voxels() {
+        .checked_mul(usize::from(header.shape[2]))?;
+    if spatial_voxels.checked_mul(source_frames(&header_bytes)?)? > max_source_voxels() {
         return None;
     }
 
     let bytes = if is_gzipped_nifti(path) {
         // A gzip bomb can claim a small header and inflate far past it: stop at
-        // the widest voxel (16-byte complex) plus room for header extensions.
-        let limit = (voxels as u64).saturating_mul(16).saturating_add(1 << 20);
+        // the widest voxel (16-byte complex) in every frame, plus room for header
+        // extensions. All frames, even where the ceiling counts one: 4D is read whole.
+        let all_voxels = spatial_voxels.checked_mul(nifti_frame_count(&header_bytes)?)? as u64;
+        let limit = all_voxels.saturating_mul(16).saturating_add(1 << 20);
         let mut bytes = Vec::new();
         GzDecoder::new(File::open(path).ok()?)
             .take(limit)

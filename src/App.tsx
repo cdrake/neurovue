@@ -2885,7 +2885,12 @@ export function App(): JSX.Element {
               Accept only if the sender shows code{' '}
               <strong>{sendOffer.offer.code}</strong>.
             </p>
-          ) : null}
+          ) : (
+            <p>
+              No confirmation code: accept only if you just sent this from your
+              own Mac.
+            </p>
+          )}
           <div className="nv-send-offer-actions">
             <button
               className="nv-tool-button"

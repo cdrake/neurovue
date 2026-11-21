@@ -233,6 +233,33 @@ pub(crate) fn set_enabled<R: Runtime>(app: &AppHandle<R>, enabled: bool) {
     let _ = app.emit(STATUS_EVENT, status(app));
 }
 
+/// Explain what an agent can reach before turning it on (App Review 5.1.2).
+/// Non-blocking: menu events run on the main thread.
+pub(crate) fn confirm_enable<R: Runtime>(app: &AppHandle<R>) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    let app_handle = app.clone();
+    app.dialog()
+        .message(
+            "Local AI agents (MCP clients such as Claude Desktop or Claude Code) will be able to \
+             list and open datasets in your allowed folders, read their metadata, change the \
+             view, and capture images of it. NeuroVue sends nothing off this Mac itself, but an \
+             agent may pass what it reads to its AI provider. Turn this off any time in View.",
+        )
+        .title("Allow AI Agents?")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".into(),
+            "Cancel".into(),
+        ))
+        .show(move |allowed| {
+            if !allowed {
+                if let Some(item) = allow_agents_item(&app_handle) {
+                    let _ = item.set_checked(false);
+                }
+            }
+            set_enabled(&app_handle, allowed);
+        });
+}
+
 #[tauri::command]
 pub(crate) fn mcp_status(app: AppHandle) -> McpStatus {
     status(&app)

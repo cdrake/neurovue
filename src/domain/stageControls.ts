@@ -30,7 +30,7 @@ const DIM: RGBA = [0.651, 0.631, 0.561, 0.4]
 
 // A finger needs Apple's 44 pt minimum target; a mouse keeps the compact
 // row the HTML chips had.
-const COARSE_POINTER =
+export const COARSE_POINTER =
   typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
 // Every control is one row high.
 const CONTROL_HEIGHT = COARSE_POINTER ? 44 : 28

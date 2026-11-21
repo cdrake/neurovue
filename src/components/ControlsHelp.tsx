@@ -1,5 +1,6 @@
 import { Mouse, X } from 'lucide-react'
 import { type JSX, useEffect, useRef } from 'react'
+import { COARSE_POINTER } from '../domain/stageControls'
 import { EXPRESS_VIEW_SHORTCUT } from '../hooks/useNativeMenu'
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
@@ -14,8 +15,6 @@ function accel(key: string, shift = false, alt = false): string {
 type Row = readonly [keys: string, action: string]
 
 type Section = { title: string; note?: string; rows: Row[] }
-
-const COARSE_POINTER = matchMedia('(pointer: coarse)').matches
 
 const TOUCH: Section = {
   title: 'Touch',
