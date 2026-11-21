@@ -21,7 +21,7 @@
     "tauri:build:mac": "tauri build --target universal-apple-darwin"
   },
   "dependencies": {
-    "@medview/neuroflow-react": "^0.2.0",
+    "@medview/neuroflow-react": "^0.3.0",
     "@niivue/niivue": "^1.0.0-rc.231",
     "@niivue/nv-mcp": "1.0.0-rc.228",
     "@niivue/uikit": "^1.0.0-rc.230",
