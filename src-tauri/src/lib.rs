@@ -268,36 +268,44 @@ fn receiving_enabled() -> bool {
     receive_marker().exists()
 }
 
-/// Starts receiving, now and at every later launch.
+/// Whether this session's listener is up: receive::start manages the
+/// Receiver only once it has bound.
+fn receiver_running(app: &tauri::AppHandle) -> bool {
+    app.try_state::<std::sync::Arc<receive::Receiver>>()
+        .is_some()
+}
+
+/// Starts receiving, now and at every later launch; persisted only once it works.
 #[tauri::command]
-fn enable_receiving(app: tauri::AppHandle) {
-    if receiving_enabled() {
-        return;
+fn enable_receiving(app: tauri::AppHandle) -> Result<(), String> {
+    if receiving_enabled() && receiver_running(&app) {
+        return Ok(());
     }
+    try_start_receiving(&app)?;
     let marker = receive_marker();
     if let Some(dir) = marker.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }
-    let _ = std::fs::write(&marker, b"");
-    start_receiving(&app);
+    std::fs::write(&marker, b"").map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn is_receiving() -> bool {
-    receiving_enabled()
+fn is_receiving(app: tauri::AppHandle) -> bool {
+    receiver_running(&app)
 }
 
 /// Listens for sends and advertises the port (see receive.rs, bonjour.rs).
+fn try_start_receiving(app: &tauri::AppHandle) -> Result<(), String> {
+    let port = receive::start(app).map_err(|error| format!("Can't receive sends ({error})."))?;
+    eprintln!("NeuroVue: receiving sends on port {port}");
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    bonjour::advertise(port)?;
+    Ok(())
+}
+
 fn start_receiving(app: &tauri::AppHandle) {
-    match receive::start(app) {
-        Ok(port) => {
-            eprintln!("NeuroVue: receiving sends on port {port}");
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
-            if let Err(error) = bonjour::advertise(port) {
-                eprintln!("NeuroVue: {error}");
-            }
-        }
-        Err(error) => eprintln!("NeuroVue: can't receive sends ({error})"),
+    if let Err(error) = try_start_receiving(app) {
+        eprintln!("NeuroVue: {error}");
     }
 }
 
@@ -306,7 +314,9 @@ fn start_receiving(app: &tauri::AppHandle) {
 /// listening too: a Mac for drawings sent back, an iPad for sends.
 #[tauri::command]
 async fn list_send_targets(app: tauri::AppHandle) -> Result<Vec<send::SendTarget>, String> {
-    enable_receiving(app);
+    if let Err(error) = enable_receiving(app) {
+        eprintln!("NeuroVue: {error}");
+    }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     return tauri::async_runtime::spawn_blocking(|| {
         bonjour::browse(std::time::Duration::from_millis(1500))

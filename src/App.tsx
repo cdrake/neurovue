@@ -2351,10 +2351,19 @@ export function App(): JSX.Element {
             canTurnOnReceiving
               ? () => {
                   setCanTurnOnReceiving(false)
-                  void enableReceiving()
-                  setStatus(
-                    'Macs on this network running NeuroVue can now send here.',
-                    'success',
+                  enableReceiving().then(
+                    () =>
+                      setStatus(
+                        'Macs on this network running NeuroVue can now send here.',
+                        'success',
+                      ),
+                    (error) => {
+                      setCanTurnOnReceiving(true)
+                      setStatus(
+                        error instanceof Error ? error.message : String(error),
+                        'error',
+                      )
+                    },
                   )
                 }
               : undefined

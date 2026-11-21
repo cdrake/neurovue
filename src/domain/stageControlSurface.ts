@@ -79,6 +79,21 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
       segmented('look', 'Look', state.look.presets, state.look.value),
     )
   }
+  if (state.magnify !== null) {
+    controls.push(toggle('magnify', 'Magnify', state.magnify, true))
+  }
+  if (state.magnifyZoom !== null) {
+    controls.push({
+      id: 'magnify-zoom',
+      kind: 'slider',
+      label: 'Magnify zoom',
+      min: 1.5,
+      max: 10,
+      step: 0.1,
+      value: state.magnifyZoom,
+      enabled: true,
+    })
+  }
   const { box, measure, shapes, draw } = state
   if (box) {
     controls.push(toggle('box', 'Box', box.active, box.enabled))
@@ -224,7 +239,8 @@ export function setStageControl(
       }
       // The stage's tool buttons toggle, so press only to change.
       if (value !== control.value) {
-        if (id === 'box') actions.box()
+        if (id === 'magnify') actions.magnify()
+        else if (id === 'box') actions.box()
         else if (id === 'measure') actions.measure()
         else if (id === 'shapes') actions.shapes()
         else if (id === 'draw') actions.draw()
@@ -263,6 +279,10 @@ export function setStageControl(
       }
       if (id === 'wand-tolerance') {
         actions.wandTolerance(clamped)
+        return { ...control, value: clamped }
+      }
+      if (id === 'magnify-zoom') {
+        actions.magnifyZoom(clamped)
         return { ...control, value: clamped }
       }
       const plane = state.clip?.slider

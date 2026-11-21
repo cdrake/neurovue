@@ -67,6 +67,8 @@ function recorder(): { calls: string[]; actions: StageControlsActions } {
     slice: log('slice'),
     clipPlane: log('clipPlane'),
     clipDepth: log('clipDepth'),
+    magnify: log('magnify'),
+    magnifyZoom: log('magnifyZoom'),
   } as StageControlsActions
   return { calls, actions }
 }
@@ -126,6 +128,23 @@ test('picks the draw tool and sets the wand', () => {
     'pen, wand',
   )
   expect(calls).toEqual(['drawTool:pen', 'wandTolerance:0.5'])
+})
+
+test('lists and sets the magnifier', () => {
+  const { calls, actions } = recorder()
+  const magnifying: StageControlsState = {
+    ...state,
+    magnify: true,
+    magnifyZoom: 3,
+  }
+  const live = { state: magnifying, actions }
+  expect(stageControlStates(magnifying).map((c) => c.id)).toContain(
+    'magnify-zoom',
+  )
+  setStageControl(live, 'magnify', { value: true })
+  expect(setStageControl(live, 'magnify-zoom', { value: 20 }).value).toBe(10)
+  setStageControl(live, 'magnify', { value: false })
+  expect(calls).toEqual(['magnifyZoom:10', 'magnify'])
 })
 
 test('every button the stage lists can be pressed', () => {

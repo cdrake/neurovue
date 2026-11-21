@@ -2232,6 +2232,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "ciborium",
+ "dispatch2",
  "flate2",
  "futures-util",
  "getrandom 0.3.4",

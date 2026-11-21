@@ -1,7 +1,7 @@
 # Audit response
 
-Response to the external Apple-readiness review of b66a99a (`audit_temp.md`,
-deleted). Work is on branch `fix/ios-submission-blockers` (issues #78–#93).
+Responses to the external Apple-readiness reviews of b66a99a and of the re-audit
+of bd4b695 (both `audit_temp.md`, deleted). Work is on branch `fix/ios-submission-blockers` (issues #78–#93).
 Scope decision (owner): ship iOS (iPhone + iPad) to the App Store now; macOS
 stays Developer ID DMG. The Mac App Store is deferred to #93.
 
@@ -30,7 +30,23 @@ stays Developer ID DMG. The Mac App Store is deferred to #93.
 | G9 | Claims and rights | Note | Research-use positioning; no atlases are bundled (AAL licence). Check notices for the MNI template, niimath and the bun runtime. |
 | G10 | Export compliance | Note | The LAN transfer is unencrypted HTTP and uses no proprietary crypto, so the exempt declaration holds. |
 
-## Internal audit (this pass)
+## Re-audit of bd4b695
+
+| # | Point | Decision | Status |
+|---|-------|----------|--------|
+| R1 | P1: raw level 0 bypasses the iOS voxel ceiling | Fixed | `check_source_ceiling` (volumetric_server.rs) rejects over-ceiling files with 413 on `raw_volume` and every `raw_level_volume`; test included. The manifest still lists them, and bytes per voxel aren't counted yet. |
+| R2 | P1 gate: privacy/support URLs 404 | Expected | They go live when PR #94 merges (Pages serves main `/docs`). Verify them, then enter them in App Store Connect. |
+| R3 | P2: `MainThreadMarker::new_unchecked` off main | Fixed | background.rs begins and ends tasks through `dispatch2::run_on_main`. Begin stores the id on main, so the expiry race is gone too. |
+| R4 | P2: iPhone drawing settings overflow 375 px | Fixed | The `flow()` helper in stageControls.ts wraps the tool row and the palette/settings rows. stageControls.test.ts checks 375 px. |
+| R5 | P2: Magnify missing from the mirror and MCP | Fixed | stageControlSurface.ts adds a `magnify` toggle and a `magnify-zoom` slider (1.5–10). |
+| R6 | P2: receive opt-in reports success early | Fixed | `enable_receiving` returns a Result and starts the listener before persisting the marker. `is_receiving` reflects the listener, not the marker. The UI awaits the call and shows an error with a retry. On iOS a socket the system reclaimed still reads as running until resume restarts it. |
+| R7 | P2: overlapping same-name uploads share a `.part` | Fixed | `reserve_part` in receive.rs creates the part file with `create_new` and moves to the next name; test included. |
+
+Still open from the re-audit's release checks: the device pass, NSFileProtectionComplete
+under lock, a receive off switch and token expiry, the store records, and a signed DMG
+and IPA from merged main.
+
+## Internal audit (first pass)
 
 Security and bugs (agent run; nothing lets a LAN peer skip Accept or write
 outside the inbox):
@@ -41,8 +57,6 @@ outside the inbox):
 - P2 Open (PLAUSIBLE): NSFileProtectionComplete may fail background transfers about 10 s after the device locks. The fix is `CompleteUnlessOpen`, which needs the App ID's Data Protection changed in the developer portal and a new profile. Verify on a device.
 - P3 Fixed: the mirror's duplicate "Undo" labels are now "Undo shape", "Redo shape" and "Undo ink".
 - P3 Open:
-  - `MainThreadMarker::new_unchecked` is called off the main thread in background.rs. It breaks the Rust safety contract; dispatch to main instead.
-  - A race between task expiry and `begin` storing its id.
   - Opening Send to iPad on a Mac turns on listening for good, with no off switch.
   - Offer spam can hold the single offer slot, and unused upload tokens are never cleared (both pre-existing).
 
@@ -71,6 +85,6 @@ tables, folding the tool-row `gapBefore`, and merging the receive-marker helpers
 4. Known UI residuals:
    - At accessibility text sizes the status bar clips and the viewer header crowds.
    - The canvas controls don't follow Dynamic Type.
-5. Security P2/P3 opens above, especially CompleteUnlessOpen and the main-thread dispatch in background.rs.
+5. Security P2/P3 opens above, especially CompleteUnlessOpen.
 6. #88 follow-up: transfers have no TLS or pairing; the 4-digit code only tells look-alike devices apart.
 7. #93 (Mac App Store): sandbox, bookmarks, helper entitlements, feature gating, then a pkg. A separate project.

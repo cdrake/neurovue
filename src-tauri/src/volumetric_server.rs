@@ -2319,7 +2319,18 @@ async fn raw_volume(
 ) -> Result<Response, StatusCode> {
     let volume = find_signed_volume(&state, &path.vol_id, &path.sig)?;
     let path = volume.source_path.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+    check_source_ceiling(path, max_source_voxels())?;
     stream_volume_file(path).await
+}
+
+/// The page decodes a served source whole, and every level is built from it,
+/// so hold the routes to `read_nifti_file`'s ceiling.
+fn check_source_ceiling(path: &FsPath, max_voxels: usize) -> Result<(), StatusCode> {
+    let header_bytes = peek_nifti_header_bytes(path).ok_or(StatusCode::NOT_FOUND)?;
+    let header = parse_nifti_header(&header_bytes).ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+    spatial_voxels_within(&header, &header_bytes, max_voxels)
+        .map(|_| ())
+        .ok_or(StatusCode::PAYLOAD_TOO_LARGE)
 }
 
 /// Optional ceiling on a single served volume file, via
@@ -2367,8 +2378,10 @@ async fn raw_level_volume(
     let volume = find_signed_volume(&state, &path.vol_id, &path.sig)?;
     let dataset_root = current_dataset_root(&state);
     let level = clamp_pyramid_level(path.level, volume.shape);
+    let source = volume.source_path.clone().ok_or(StatusCode::NOT_FOUND)?;
+    check_source_ceiling(&source, max_source_voxels())?;
     let path = if level == 0 {
-        volume.source_path.clone().ok_or(StatusCode::NOT_FOUND)?
+        source
     } else {
         // Building a level decodes and resamples the whole volume; keep it off
         // the async workers so other routes (and /rpc) stay responsive.
@@ -3615,17 +3628,25 @@ fn source_frames(header: &[u8; 348]) -> Option<usize> {
     }
 }
 
+/// The spatial voxel count, if it times `source_frames` is within `max_voxels`.
+fn spatial_voxels_within(
+    header: &NiftiHeader,
+    header_bytes: &[u8; 348],
+    max_voxels: usize,
+) -> Option<usize> {
+    let spatial_voxels = usize::from(header.shape[0])
+        .checked_mul(usize::from(header.shape[1]))?
+        .checked_mul(usize::from(header.shape[2]))?;
+    (spatial_voxels.checked_mul(source_frames(header_bytes)?)? <= max_voxels)
+        .then_some(spatial_voxels)
+}
+
 fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     // Peek the header and enforce the voxel ceiling before the (potentially
     // huge) full read, so an oversized volume bails instead of OOMing.
     let header_bytes = peek_nifti_header_bytes(path)?;
     let header = parse_nifti_header(&header_bytes)?;
-    let spatial_voxels = usize::from(header.shape[0])
-        .checked_mul(usize::from(header.shape[1]))?
-        .checked_mul(usize::from(header.shape[2]))?;
-    if spatial_voxels.checked_mul(source_frames(&header_bytes)?)? > max_source_voxels() {
-        return None;
-    }
+    let spatial_voxels = spatial_voxels_within(&header, &header_bytes, max_source_voxels())?;
 
     let bytes = if is_gzipped_nifti(path) {
         // A gzip bomb can claim a small header and inflate far past it: stop at
@@ -5550,6 +5571,19 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root_a);
         let _ = fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn served_sources_obey_the_voxel_ceiling() {
+        let root = scratch_dir("ceiling");
+        let path = root.join("big.nii.gz");
+        write_nifti(&path, [16, 16, 16], 1);
+        assert_eq!(check_source_ceiling(&path, 16 * 16 * 16), Ok(()));
+        assert_eq!(
+            check_source_ceiling(&path, 16 * 16 * 16 - 1),
+            Err(StatusCode::PAYLOAD_TOO_LARGE)
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

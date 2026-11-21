@@ -257,9 +257,10 @@ async fn upload(
         eprintln!("NeuroVue receive: inbox: {error}");
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
-    let dest = unused_path(&receiver.inbox, &upload.name);
-    let part = PathBuf::from(format!("{}.part", dest.display()));
-    match write_body(&part, body, upload.size).await {
+    let Ok((dest, part, file)) = reserve_part(&receiver.inbox, &upload.name) else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    match write_body(file.into(), body, upload.size).await {
         Ok(()) => {}
         Err(status) => {
             let _ = tokio::fs::remove_file(&part).await;
@@ -274,11 +275,8 @@ async fn upload(
     StatusCode::OK
 }
 
-/// Streams `body` to `path`, refusing anything but exactly `size` bytes.
-async fn write_body(path: &FsPath, body: Body, size: u64) -> Result<(), StatusCode> {
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+/// Streams `body` to `file`, refusing anything but exactly `size` bytes.
+async fn write_body(mut file: tokio::fs::File, body: Body, size: u64) -> Result<(), StatusCode> {
     let mut written: u64 = 0;
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
@@ -328,17 +326,32 @@ fn split_extension(name: &str) -> Option<(&str, &str)> {
         .map(|extension| name.split_at(name.len() - extension.len()))
 }
 
+/// `dir/name`, then `dir/stem-2.ext` and so on.
+fn candidate_paths<'a>(dir: &'a FsPath, name: &'a str) -> impl Iterator<Item = PathBuf> + 'a {
+    let (stem, extension) = split_extension(name).unwrap_or((name, ""));
+    std::iter::once(dir.join(name))
+        .chain((2..).map(move |n| dir.join(format!("{stem}-{n}{extension}"))))
+}
+
 /// `dir/name`, or `dir/stem-2.ext` and so on if that's taken.
 pub(crate) fn unused_path(dir: &FsPath, name: &str) -> PathBuf {
-    let path = dir.join(name);
-    if !path.exists() {
-        return path;
-    }
-    let (stem, extension) = split_extension(name).unwrap_or((name, ""));
-    (2..)
-        .map(|n| dir.join(format!("{stem}-{n}{extension}")))
+    candidate_paths(dir, name)
         .find(|path| !path.exists())
         .expect("an unused name")
+}
+
+/// An unused final path and its newly created `.part` sibling; creating the
+/// part exclusively keeps overlapping uploads of one name apart.
+fn reserve_part(dir: &FsPath, name: &str) -> std::io::Result<(PathBuf, PathBuf, std::fs::File)> {
+    for dest in candidate_paths(dir, name).filter(|path| !path.exists()) {
+        let part = PathBuf::from(format!("{}.part", dest.display()));
+        match std::fs::File::create_new(&part) {
+            Ok(file) => return Ok((dest, part, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("candidate paths never run out")
 }
 
 fn random_token() -> std::io::Result<String> {
@@ -380,6 +393,18 @@ mod tests {
             unused_path(&dir, "anat.nvbundle"),
             dir.join("anat.nvbundle")
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn overlapping_uploads_reserve_distinct_paths() {
+        let dir = std::env::temp_dir().join(format!("nv-receive-{}", random_token().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (dest_a, part_a, _) = reserve_part(&dir, "T1w.nii.gz").unwrap();
+        let (dest_b, part_b, _) = reserve_part(&dir, "T1w.nii.gz").unwrap();
+        assert_eq!(dest_a, dir.join("T1w.nii.gz"));
+        assert_eq!(dest_b, dir.join("T1w-2.nii.gz"));
+        assert_ne!(part_a, part_b);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

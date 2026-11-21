@@ -655,31 +655,27 @@ export class StageControls implements UIKitOverlayRenderer {
       })
     }
     const lookWidth = look ? (this.segmenteds.getLayout('look')?.width ?? 0) : 0
-    const rowStart = look ? EDGE + lookWidth + GROUP_GAP : EDGE
     const buttonWidth = (spec: (typeof row)[number]): number =>
       this.buttons.getLayout(spec.id)?.width ?? 0
     const gapBefore = (spec: (typeof row)[number]): number =>
-      GROUP_STARTS.has(spec.id) && row[0] !== spec ? GROUP_GAP : GAP
-    let x = rowStart
-    for (const spec of row) x += gapBefore(spec) - GAP + buttonWidth(spec) + GAP
+      GROUP_STARTS.has(spec.id) || row[0] === spec ? GROUP_GAP : GAP
+    const right = width - EDGE
+    const rowEnd = { x: EDGE + lookWidth, y: 0 }
+    for (const spec of row) flow(rowEnd, buttonWidth(spec), gapBefore(spec))
     // A row that would run into the view modes (a narrow pane) drops below
     // them, and wraps where even the full width is too narrow (a phone).
     const modesLeft = width - EDGE - (modes?.width ?? 0)
     const rowY =
-      x - GAP + GROUP_GAP > modesLeft ? TOP + CONTROL_HEIGHT + ROW_GAP : TOP
-    let cx = rowStart
-    let cy = rowY
+      rowEnd.x + GROUP_GAP > modesLeft ? TOP + CONTROL_HEIGHT + ROW_GAP : TOP
+    const tools = { x: EDGE + lookWidth, y: rowY }
     for (const spec of row) {
-      if (row[0] !== spec) cx += gapBefore(spec) - GAP
-      if (cx > EDGE && cx + buttonWidth(spec) > width - EDGE) {
-        cx = EDGE
-        cy += CONTROL_HEIGHT + ROW_GAP
-      }
-      this.buttons.updateButton(spec.id, { x: cx, y: cy })
-      cx += buttonWidth(spec) + GAP
+      this.buttons.updateButton(
+        spec.id,
+        flow(tools, buttonWidth(spec), gapBefore(spec), right),
+      )
     }
     if (look) this.segmenteds.updateSegmented('look', { x: EDGE, y: rowY })
-    let nextY = cy + CONTROL_HEIGHT + ROW_GAP
+    let nextY = tools.y + CONTROL_HEIGHT + ROW_GAP
     if (picked) {
       this.segmenteds.updateSegmented(picked.id, { x: EDGE, y: nextY })
       nextY += CONTROL_HEIGHT + ROW_GAP
@@ -697,31 +693,36 @@ export class StageControls implements UIKitOverlayRenderer {
       })
       nextY += CONTROL_HEIGHT + ROW_GAP
     }
-    let px = EDGE - GROUP_GAP
+    // The pen's settings wrap like the tool row: a phone can't fit them in one.
+    const settings = { x: EDGE, y: nextY }
     if (palette) {
-      px = EDGE
       for (const color of palette.colors) {
-        this.buttons.updateButton(`pen-${color.value}`, { x: px, y: nextY })
-        px += SWATCH + GAP
+        this.buttons.updateButton(
+          `pen-${color.value}`,
+          flow(settings, SWATCH, GAP, right),
+        )
       }
       if (palette.sizes.length > 0) {
-        this.segmenteds.updateSegmented('brush', {
-          x: px + GROUP_GAP,
-          y: nextY,
-        })
+        const brushWidth = this.segmenteds.getLayout('brush')?.width ?? 0
+        this.segmenteds.updateSegmented(
+          'brush',
+          flow(settings, brushWidth, GROUP_GAP, right),
+        )
       }
     }
     if (wand) {
-      const layout = this.sliders.getLayout('wand-tolerance')
-      const sliderHeight = layout?.height ?? CONTROL_HEIGHT
+      const sliderHeight =
+        this.sliders.getLayout('wand-tolerance')?.height ?? CONTROL_HEIGHT
+      const at = flow(settings, WAND_SLIDER, GROUP_GAP, right)
       this.sliders.updateSlider('wand-tolerance', {
-        x: px + GROUP_GAP,
-        y: nextY + (CONTROL_HEIGHT - sliderHeight) / 2,
+        x: at.x,
+        y: at.y + (CONTROL_HEIGHT - sliderHeight) / 2,
       })
-      this.segmenteds.updateSegmented('wand-scope', {
-        x: px + 2 * GROUP_GAP + WAND_SLIDER,
-        y: nextY,
-      })
+      const scopeWidth = this.segmenteds.getLayout('wand-scope')?.width ?? 0
+      this.segmenteds.updateSegmented(
+        'wand-scope',
+        flow(settings, scopeWidth, GROUP_GAP, right),
+      )
     }
     const bottom = height - clearance.colorbar - 8
     if (slice) {
@@ -864,6 +865,26 @@ export function overlayClearance(
     colorbar: Math.ceil(colorbar / density),
     cube: Math.ceil(Math.max(0, cubeEdge) / density),
   }
+}
+
+/**
+ * Places a control `width` wide `gap` after the last one at `at` (none at a
+ * row's start, x === EDGE), wrapping to a new row where it would cross
+ * `right`; moves `at` past it and returns its position.
+ */
+function flow(
+  at: { x: number; y: number },
+  width: number,
+  gap: number,
+  right = Number.POSITIVE_INFINITY,
+): { x: number; y: number } {
+  let x = at.x === EDGE ? EDGE : at.x + gap
+  if (x > EDGE && x + width > right) {
+    x = EDGE
+    at.y += CONTROL_HEIGHT + ROW_GAP
+  }
+  at.x = x + width
+  return { x, y: at.y }
 }
 
 function hexColor(css: string): RGBA {
