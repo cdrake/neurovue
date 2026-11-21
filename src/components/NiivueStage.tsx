@@ -125,6 +125,9 @@ interface NiivueStageProps {
   onBlockSelect?: (selection: BlockSelection | null) => void
   /** Double-tapping a brick: view it on its own. */
   onBlockView?: (selection: BlockSelection) => void
+  /** The sub-volume stack's levels while one of them is shown, whole first. */
+  subvolumeLevels?: readonly { id: string; label: string }[] | null
+  onSubvolumeLevel?: (itemId: string) => void
 }
 
 export interface NiivueRenderLayer {
@@ -645,6 +648,8 @@ export function NiivueStage({
   onSendDrawing,
   onBlockSelect,
   onBlockView,
+  subvolumeLevels,
+  onSubvolumeLevel,
 }: NiivueStageProps): JSX.Element {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -1958,6 +1963,10 @@ export function NiivueStage({
   const stageControlsState: StageControlsState = {
     magnify: primaryItem ? isMagnifying : null,
     magnifyZoom: primaryItem && isMagnifying ? magnifyZoom : null,
+    levels:
+      primaryItem && subvolumeLevels
+        ? { items: subvolumeLevels, value: primaryItem.id }
+        : null,
     box:
       primaryItem && onBlockView
         ? { active: isBoxActive, enabled: loadedVersion > 0 }
@@ -2058,6 +2067,7 @@ export function NiivueStage({
       if (preset) onShadingChange(preset.shading)
     },
     magnify: () => setIsMagnifying((on) => !on),
+    level: (id) => onSubvolumeLevel?.(id),
     magnifyZoom: (zoom) => {
       const lens = magnifierRef.current
       if (!lens) return

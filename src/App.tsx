@@ -157,6 +157,7 @@ import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
 import { groupOverlaysByRun, type RunTag } from './domain/overlayRuns'
 import type { BatchTarget } from './domain/pipelineTargets'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
+import { pushCut, stackLevels } from './domain/subvolumeStack'
 import {
   loadRememberedUiMode,
   rememberUiMode,
@@ -523,10 +524,17 @@ export function App(): JSX.Element {
     null,
   )
   const [isCuttingBlock, setIsCuttingBlock] = useState(false)
-  // The grid and explode a block was cut from, restored on the way back so the
+  // Volumes cut one from another, the whole first (see subvolumeStack), and
+  // the grid and explode each was left at, restored on the way back so the
   // next brick is one tap away.
-  const [blocksBeforeCut, setBlocksBeforeCut] = useState<BlockSettings | null>(
-    null,
+  const [subvolumeStack, setSubvolumeStack] = useState<string[]>([])
+  const [stackBlocks, setStackBlocks] = useState<Record<string, BlockSettings>>(
+    {},
+  )
+  // Levels whose volumes have gone (dataset closed or changed) drop out.
+  const stackLevelList = stackLevels(
+    subvolumeStack.filter((id) => items.some((item) => item.id === id)),
+    shownBase?.id,
   )
   const goToCoordinate = useCallback((x: number, y: number, z: number) => {
     setCrosshairTarget({ mm: [x, y, z] })
@@ -935,7 +943,8 @@ export function App(): JSX.Element {
     try {
       const id = await cropVolumeBlock(selection.itemId, selection.cornersMM)
       await refreshDesktopManifestData()
-      setBlocksBeforeCut(blocks)
+      setStackBlocks((current) => ({ ...current, [selection.itemId]: blocks }))
+      setSubvolumeStack((current) => pushCut(current, selection.itemId, id))
       setBlocks((current) => ({ ...current, grid: 1 }))
       showVolume(id)
       setStatus('Viewing the block at full resolution.', 'success')
@@ -944,6 +953,18 @@ export function App(): JSX.Element {
     } finally {
       setIsCuttingBlock(false)
     }
+  }
+
+  /** Shows another level of the sub-volume stack, as its blocks were left. */
+  function showStackLevel(itemId: string): void {
+    if (itemId === shownBase?.id) return
+    if (shownBase) {
+      const leaving = shownBase.id
+      setStackBlocks((current) => ({ ...current, [leaving]: blocks }))
+    }
+    setBlocks(stackBlocks[itemId] ?? { ...blocks, grid: 1 })
+    setBlockSelection(null)
+    showVolume(itemId)
   }
 
   /** View ▸ Clear All: closes the dataset, overlays and meshes, back to the welcome screen. */
@@ -2546,6 +2567,8 @@ export function App(): JSX.Element {
                   onViewer={handleViewer}
                   onBlockSelect={setBlockSelection}
                   onBlockView={(selection) => void viewSelectedBlock(selection)}
+                  subvolumeLevels={stackLevelList}
+                  onSubvolumeLevel={showStackLevel}
                   onSendDrawing={
                     drawingBase
                       ? (drawing) => void handleSendDrawing(drawing)
@@ -2721,13 +2744,9 @@ export function App(): JSX.Element {
                           isCutting={isCuttingBlock}
                           onChange={setBlocks}
                           onShowWhole={
-                            shownBase?.derivation?.operation === 'block' &&
-                            shownBase.derivedFrom
-                              ? () => {
-                                  showVolume(shownBase.derivedFrom as string)
-                                  if (blocksBeforeCut)
-                                    setBlocks(blocksBeforeCut)
-                                }
+                            stackLevelList &&
+                            stackLevelList[0].id !== shownBase?.id
+                              ? () => showStackLevel(stackLevelList[0].id)
                               : undefined
                           }
                           onViewBlock={() => void viewSelectedBlock()}
