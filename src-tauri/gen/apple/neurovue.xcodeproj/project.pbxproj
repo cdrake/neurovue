@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		091CAA7C5D2A5A4871CA9AA9 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9019D4640FDC23BEBA9DB7FE /* Metal.framework */; };
 		0C74F9BC6F1588A2F0E31FAB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B30FC64F0848E6B5F65C0FBC /* Assets.xcassets */; };
+		4BED3F89F90865089BCFC437 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 82FC3827C768A40251A50683 /* PrivacyInfo.xcprivacy */; };
 		1D826D23CA22ADE5498D1991 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 491C0C61F0C90359E7208D8D /* MetalKit.framework */; };
 		6B476B3D59DA28FA07003FEE /* assets in Resources */ = {isa = PBXBuildFile; fileRef = CE06A11BFFDC6C21071C5449 /* assets */; };
 		6DC39AC4D65456B3276EDB9C /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ED5867CE844EB6A9EA11B244 /* CoreGraphics.framework */; };
@@ -22,6 +23,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		82FC3827C768A40251A50683 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		11850E1BB6F224A4992488D7 /* terminal.rs */ = {isa = PBXFileReference; path = terminal.rs; sourceTree = "<group>"; };
 		1D48A6C85CD3CC93F44DF538 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		2389CD282B0101819705ECB8 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
@@ -70,6 +72,7 @@
 			children = (
 				60E95675D4F1E1C45555E1C1 /* Info.plist */,
 				DDF68B974EF53A2657B698E6 /* neurovue_iOS.entitlements */,
+				82FC3827C768A40251A50683 /* PrivacyInfo.xcprivacy */,
 			);
 			path = neurovue_iOS;
 			sourceTree = "<group>";
@@ -217,6 +220,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0C74F9BC6F1588A2F0E31FAB /* Assets.xcassets in Resources */,
+				4BED3F89F90865089BCFC437 /* PrivacyInfo.xcprivacy in Resources */,
 				C397640DBEA250EBA6800470 /* LaunchScreen.storyboard in Resources */,
 				6B476B3D59DA28FA07003FEE /* assets in Resources */,
 			);
