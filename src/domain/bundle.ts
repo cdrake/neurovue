@@ -1,7 +1,11 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { BlockSettings } from './blocks'
-import type { Backend, ClipPlane } from './desktop'
+import {
+  type Backend,
+  type ClipPlane,
+  resolveRuntimeCapabilities,
+} from './desktop'
 import { keepPickedFile } from './openedFiles'
 
 // A NeuroVue bundle (`.nvbundle`) is a self-describing, transport-agnostic
@@ -156,6 +160,13 @@ export async function exportDatasetBundle(params: {
   volumeIds: string[]
   view: BundleViewState
 }): Promise<ExportBundleResult | null> {
+  if (!(await resolveRuntimeCapabilities()).fileDialogsAvailable) {
+    return shareViewViaAirDrop({
+      name: params.defaultName,
+      volumeIds: params.volumeIds,
+      view: params.view,
+    })
+  }
   const destPath = await save({
     title: 'Export NeuroVue bundle',
     defaultPath: `${sanitizeBundleName(params.defaultName)}.nvbundle`,

@@ -212,8 +212,8 @@ button {
 }
 
 .nv-status .nv-disclaimer {
-  flex: 0 1 auto;
-  min-width: 0;
+  /* The other notes give way first: the disclaimer must stay whole (App Review 1.4.1). */
+  flex: 0 0 auto;
   margin-left: auto;
   color: var(--amber);
   font-weight: 600;
@@ -1352,6 +1352,11 @@ button {
   color: var(--ink);
   font-size: 26px;
   font-weight: 700;
+}
+
+.nv-welcome-header .nv-welcome-disclaimer {
+  color: var(--amber);
+  font-weight: 600;
 }
 
 .nv-welcome-header p {

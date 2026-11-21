@@ -38,7 +38,8 @@ export function WelcomeScreen({
   reopenLast: boolean
   onOpenBundle: () => void
   onOpenFile: () => void
-  onOpenFolder: () => void
+  /** Absent where there is no folder picker (iOS). */
+  onOpenFolder?: () => void
   onOpenMesh: () => void
   onOpenRecent: (path: string) => void
   /** Null when this build ships no sample. */
@@ -63,20 +64,25 @@ export function WelcomeScreen({
         <header className="nv-welcome-header">
           <h2 id="nv-welcome-title">Welcome to NeuroVue</h2>
           <p>Open a NIfTI volume or a BIDS dataset to start.</p>
+          <p className="nv-welcome-disclaimer" role="note">
+            For research use only. Not for clinical diagnosis.
+          </p>
         </header>
 
         <div className="nv-welcome-columns">
           <section aria-labelledby="nv-welcome-start">
             <h3 id="nv-welcome-start">Start</h3>
             <div className="nv-welcome-actions">
-              <WelcomeAction
-                className="nv-desktop-only"
-                disabled={busy}
-                hint="A folder of NIfTI volumes, such as a BIDS dataset"
-                icon={<FolderOpen aria-hidden="true" size={16} />}
-                label="Open folder…"
-                onClick={onOpenFolder}
-              />
+              {onOpenFolder && (
+                <WelcomeAction
+                  className="nv-desktop-only"
+                  disabled={busy}
+                  hint="A folder of NIfTI volumes, such as a BIDS dataset"
+                  icon={<FolderOpen aria-hidden="true" size={16} />}
+                  label="Open folder…"
+                  onClick={onOpenFolder}
+                />
+              )}
               <WelcomeAction
                 disabled={busy}
                 hint="A single .nii or .nii.gz volume"

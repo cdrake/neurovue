@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { resolveRuntimeCapabilities } from './desktop'
 
 /** `write_file`'s raw body: u32 LE path length, the UTF-8 path, the bytes. */
 export function writeFileBody(path: string, data: Uint8Array): Uint8Array {
@@ -41,6 +42,10 @@ export async function saveFile(params: {
     link.download = fileName
     link.click()
     URL.revokeObjectURL(link.href)
+    return fileName
+  }
+  if (!(await resolveRuntimeCapabilities()).fileDialogsAvailable) {
+    await invoke('share_file', writeFileBody(fileName, data))
     return fileName
   }
   const extension = fileName.split('.').pop() ?? ''

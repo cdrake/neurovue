@@ -122,6 +122,7 @@ struct RuntimeCapabilities {
     terminal_available: bool,
     native_niimath_available: bool,
     airdrop_available: bool,
+    file_dialogs_available: bool,
 }
 
 #[tauri::command]
@@ -130,6 +131,9 @@ fn neurovue_runtime_capabilities() -> RuntimeCapabilities {
         terminal_available: cfg!(desktop),
         native_niimath_available: cfg!(desktop),
         airdrop_available: cfg!(target_os = "macos") || cfg!(target_os = "ios"),
+        // Mobile tauri-plugin-dialog has no folder picker, and its save dialog
+        // hands back an empty placeholder outside the sandbox (#81).
+        file_dialogs_available: cfg!(desktop),
     }
 }
 
@@ -190,7 +194,7 @@ async fn export_dataset_bundle(
     tauri::async_runtime::spawn_blocking(move || {
         let result = volumetric_server::export_bundle(
             &server,
-            Path::new(&dest_path),
+            Path::new(&normalize_local_path(&dest_path)),
             &volume_ids,
             &view,
             &created_at,
@@ -448,7 +452,29 @@ fn sanitize_share_name(name: &str) -> String {
 /// Writes to a path the person picked in the save dialog (SVG, mask exports).
 #[tauri::command]
 async fn write_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
-    // Raw body: u32 LE path length, the UTF-8 path, then the file's bytes.
+    let (path, bytes) = split_file_body(&request)?;
+    let path = normalize_local_path(path);
+    std::fs::write(&path, bytes).map_err(|error| format!("{path}: {error}"))
+}
+
+/// Where there is no save dialog (iOS): stages the file in temp and offers the
+/// share sheet, whose "Save to Files" is the save. Same body as `write_file`,
+/// with a file name for the path.
+#[tauri::command]
+async fn share_file(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let (name, bytes) = split_file_body(&request)?;
+    // shortcut: staged files stay until the OS purges temp; prune if they pile up.
+    let dir = std::env::temp_dir().join("exports");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("share_file: {error}"))?;
+    let path = dir.join(sanitize_share_name(name));
+    std::fs::write(&path, bytes).map_err(|error| format!("share_file: {error}"))?;
+    share::share_via_airdrop(&app, vec![path.display().to_string()])
+}
+
+/// Raw body: u32 LE path length, the UTF-8 path, then the file's bytes.
+fn split_file_body<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+) -> Result<(&'a str, &'a [u8]), String> {
     let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
         return Err("write_file: expected the file's bytes".to_string());
     };
@@ -460,7 +486,7 @@ async fn write_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
         .get(..length)
         .and_then(|path| std::str::from_utf8(path).ok())
         .ok_or("write_file: bad path")?;
-    std::fs::write(path, &rest[length..]).map_err(|error| format!("{path}: {error}"))
+    Ok((path, &rest[length..]))
 }
 
 #[tauri::command]
@@ -855,6 +881,8 @@ pub fn run() {
             read_mask_file,
             export_dataset_bundle,
             write_file,
+            share_file,
+            share_file,
             read_bundle_manifest,
             read_document_manifest,
             share_view_via_airdrop,
@@ -888,6 +916,12 @@ pub fn run() {
             set_express_menu_label,
             set_recent_menu
         ]);
+    // WebKit kills the page's process under memory pressure (large volumes on
+    // iPad), leaving a blank window; reloading brings the Welcome screen back.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        let _ = webview.reload();
+    });
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         neurovue_runtime_capabilities,

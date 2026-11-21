@@ -624,6 +624,7 @@ export function App(): JSX.Element {
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
   const [isNiimathAvailable, setIsNiimathAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
+  const [isFileDialogsAvailable, setIsFileDialogsAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
@@ -656,6 +657,7 @@ export function App(): JSX.Element {
       setIsTerminalAvailable(capabilities.terminalAvailable)
       setIsNiimathAvailable(capabilities.nativeNiimathAvailable)
       setIsAirdropAvailable(capabilities.airdropAvailable)
+      setIsFileDialogsAvailable(capabilities.fileDialogsAvailable)
     })
     return () => {
       cancelled = true
@@ -1996,21 +1998,23 @@ export function App(): JSX.Element {
                   <FileJson size={14} />
                   <span className="nv-recent-item-name">Open NIfTI file…</span>
                 </button>
-                <button
-                  className="nv-recent-item nv-recent-open nv-desktop-only"
-                  disabled={isOpeningDataset}
-                  onClick={() => {
-                    setIsRecentMenuOpen(false)
-                    void openLocalDataset()
-                  }}
-                  type="button"
-                  role="menuitem"
-                >
-                  <FolderOpen size={14} />
-                  <span className="nv-recent-item-name">
-                    Open dataset directory…
-                  </span>
-                </button>
+                {isFileDialogsAvailable && (
+                  <button
+                    className="nv-recent-item nv-recent-open nv-desktop-only"
+                    disabled={isOpeningDataset}
+                    onClick={() => {
+                      setIsRecentMenuOpen(false)
+                      void openLocalDataset()
+                    }}
+                    type="button"
+                    role="menuitem"
+                  >
+                    <FolderOpen size={14} />
+                    <span className="nv-recent-item-name">
+                      Open dataset directory…
+                    </span>
+                  </button>
+                )}
                 <button
                   aria-label="Open bundle"
                   className="nv-recent-item nv-recent-open"
@@ -2312,7 +2316,9 @@ export function App(): JSX.Element {
           reopenLast={reopenLast}
           onOpenBundle={() => void handleImportBundle()}
           onOpenFile={() => void openLocalVolumeFile()}
-          onOpenFolder={() => void openLocalDataset()}
+          onOpenFolder={
+            isFileDialogsAvailable ? () => void openLocalDataset() : undefined
+          }
           onOpenMesh={() => void loadMeshes()}
           onOpenRecent={(path) => void openRecentEntry(path)}
           onOpenSample={samplePath ? () => void openSampleDataset() : null}
@@ -2899,10 +2905,10 @@ export function App(): JSX.Element {
         <span
           className="nv-disclaimer"
           role="note"
-          title="Research/preview tool — not a certified diagnostic device. Do not use for clinical diagnosis."
+          title="For research use only. Not a certified diagnostic device. Do not use for clinical diagnosis."
         >
           <AlertTriangle size={12} />
-          Research preview — not for clinical diagnosis
+          Research use only. Not for clinical diagnosis.
         </span>
       </footer>
     </main>
