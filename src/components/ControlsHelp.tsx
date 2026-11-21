@@ -1,5 +1,6 @@
 import { Mouse, X } from 'lucide-react'
 import { type JSX, useEffect, useRef } from 'react'
+import { COARSE_POINTER } from '../domain/stageControls'
 import { EXPRESS_VIEW_SHORTCUT } from '../hooks/useNativeMenu'
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
@@ -13,13 +14,26 @@ function accel(key: string, shift = false, alt = false): string {
 
 type Row = readonly [keys: string, action: string]
 
-const SECTIONS: readonly { title: string; note?: string; rows: Row[] }[] = [
+type Section = { title: string; note?: string; rows: Row[] }
+
+const TOUCH: Section = {
+  title: 'Touch',
+  rows: [
+    ['Drag (3D)', 'Rotate'],
+    ['Pinch', 'Zoom'],
+    ['Tap or drag (2D)', 'Move the crosshair'],
+    ['Slice slider', 'Next or previous slice'],
+    ['Plane chips + slider', 'Pick and move a clip plane'],
+    ['Apple Pencil', 'Draws while Draw is on; a finger moves the crosshair'],
+  ],
+}
+
+const MOUSE_AND_KEYS: readonly Section[] = [
   {
     title: '3D view',
     rows: [
       ['Wheel', 'Zoom, or move the active clip plane'],
       ['Drag', 'Rotate'],
-      ['Pinch', 'Zoom (touch)'],
       ['C', 'Next clip plane (the wheel moves it)'],
       ['1  3  7', 'Coronal, sagittal, axial view'],
       ['Ctrl+1  3  7', 'The opposite side'],
@@ -59,6 +73,9 @@ const SECTIONS: readonly { title: string; note?: string; rows: Row[] }[] = [
     ],
   },
 ]
+
+// A finger first; a hardware keyboard on an iPad still uses the rest.
+const SECTIONS = COARSE_POINTER ? [TOUCH, ...MOUSE_AND_KEYS] : MOUSE_AND_KEYS
 
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
@@ -110,7 +127,8 @@ export function ControlsHelp({
     >
       <header>
         <h2 id="nv-controls-title">
-          <Mouse size={16} aria-hidden="true" /> Mouse & keyboard
+          <Mouse size={16} aria-hidden="true" />{' '}
+          {COARSE_POINTER ? 'Controls' : 'Mouse & keyboard'}
         </h2>
         <button
           aria-label="Close"

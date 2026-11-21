@@ -8,7 +8,7 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 src="$root/src-tauri/quicklook"
 out="$root/src-tauri/target/quicklook"
-min_macos=12.0
+min_macos=13.0
 version=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$root/src-tauri/tauri.conf.json" | head -1)
 identity=${APPLE_SIGNING_IDENTITY:--}
 # Notarization needs a secure timestamp; ad hoc signatures can't have one.

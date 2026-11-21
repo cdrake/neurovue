@@ -207,6 +207,7 @@ export interface RuntimeCapabilities {
   terminalAvailable: boolean
   nativeNiimathAvailable: boolean
   airdropAvailable: boolean
+  fileDialogsAvailable: boolean
 }
 
 export interface ClipPlane {
@@ -223,14 +224,16 @@ const BROWSER_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   terminalAvailable: false,
   nativeNiimathAvailable: false,
   airdropAvailable: false,
+  fileDialogsAvailable: true,
 }
 
-export async function resolveRuntimeCapabilities(): Promise<RuntimeCapabilities> {
-  try {
-    return await invoke<RuntimeCapabilities>('neurovue_runtime_capabilities')
-  } catch {
-    return BROWSER_RUNTIME_CAPABILITIES
-  }
+let runtimeCapabilities: Promise<RuntimeCapabilities> | undefined
+
+export function resolveRuntimeCapabilities(): Promise<RuntimeCapabilities> {
+  runtimeCapabilities ??= invoke<RuntimeCapabilities>(
+    'neurovue_runtime_capabilities',
+  ).catch(() => BROWSER_RUNTIME_CAPABILITIES)
+  return runtimeCapabilities
 }
 
 export async function resolveServerInfo(): Promise<ServerInfo | null> {
@@ -382,7 +385,7 @@ export async function openOverlayVolume(): Promise<OverlayAddResult | null> {
     ],
   })
   if (!selected || Array.isArray(selected)) return null
-  return addOverlayVolumeByPath(selected)
+  return addOverlayVolumeByPath(await keepPickedFile(selected))
 }
 
 export async function openDatasetByPath(

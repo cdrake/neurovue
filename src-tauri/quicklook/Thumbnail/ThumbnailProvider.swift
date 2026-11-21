@@ -28,7 +28,7 @@ final class ThumbnailProvider: QLThumbnailProvider {
             reply.extensionBadge = "NIfTI"
             handler(reply, nil)
         } catch {
-            log.info("no thumbnail for \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)")
+            log.info("no thumbnail for \(url.lastPathComponent, privacy: .private): \(String(describing: error), privacy: .private)")
             handler(nil, error)
         }
     }

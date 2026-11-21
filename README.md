@@ -57,21 +57,18 @@ bun run tauri:build:mac
 Output lands in `src-tauri/target/universal-apple-darwin/release/bundle/`.
 Without notarization, Gatekeeper blocks the app on other Macs.
 
-Tauri can't use a `notarytool` keychain profile, so with one you notarize the
-signed `.dmg` after the build instead. Store the profile once (it prompts for an
-app-specific password from account.apple.com and keeps it in your keychain):
+Tauri can't use a `notarytool` keychain profile, so with one you notarize after
+the build instead. Store the profile once (it prompts for an app-specific
+password from account.apple.com and keeps it in your keychain):
 
 ```sh
 xcrun notarytool store-credentials <profile> --apple-id <apple-id> --team-id <TEAMID>
 ```
 
-Then, for each release:
+Then, for each release, after the signed build:
 
 ```sh
-DMG=src-tauri/target/universal-apple-darwin/release/bundle/dmg/NeuroVue_<version>_universal.dmg
-xcrun notarytool submit "$DMG" --keychain-profile <profile> --wait
-xcrun stapler staple "$DMG"
-spctl -a -vv -t open --context context:primary-signature "$DMG"  # "Notarized Developer ID"
+scripts/notarize-mac.sh <profile>  # staples the .app, rebuilds the .dmg around it, staples that
 ```
 
 ### Finder Quick Look
@@ -111,7 +108,23 @@ Sign in to your Apple ID in Xcode → Settings → Accounts first: automatic
 signing creates the App Store profile. The build writes
 `src-tauri/gen/apple/build/arm64/NeuroVue.ipa` and an `.xcarchive` beside it.
 Open the archive in Xcode's Organizer and choose Distribute App → TestFlight to
-upload it. Raise `CFBundleVersion` for every upload.
+upload it. Raise `bundle.iOS.bundleVersion` in `tauri.conf.json` (an integer
+build number, at most three dot-separated parts) for every upload.
+
+iPhone and iPad are both targets (`TARGETED_DEVICE_FAMILY` 1,2). iOS plist keys
+live in `src-tauri/Info.ios.plist`, not in `gen/apple`. Files are protected with
+`NSFileProtectionComplete`, the class the provisioning profile requires;
+`CompleteUnlessOpen` needs a portal change. Extracted bundles live in the cache
+and send, receive and bundle export run as background tasks.
+
+Receiving from a Mac is opt-in: nothing listens, and there is no Local Network
+prompt, until you choose Receive from a Mac on Welcome or open Share. A
+`receive-enabled` marker in the data root remembers it. Each send shows the same
+4-digit code on both ends. Transfers are unencrypted, so use trusted networks only.
+
+App Store blockers: privacy policy and support URLs (#80); a Mac App Store build
+(#93: sandbox, security-scoped bookmarks, helpers) is unresolved. macOS ships as
+a Developer ID DMG.
 
 Xcode 27's SwiftPM hides the Swift functions Tauri's Rust code calls. swift-rs
 1.0.9+ makes them public again with rustup's `llvm-objcopy`; without

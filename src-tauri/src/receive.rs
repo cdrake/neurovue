@@ -10,7 +10,7 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     routing::{post, put},
     Json, Router,
@@ -41,6 +41,10 @@ struct OfferRequest {
     name: String,
     from: String,
     size: u64,
+    /// Shown on the sender too, so the person can tell their send from a
+    /// look-alike on the same network.
+    #[serde(default)]
+    code: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -49,6 +53,8 @@ struct OfferEvent {
     name: String,
     from: String,
     size: u64,
+    code: String,
+    address: String,
 }
 
 struct Pending {
@@ -116,7 +122,11 @@ pub(crate) fn start(app: &tauri::AppHandle) -> std::io::Result<u16> {
         runtime.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener)
                 .expect("adopt NeuroVue receive listener");
-            let serve = axum::serve(listener, router).with_graceful_shutdown(async {
+            let serve = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
                 let _ = stopped.await;
             });
             if let Err(error) = serve.await {
@@ -177,6 +187,7 @@ impl Drop for OfferGuard<'_> {
 
 async fn offer(
     State(receiver): State<Arc<Receiver>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Json(request): Json<OfferRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let name = offered_name(&request.name).ok_or(StatusCode::UNSUPPORTED_MEDIA_TYPE)?;
@@ -206,6 +217,13 @@ async fn offer(
                 name: name.clone(),
                 from: request.from.chars().take(80).collect(),
                 size: request.size,
+                code: request
+                    .code
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .take(8)
+                    .collect(),
+                address: peer.ip().to_canonical().to_string(),
             },
         )
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
@@ -234,13 +252,15 @@ async fn upload(
     let Some(upload) = lock(&receiver.uploads).remove(&token) else {
         return StatusCode::NOT_FOUND;
     };
+    let _background = crate::background::BackgroundTask::begin("Receive");
     if let Err(error) = tokio::fs::create_dir_all(&receiver.inbox).await {
         eprintln!("NeuroVue receive: inbox: {error}");
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
-    let dest = unused_path(&receiver.inbox, &upload.name);
-    let part = PathBuf::from(format!("{}.part", dest.display()));
-    match write_body(&part, body, upload.size).await {
+    let Ok((dest, part, file)) = reserve_part(&receiver.inbox, &upload.name) else {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    match write_body(file.into(), body, upload.size).await {
         Ok(()) => {}
         Err(status) => {
             let _ = tokio::fs::remove_file(&part).await;
@@ -255,11 +275,8 @@ async fn upload(
     StatusCode::OK
 }
 
-/// Streams `body` to `path`, refusing anything but exactly `size` bytes.
-async fn write_body(path: &FsPath, body: Body, size: u64) -> Result<(), StatusCode> {
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+/// Streams `body` to `file`, refusing anything but exactly `size` bytes.
+async fn write_body(mut file: tokio::fs::File, body: Body, size: u64) -> Result<(), StatusCode> {
     let mut written: u64 = 0;
     let mut stream = body.into_data_stream();
     while let Some(chunk) = stream.next().await {
@@ -309,17 +326,32 @@ fn split_extension(name: &str) -> Option<(&str, &str)> {
         .map(|extension| name.split_at(name.len() - extension.len()))
 }
 
+/// `dir/name`, then `dir/stem-2.ext` and so on.
+fn candidate_paths<'a>(dir: &'a FsPath, name: &'a str) -> impl Iterator<Item = PathBuf> + 'a {
+    let (stem, extension) = split_extension(name).unwrap_or((name, ""));
+    std::iter::once(dir.join(name))
+        .chain((2..).map(move |n| dir.join(format!("{stem}-{n}{extension}"))))
+}
+
 /// `dir/name`, or `dir/stem-2.ext` and so on if that's taken.
 pub(crate) fn unused_path(dir: &FsPath, name: &str) -> PathBuf {
-    let path = dir.join(name);
-    if !path.exists() {
-        return path;
-    }
-    let (stem, extension) = split_extension(name).unwrap_or((name, ""));
-    (2..)
-        .map(|n| dir.join(format!("{stem}-{n}{extension}")))
+    candidate_paths(dir, name)
         .find(|path| !path.exists())
         .expect("an unused name")
+}
+
+/// An unused final path and its newly created `.part` sibling; creating the
+/// part exclusively keeps overlapping uploads of one name apart.
+fn reserve_part(dir: &FsPath, name: &str) -> std::io::Result<(PathBuf, PathBuf, std::fs::File)> {
+    for dest in candidate_paths(dir, name).filter(|path| !path.exists()) {
+        let part = PathBuf::from(format!("{}.part", dest.display()));
+        match std::fs::File::create_new(&part) {
+            Ok(file) => return Ok((dest, part, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("candidate paths never run out")
 }
 
 fn random_token() -> std::io::Result<String> {
@@ -361,6 +393,18 @@ mod tests {
             unused_path(&dir, "anat.nvbundle"),
             dir.join("anat.nvbundle")
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn overlapping_uploads_reserve_distinct_paths() {
+        let dir = std::env::temp_dir().join(format!("nv-receive-{}", random_token().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (dest_a, part_a, _) = reserve_part(&dir, "T1w.nii.gz").unwrap();
+        let (dest_b, part_b, _) = reserve_part(&dir, "T1w.nii.gz").unwrap();
+        assert_eq!(dest_a, dir.join("T1w.nii.gz"));
+        assert_eq!(dest_b, dir.join("T1w-2.nii.gz"));
+        assert_ne!(part_a, part_b);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
