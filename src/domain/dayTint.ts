@@ -40,12 +40,16 @@ export function dayLight(hour: number): number {
 export function startDayTint(
   root: HTMLElement = document.documentElement,
 ): void {
+  const moreContrast = matchMedia('(prefers-contrast: more)')
   const update = () => {
     const now = new Date()
     const hour = now.getHours() + now.getMinutes() / 60
-    root.style.setProperty('--day-tint', dayTint(hour))
-    root.style.setProperty('--day-light', String(dayLight(hour)))
+    // Increase Contrast keeps the dark night base without the glow.
+    const plain = moreContrast.matches
+    root.style.setProperty('--day-tint', plain ? '0 0 0' : dayTint(hour))
+    root.style.setProperty('--day-light', plain ? '0' : String(dayLight(hour)))
   }
   update()
+  moreContrast.addEventListener('change', update)
   setInterval(update, 5 * 60_000)
 }

@@ -299,3 +299,27 @@ export const stageControlSurface: HostedControls = {
     throw new Error(FIXED)
   },
 }
+
+const PRESS: Record<string, keyof StageControlsActions> = {
+  'box-cut': 'cutOutBox',
+  'clear-measure': 'clearMeasurements',
+  'shape-undo': 'shapeUndo',
+  'shape-redo': 'shapeRedo',
+  'clear-shapes': 'clearShapes',
+  undo: 'undo',
+  'clear-drawing': 'clearDrawing',
+  interpolate: 'interpolate',
+  'save-mask': 'saveMask',
+  'load-mask': 'loadMask',
+  'export-svg': 'exportSVG',
+  send: 'send',
+}
+
+/** Presses one of `stageControlStates`' buttons, as a click would. */
+export function pressStageButton(
+  actions: StageControlsActions,
+  id: string,
+): void {
+  const action = PRESS[id]
+  if (action) (actions[action] as () => void)()
+}

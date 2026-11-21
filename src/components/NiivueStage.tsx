@@ -59,6 +59,7 @@ import {
 } from '../domain/svgExport'
 import { AnnotationLayer, loadUIKitFont } from '../domain/uikitLayer'
 import { isEditableTarget } from './ControlsHelp'
+import { StageControlsMirror } from './StageControlsMirror'
 
 // The window NiiVue actually applied for a layer, plus the volume's robust
 // range (the "no threshold" target for a show-all reset).
@@ -2146,6 +2147,10 @@ export function NiivueStage({
             ? `${currentViewLabel} of ${primaryItem.label}`
             : 'NiiVue viewer — no volume selected'
         }
+      />
+      <StageControlsMirror
+        actions={stageControlsActions}
+        state={stageControlsState}
       />
       {isStatusError ? (
         <div className="nv-render-status is-error" role="alert">

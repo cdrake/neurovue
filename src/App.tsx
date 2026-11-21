@@ -3155,6 +3155,7 @@ function DesktopZoomControls({
         disabled={zoom <= MIN_DESKTOP_ZOOM}
         onClick={onZoomOut}
         title="Zoom out"
+        aria-label="Zoom out"
         type="button"
       >
         <ZoomOut size={15} />
@@ -3164,6 +3165,7 @@ function DesktopZoomControls({
         disabled={zoom >= MAX_DESKTOP_ZOOM}
         onClick={onZoomIn}
         title="Zoom in"
+        aria-label="Zoom in"
         type="button"
       >
         <ZoomIn size={15} />

@@ -1,5 +1,9 @@
 import { expect, test } from 'bun:test'
-import { setStageControl, stageControlStates } from './stageControlSurface'
+import {
+  pressStageButton,
+  setStageControl,
+  stageControlStates,
+} from './stageControlSurface'
 import type { StageControlsActions, StageControlsState } from './stageControls'
 
 const state: StageControlsState = {
@@ -122,4 +126,27 @@ test('picks the draw tool and sets the wand', () => {
     'pen, wand',
   )
   expect(calls).toEqual(['drawTool:pen', 'wandTolerance:0.5'])
+})
+
+test('every button the stage lists can be pressed', () => {
+  const full: StageControlsState = {
+    ...state,
+    box: { active: true, enabled: true },
+    measure: { active: false, enabled: true, tools: [], tool: '' },
+    shapes: { active: true, enabled: true, tools: [], tool: '' },
+    draw: {
+      ...(state.draw as NonNullable<StageControlsState['draw']>),
+      active: true,
+      hasDrawing: true,
+      canSend: true,
+    },
+    canExport: true,
+  }
+  const buttons = stageControlStates(full).filter((c) => c.kind === 'button')
+  const pressed: string[] = []
+  const actions = new Proxy({} as StageControlsActions, {
+    get: (_, name) => () => pressed.push(String(name)),
+  })
+  for (const button of buttons) pressStageButton(actions, button.id)
+  expect(pressed.length).toBe(buttons.length)
 })
