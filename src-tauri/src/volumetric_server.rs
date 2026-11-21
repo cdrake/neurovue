@@ -648,6 +648,18 @@ pub fn data_root() -> PathBuf {
     DATA_ROOT.get().cloned().unwrap_or_else(cache_root)
 }
 
+/// Extracted bundles, redone on every open. iOS backs up the data root and
+/// only clears tmp while the app isn't running, so there they live in the
+/// cache; macOS purges temp under a running app, so desktop keeps them with
+/// user work.
+fn imports_dir() -> PathBuf {
+    if cfg!(target_os = "ios") {
+        cache_root().join("imports")
+    } else {
+        data_root().join("imports")
+    }
+}
+
 /// Origins allowed to read from the local server: the app's own webview (the
 /// vite dev URL in development, the tauri:// scheme in a packaged build). This
 /// replaces the previous permissive CORS so an arbitrary web page the user
@@ -1551,7 +1563,7 @@ fn extract_bundle_zip(zip_path: &FsPath) -> Result<PathBuf, String> {
         )
     })?;
 
-    let imports_dir = data_root().join("imports");
+    let imports_dir = imports_dir();
     let out_root = imports_dir.join(bundle_import_dir_name(zip_path));
     // The name is a single sanitized segment, so this always holds; check anyway
     // before a recursive delete.
@@ -1755,7 +1767,7 @@ pub fn read_document(path: &FsPath) -> Result<Value, String> {
             )
         })?;
 
-    let imports_dir = data_root().join("imports");
+    let imports_dir = imports_dir();
     let out_root = imports_dir.join(bundle_import_dir_name(&canonical));
     if out_root.parent() != Some(imports_dir.as_path()) {
         return Err(format!(

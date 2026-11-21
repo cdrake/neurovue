@@ -106,12 +106,15 @@ import {
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
+  confirmationCode,
   type DrawingBase,
   type ExportBundleResult,
+  enableReceiving,
   exportDatasetBundle,
   formatBundleBytes,
   isBundlePath,
   isDocumentPath,
+  isReceiving,
   listSendTargets,
   pickBundle,
   readBundle,
@@ -626,6 +629,8 @@ export function App(): JSX.Element {
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
   const [isFileDialogsAvailable, setIsFileDialogsAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
+  // iPad only: Macs can send here once the person turns it on (#88).
+  const [canTurnOnReceiving, setCanTurnOnReceiving] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false)
@@ -658,6 +663,11 @@ export function App(): JSX.Element {
       setIsNiimathAvailable(capabilities.nativeNiimathAvailable)
       setIsAirdropAvailable(capabilities.airdropAvailable)
       setIsFileDialogsAvailable(capabilities.fileDialogsAvailable)
+      if (capabilities.airdropAvailable && !capabilities.fileDialogsAvailable) {
+        void isReceiving().then(
+          (receiving) => !cancelled && setCanTurnOnReceiving(!receiving),
+        )
+      }
     })
     return () => {
       cancelled = true
@@ -1248,13 +1258,16 @@ export function App(): JSX.Element {
       `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
         `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
     )
+    const code = confirmationCode()
     try {
       const result = await sendViewToDevice({
         target,
         name: shareName,
         volumeIds,
         view,
-        onOffered: () => setStatus(`Waiting for ${target.name} to accept…`),
+        code,
+        onOffered: () =>
+          setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
       })
       setStatus(
         `Sent ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
@@ -1867,8 +1880,11 @@ export function App(): JSX.Element {
         )
         return
       }
-      setStatus(`Waiting for ${target.name} to accept the drawing…`)
-      await sendDrawingToDevice({ target, base: drawingBase, drawing })
+      const code = confirmationCode()
+      setStatus(
+        `Waiting for ${target.name} to accept the drawing (code ${code})…`,
+      )
+      await sendDrawingToDevice({ target, base: drawingBase, drawing, code })
       setStatus(`Sent the drawing to ${target.name}.`, 'success')
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
@@ -2178,6 +2194,13 @@ export function App(): JSX.Element {
                         Looking for devices running NeuroVue…
                       </span>
                     </div>
+                  ) : sendTargets.length === 0 ? (
+                    <div className="nv-recent-item nv-share-looking">
+                      <span className="nv-recent-item-path">
+                        No device found. On an iPad, choose Receive from a Mac.
+                        Sends are unencrypted: trusted networks only.
+                      </span>
+                    </div>
                   ) : (
                     sendTargets.flatMap((target) => {
                       const key = `${target.name}@${target.host}:${target.port}`
@@ -2324,6 +2347,18 @@ export function App(): JSX.Element {
           onOpenSample={samplePath ? () => void openSampleDataset() : null}
           onRemoveRecent={removeRecent}
           onReopenLastChange={setReopenLast}
+          onReceive={
+            canTurnOnReceiving
+              ? () => {
+                  setCanTurnOnReceiving(false)
+                  void enableReceiving()
+                  setStatus(
+                    'Macs on this network running NeuroVue can now send here.',
+                    'success',
+                  )
+                }
+              : undefined
+          }
         />
       ) : (
         <>
@@ -2841,10 +2876,16 @@ export function App(): JSX.Element {
           role="alertdialog"
         >
           <p>
-            <strong>{sendOffer.offer.from}</strong> wants to send{' '}
-            <strong>{sendOffer.offer.name}</strong> (
+            <strong>{sendOffer.offer.from}</strong> ({sendOffer.offer.address})
+            wants to send <strong>{sendOffer.offer.name}</strong> (
             {formatBundleBytes(sendOffer.offer.size)}).
           </p>
+          {sendOffer.offer.code ? (
+            <p>
+              Accept only if the sender shows code{' '}
+              <strong>{sendOffer.offer.code}</strong>.
+            </p>
+          ) : null}
           <div className="nv-send-offer-actions">
             <button
               className="nv-tool-button"

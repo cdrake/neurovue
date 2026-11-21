@@ -3,6 +3,7 @@ import {
   FileJson,
   Folder,
   FolderOpen,
+  Laptop,
   LoaderCircle,
   PackageOpen,
   Shapes,
@@ -30,6 +31,7 @@ export function WelcomeScreen({
   onOpenSample,
   onRemoveRecent,
   onReopenLastChange,
+  onReceive,
 }: {
   busy: boolean
   /** Set while starting up or reopening: what the app is waiting on. */
@@ -46,6 +48,8 @@ export function WelcomeScreen({
   onOpenSample: (() => void) | null
   onRemoveRecent: (path: string) => void
   onReopenLastChange: (reopen: boolean) => void
+  /** Set on an iPad not yet receiving sends from a Mac. */
+  onReceive?: () => void
 }): JSX.Element {
   if (openingLabel !== null) {
     return (
@@ -111,6 +115,15 @@ export function WelcomeScreen({
                   icon={<Brain aria-hidden="true" size={16} />}
                   label="Open sample data"
                   onClick={onOpenSample}
+                />
+              ) : null}
+              {onReceive ? (
+                <WelcomeAction
+                  disabled={busy}
+                  hint="Lets a Mac running NeuroVue send here. Unencrypted: use on trusted networks only."
+                  icon={<Laptop aria-hidden="true" size={16} />}
+                  label="Receive from a Mac"
+                  onClick={onReceive}
                 />
               ) : null}
             </div>

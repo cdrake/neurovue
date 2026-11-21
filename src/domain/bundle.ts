@@ -219,6 +219,25 @@ export async function listSendTargets(): Promise<SendTarget[]> {
   }
 }
 
+/** Whether this device listens for sends (see enable_receiving). */
+export async function isReceiving(): Promise<boolean> {
+  return invoke<boolean>('is_receiving').catch(() => true)
+}
+
+/** Listens for sends from now on, and at every later launch. */
+export async function enableReceiving(): Promise<void> {
+  await invoke('enable_receiving')
+}
+
+/** Four digits shown on both ends of a send, so the person can tell their
+ *  send from a look-alike on the same network. */
+export function confirmationCode(): string {
+  return String(crypto.getRandomValues(new Uint32Array(1))[0] % 10000).padStart(
+    4,
+    '0',
+  )
+}
+
 /** Sends the dataset to `target` as a bundle. `onOffered` runs once the
  *  bundle is staged and the person there is being asked. Resolves once they
  *  have accepted it and it has arrived; rejects with a status-line sentence
@@ -228,6 +247,7 @@ export async function sendViewToDevice(params: {
   name: string
   volumeIds: string[]
   view: BundleViewState
+  code: string
   onOffered: () => void
 }): Promise<ExportBundleResult> {
   const onOffered = new Channel<null>()
@@ -238,6 +258,7 @@ export async function sendViewToDevice(params: {
     view: params.view,
     createdAt: new Date().toISOString(),
     name: params.name,
+    code: params.code,
     onOffered,
   })
 }
@@ -251,11 +272,13 @@ export async function sendDrawingToDevice(params: {
   target: SendTarget
   base: DrawingBase
   drawing: Uint8Array
+  code: string
 }): Promise<void> {
   const meta = new TextEncoder().encode(
     JSON.stringify({
       target: params.target,
       base: params.base,
+      code: params.code,
       createdAt: new Date().toISOString(),
     }),
   )

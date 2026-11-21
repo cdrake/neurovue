@@ -10,7 +10,7 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     routing::{post, put},
     Json, Router,
@@ -41,6 +41,10 @@ struct OfferRequest {
     name: String,
     from: String,
     size: u64,
+    /// Shown on the sender too, so the person can tell their send from a
+    /// look-alike on the same network.
+    #[serde(default)]
+    code: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -49,6 +53,8 @@ struct OfferEvent {
     name: String,
     from: String,
     size: u64,
+    code: String,
+    address: String,
 }
 
 struct Pending {
@@ -116,7 +122,10 @@ pub(crate) fn start(app: &tauri::AppHandle) -> std::io::Result<u16> {
         runtime.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener)
                 .expect("adopt NeuroVue receive listener");
-            let serve = axum::serve(listener, router).with_graceful_shutdown(async {
+            let serve = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            ).with_graceful_shutdown(async {
                 let _ = stopped.await;
             });
             if let Err(error) = serve.await {
@@ -177,6 +186,7 @@ impl Drop for OfferGuard<'_> {
 
 async fn offer(
     State(receiver): State<Arc<Receiver>>,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     Json(request): Json<OfferRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let name = offered_name(&request.name).ok_or(StatusCode::UNSUPPORTED_MEDIA_TYPE)?;
@@ -206,6 +216,8 @@ async fn offer(
                 name: name.clone(),
                 from: request.from.chars().take(80).collect(),
                 size: request.size,
+                code: request.code.chars().filter(char::is_ascii_digit).take(8).collect(),
+                address: peer.ip().to_canonical().to_string(),
             },
         )
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
@@ -234,6 +246,7 @@ async fn upload(
     let Some(upload) = lock(&receiver.uploads).remove(&token) else {
         return StatusCode::NOT_FOUND;
     };
+    let _background = crate::background::BackgroundTask::begin("Receive");
     if let Err(error) = tokio::fs::create_dir_all(&receiver.inbox).await {
         eprintln!("NeuroVue receive: inbox: {error}");
         return StatusCode::INTERNAL_SERVER_ERROR;

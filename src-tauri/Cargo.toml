@@ -68,6 +68,8 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray"
 objc2-app-kit = { version = "0.3", features = ["NSSharingService"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+# Expiration handler for background tasks (src/background.rs).
+block2 = "0.6"
 objc2-ui-kit = { version = "0.3", features = [
   "block2",
   "UIActivityViewController",

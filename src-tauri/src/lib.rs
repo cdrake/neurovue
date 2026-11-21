@@ -1,6 +1,7 @@
 // niimath (a native sidecar) and the integrated terminal (a PTY/shell) both
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+mod background;
 mod bonjour;
 mod dataset;
 pub mod headless;
@@ -192,6 +193,7 @@ async fn export_dataset_bundle(
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
+        let _background = background::BackgroundTask::begin("Export bundle");
         let result = volumetric_server::export_bundle(
             &server,
             Path::new(&normalize_local_path(&dest_path)),
@@ -246,6 +248,35 @@ fn stage_share_bundle(
 
 /// Devices on the network that can take a Send to iPad (or, from an iPad, a
 /// drawing sent back).
+/// Set once someone uses Send to iPad here, so the Local Network prompt follows
+/// an action of theirs rather than greeting them at first launch.
+fn receive_marker() -> std::path::PathBuf {
+    volumetric_server::data_root().join("receive-enabled")
+}
+
+fn receiving_enabled() -> bool {
+    receive_marker().exists()
+}
+
+/// Starts receiving, now and at every later launch.
+#[tauri::command]
+fn enable_receiving(app: tauri::AppHandle) {
+    if receiving_enabled() {
+        return;
+    }
+    let marker = receive_marker();
+    if let Some(dir) = marker.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&marker, b"");
+    start_receiving(&app);
+}
+
+#[tauri::command]
+fn is_receiving() -> bool {
+    receiving_enabled()
+}
+
 /// Listens for sends and advertises the port (see receive.rs, bonjour.rs).
 fn start_receiving(app: &tauri::AppHandle) {
     match receive::start(app) {
@@ -260,8 +291,11 @@ fn start_receiving(app: &tauri::AppHandle) {
     }
 }
 
+/// Looking for devices means using Send to iPad, so this device starts
+/// listening too: a Mac for drawings sent back, an iPad for sends.
 #[tauri::command]
-async fn list_send_targets() -> Result<Vec<send::SendTarget>, String> {
+async fn list_send_targets(app: tauri::AppHandle) -> Result<Vec<send::SendTarget>, String> {
+    enable_receiving(app);
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     return tauri::async_runtime::spawn_blocking(|| {
         bonjour::browse(std::time::Duration::from_millis(1500))
@@ -286,6 +320,7 @@ async fn send_view_to_device(
     view: serde_json::Value,
     created_at: String,
     name: String,
+    code: String,
     on_offered: tauri::ipc::Channel<()>,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
@@ -296,7 +331,7 @@ async fn send_view_to_device(
             return Err(format!("Couldn't find {} on the network.", target.name));
         }
         let _ = on_offered.send(());
-        send::send_file(&addresses, &target.name, &dest, &send::device_name())?;
+        send::send_file(&addresses, &target.name, &dest, &send::device_name(), &code)?;
         Ok(ExportBundleResult {
             bundle_path: result.bundle_path,
             volume_count: result.volume_count,
@@ -331,6 +366,7 @@ async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), 
         .map_err(|error| format!("send_drawing_to_device: target: {error}"))?;
     let base = meta["base"].clone();
     let created_at = meta["createdAt"].as_str().unwrap_or_default().to_string();
+    let code = meta["code"].as_str().unwrap_or_default().to_string();
     let drawing = drawing.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
         let label = base["label"].as_str().unwrap_or("volume");
@@ -352,7 +388,7 @@ async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), 
         if addresses.is_empty() {
             return Err(format!("Couldn't find {} on the network.", target.name));
         }
-        let sent = send::send_file(&addresses, &target.name, &dest, &send::device_name());
+        let sent = send::send_file(&addresses, &target.name, &dest, &send::device_name(), &code);
         let _ = std::fs::remove_file(&dest);
         sent
     })
@@ -828,7 +864,7 @@ pub fn run() {
             // The iPad listens for Send to iPad from a Mac, and the Mac for
             // drawings sent back. Elsewhere nothing advertises the port, so
             // only listen when asked.
-            if cfg!(any(target_os = "ios", target_os = "macos"))
+            if (cfg!(any(target_os = "ios", target_os = "macos")) && receiving_enabled())
                 || std::env::var_os("NEUROVUE_RECEIVE").is_some()
             {
                 start_receiving(app.handle());
@@ -890,6 +926,8 @@ pub fn run() {
             opened::keep_picked_file,
             receive::answer_send_offer,
             list_send_targets,
+            enable_receiving,
+            is_receiving,
             send_view_to_device,
             send_drawing_to_device,
             attach_drawing,
@@ -939,6 +977,8 @@ pub fn run() {
         opened::keep_picked_file,
         receive::answer_send_offer,
         list_send_targets,
+        enable_receiving,
+        is_receiving,
         send_view_to_device,
         send_drawing_to_device,
         attach_drawing,
@@ -973,7 +1013,8 @@ pub fn run() {
                         eprintln!("NeuroVue: {error}");
                     }
                 }
-                None => start_receiving(&app),
+                None if receiving_enabled() => start_receiving(&app),
+                None => {}
             });
         }
         _ => {}

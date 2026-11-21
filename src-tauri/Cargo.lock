@@ -1987,6 +1987,7 @@ version = "0.2.12"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "block2",
  "ciborium",
  "flate2",
  "futures-util",
