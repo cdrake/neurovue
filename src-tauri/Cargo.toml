@@ -83,3 +83,7 @@ objc2-ui-kit = { version = "0.3", features = [
 # neurovue-web (web/) sets cfg(neurovue_web) on the sources it shares with this crate.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(neurovue_web)"] }
+
+[profile.release]
+# Symbols and their build paths stay out of shipped binaries.
+strip = true
