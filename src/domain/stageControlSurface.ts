@@ -69,6 +69,11 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
       state.hasVolume,
     ),
   ]
+  if (state.levels) {
+    controls.push(
+      segmented('levels', 'Sub-volume', state.levels.items, state.levels.value),
+    )
+  }
   if (state.look) {
     controls.push(
       segmented('look', 'Look', state.look.presets, state.look.value),
@@ -234,6 +239,7 @@ export function setStageControl(
       }
       if (id === 'view-mode') actions.viewMode(option.id)
       else if (id === 'look') actions.look(option.id)
+      else if (id === 'levels') actions.level(option.id)
       else if (id === 'measure-tool') actions.measureTool(option.id)
       else if (id === 'shape-tool') actions.shapeTool(option.id)
       else if (id === 'draw-tool') actions.drawTool(option.id)

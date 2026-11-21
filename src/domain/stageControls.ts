@@ -123,6 +123,11 @@ export interface StageControlsState {
   magnifyZoom: number | null
   /** Box: an editable sub-volume box to cut out; null hides the button. */
   box: { active: boolean; enabled: boolean } | null
+  /** The sub-volume stack's levels, whole first, and the one shown; null hides it. */
+  levels: {
+    items: readonly { id: string; label: string }[]
+    value: string
+  } | null
   viewModes: readonly { id: string; label: string }[]
   viewMode: string
   /** False before a volume is selected: the view modes show, dimmed. */
@@ -168,6 +173,7 @@ export interface StageControlsActions {
   magnifyZoom(zoom: number): void
   box(): void
   cutOutBox(): void
+  level(id: string): void
   viewMode(id: string): void
   look(id: string): void
   measure(): void
@@ -509,6 +515,23 @@ export class StageControls implements UIKitOverlayRenderer {
         })
       }
     }
+    const { levels } = state
+    if (levels) {
+      segmenteds.push({
+        id: 'levels',
+        x: 0,
+        y: 0,
+        segments: levels.items.map((level) => ({
+          value: level.id,
+          label: level.label,
+        })),
+        value: levels.value,
+        onChange: (value) => {
+          this.segmenteds.blur()
+          this.actions?.level(value)
+        },
+      })
+    }
     const { magnifyZoom } = state
     if (magnifyZoom !== null) {
       sliders.push({
@@ -646,6 +669,10 @@ export class StageControls implements UIKitOverlayRenderer {
     let nextY = rowY + CONTROL_HEIGHT + ROW_GAP
     if (picked) {
       this.segmenteds.updateSegmented(picked.id, { x: EDGE, y: nextY })
+      nextY += CONTROL_HEIGHT + ROW_GAP
+    }
+    if (levels) {
+      this.segmenteds.updateSegmented('levels', { x: EDGE, y: nextY })
       nextY += CONTROL_HEIGHT + ROW_GAP
     }
     if (magnifyZoom !== null) {
