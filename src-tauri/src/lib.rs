@@ -960,8 +960,7 @@ pub fn run() {
         tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
         // A suspended iOS app can lose its listening socket and its Bonjour
         // registration, so the iPad would no longer show up to send to.
-        // The app has no UIScene manifest, so coming back is WindowEvent::Resumed
-        // (applicationWillEnterForeground); with scenes it would be Focused(true).
+        // In UIScene mode coming back is Focused(true) (sceneDidBecomeActive).
         #[cfg(target_os = "ios")]
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Resumed | tauri::WindowEvent::Focused(true),

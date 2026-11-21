@@ -116,6 +116,14 @@
       </dict>
     </dict>
   </array>
+  <!-- UIScene life cycle (iOS 27 SDK, TN3187). tao only enters scene mode when
+       this is true and supplies the configuration itself; main.mm keeps it to
+       one window. -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+  </dict>
   <!-- The UI is dark-only: keeps the launch screen, status bar and native sheets dark. -->
   <key>UIUserInterfaceStyle</key>
   <string>Dark</string>
