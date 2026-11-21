@@ -7,7 +7,8 @@
       "files": {
         "PlugIns/NeuroVuePreview.appex": "target/quicklook/NeuroVuePreview.appex",
         "PlugIns/NeuroVueThumbnail.appex": "target/quicklook/NeuroVueThumbnail.appex"
-      }
+      },
+      "minimumSystemVersion": "13.0"
     }
   }
 }

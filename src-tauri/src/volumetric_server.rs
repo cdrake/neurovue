@@ -33,6 +33,9 @@ pub struct ServerHandle {
     pub url: String,
     pub port: u16,
     pub volume_count: usize,
+    /// Per-launch secret every route sits under, so other local accounts that
+    /// can reach 127.0.0.1 can't read the open volumes.
+    token: String,
     volumes: VolumeStore,
     dataset_root: Arc<Mutex<Option<PathBuf>>>,
     discovery_stats: Arc<Mutex<DiscoveryStats>>,
@@ -53,8 +56,10 @@ type PyramidLocks = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 /// Total byte budget for the in-memory rendered-preview cache. Cache keys
 /// include client-controlled fields (size, version, region), so without a
 /// ceiling a client could grow this without bound; evict oldest-first past it.
-/// Overridable via NEUROVUE_PREVIEW_CACHE_BYTES (e.g. tighter on mobile).
-const DEFAULT_PREVIEW_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+/// Overridable via NEUROVUE_PREVIEW_CACHE_BYTES. iOS jetsams far below desktop
+/// RAM, so its defaults here and below are a quarter.
+const DEFAULT_PREVIEW_CACHE_MAX_BYTES: usize =
+    if cfg!(target_os = "ios") { 64 } else { 256 } * 1024 * 1024;
 
 fn preview_cache_max_bytes() -> usize {
     static BYTES: OnceLock<usize> = OnceLock::new();
@@ -115,7 +120,8 @@ impl PreviewCache {
 
 /// Total byte budget for cached decoded pyramid-level voxel data. This stores
 /// decompressed coarse levels only, never full source volumes by default.
-const DEFAULT_DECODED_LEVEL_CACHE_BYTES: usize = 512 * 1024 * 1024;
+const DEFAULT_DECODED_LEVEL_CACHE_BYTES: usize =
+    if cfg!(target_os = "ios") { 128 } else { 512 } * 1024 * 1024;
 
 #[derive(Clone)]
 struct DecodedNifti {
@@ -345,6 +351,7 @@ fn new_handle(discovery: VolumeDiscovery) -> ServerHandle {
     ServerHandle {
         url: String::new(),
         port: 0,
+        token: random_token(),
         volume_count: discovery.volumes.len(),
         volumes: Arc::new(Mutex::new(discovery.volumes)),
         dataset_root: Arc::new(Mutex::new(discovery.root)),
@@ -389,11 +396,12 @@ fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
         .set_nonblocking(true)
         .expect("set NeuroVue listener nonblocking");
 
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}/{}", server.token);
     let shutdown = Arc::new(tokio::sync::Notify::new());
     let state = app_state(&server, base_url.clone());
 
     let stop = shutdown.clone();
+    let server_token = server.token.clone();
     std::thread::spawn(move || {
         let runtime = Builder::new_multi_thread()
             .enable_all()
@@ -404,7 +412,7 @@ fn serve(listener: TcpListener, server: ServerHandle) -> ServerHandle {
         runtime.block_on(async move {
             let listener =
                 tokio::net::TcpListener::from_std(listener).expect("adopt NeuroVue listener");
-            let app = build_router(state, addr.port());
+            let app = build_router(state, addr.port(), &format!("/{}", server_token));
 
             let stopped = async move { stop.notified().await };
             if let Err(error) = axum::serve(listener, app)
@@ -439,6 +447,12 @@ pub fn revive(server: &ServerHandle) -> Option<ServerHandle> {
         .or_else(|_| TcpListener::bind("127.0.0.1:0"))
         .ok()?;
     Some(serve(listener, server.clone()))
+}
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("NeuroVue server token");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn app_state(server: &ServerHandle, base_url: String) -> AppState {
@@ -486,8 +500,9 @@ pub fn clear_dataset(handle: &ServerHandle) {
     lock_recover(&handle.decoded_level_cache).clear();
 }
 
-fn build_router(state: AppState, port: u16) -> Router {
-    routes()
+fn build_router(state: AppState, port: u16, prefix: &str) -> Router {
+    Router::new()
+        .nest(prefix, routes())
         .layer(app_cors_layer())
         // Outermost, so a foreign Host is refused before any route runs.
         .layer(middleware::from_fn(move |request, next| {
@@ -636,6 +651,18 @@ pub fn data_root() -> PathBuf {
     DATA_ROOT.get().cloned().unwrap_or_else(cache_root)
 }
 
+/// Extracted bundles, redone on every open. iOS backs up the data root and
+/// only clears tmp while the app isn't running, so there they live in the
+/// cache; macOS purges temp under a running app, so desktop keeps them with
+/// user work.
+fn imports_dir() -> PathBuf {
+    if cfg!(target_os = "ios") {
+        cache_root().join("imports")
+    } else {
+        data_root().join("imports")
+    }
+}
+
 /// Origins allowed to read from the local server: the app's own webview (the
 /// vite dev URL in development, the tauri:// scheme in a packaged build). This
 /// replaces the previous permissive CORS so an arbitrary web page the user
@@ -645,11 +672,15 @@ pub fn data_root() -> PathBuf {
 /// separated).
 fn app_cors_layer() -> CorsLayer {
     let mut origins = vec![
-        "http://127.0.0.1:5175".to_string(),
-        "http://localhost:5175".to_string(),
         "tauri://localhost".to_string(),
         "https://tauri.localhost".to_string(),
     ];
+    if cfg!(debug_assertions) {
+        origins.extend([
+            "http://127.0.0.1:5175".to_string(),
+            "http://localhost:5175".to_string(),
+        ]);
+    }
     if let Ok(extra) = std::env::var("NEUROVUE_ALLOWED_ORIGINS") {
         origins.extend(
             extra
@@ -1122,7 +1153,6 @@ fn write_bundle_zip(
         "source": {
             "datasetName": bids.as_ref().and_then(|info| info.name.clone()),
             "datasetDoi": bids.as_ref().and_then(|info| info.dataset_doi.clone()),
-            "datasetRoot": dataset_root(handle).map(|path| path.display().to_string()),
         },
         "volumes": manifest_volumes,
         "view": view,
@@ -1536,7 +1566,7 @@ fn extract_bundle_zip(zip_path: &FsPath) -> Result<PathBuf, String> {
         )
     })?;
 
-    let imports_dir = data_root().join("imports");
+    let imports_dir = imports_dir();
     let out_root = imports_dir.join(bundle_import_dir_name(zip_path));
     // The name is a single sanitized segment, so this always holds; check anyway
     // before a recursive delete.
@@ -1740,7 +1770,7 @@ pub fn read_document(path: &FsPath) -> Result<Value, String> {
             )
         })?;
 
-    let imports_dir = data_root().join("imports");
+    let imports_dir = imports_dir();
     let out_root = imports_dir.join(bundle_import_dir_name(&canonical));
     if out_root.parent() != Some(imports_dir.as_path()) {
         return Err(format!(
@@ -2289,7 +2319,18 @@ async fn raw_volume(
 ) -> Result<Response, StatusCode> {
     let volume = find_signed_volume(&state, &path.vol_id, &path.sig)?;
     let path = volume.source_path.as_ref().ok_or(StatusCode::NOT_FOUND)?;
+    check_source_ceiling(path, max_source_voxels())?;
     stream_volume_file(path).await
+}
+
+/// The page decodes a served source whole, and every level is built from it,
+/// so hold the routes to `read_nifti_file`'s ceiling.
+fn check_source_ceiling(path: &FsPath, max_voxels: usize) -> Result<(), StatusCode> {
+    let header_bytes = peek_nifti_header_bytes(path).ok_or(StatusCode::NOT_FOUND)?;
+    let header = parse_nifti_header(&header_bytes).ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+    spatial_voxels_within(&header, &header_bytes, max_voxels)
+        .map(|_| ())
+        .ok_or(StatusCode::PAYLOAD_TOO_LARGE)
 }
 
 /// Optional ceiling on a single served volume file, via
@@ -2337,8 +2378,10 @@ async fn raw_level_volume(
     let volume = find_signed_volume(&state, &path.vol_id, &path.sig)?;
     let dataset_root = current_dataset_root(&state);
     let level = clamp_pyramid_level(path.level, volume.shape);
+    let source = volume.source_path.clone().ok_or(StatusCode::NOT_FOUND)?;
+    check_source_ceiling(&source, max_source_voxels())?;
     let path = if level == 0 {
-        volume.source_path.clone().ok_or(StatusCode::NOT_FOUND)?
+        source
     } else {
         // Building a level decodes and resamples the whole volume; keep it off
         // the async workers so other routes (and /rpc) stay responsive.
@@ -3526,7 +3569,8 @@ fn read_nifti_header(path: &FsPath) -> Option<NiftiHeader> {
 /// memory. A pathologically large file would otherwise OOM the server (the read
 /// alone, plus the f32 working buffers in pyramid/render). Generous enough for
 /// real brain data (~800^3); overridable via NEUROVUE_MAX_SOURCE_VOXELS.
-const DEFAULT_MAX_SOURCE_VOXELS: usize = 512 * 1024 * 1024;
+const DEFAULT_MAX_SOURCE_VOXELS: usize =
+    if cfg!(target_os = "ios") { 128 } else { 512 } * 1024 * 1024;
 
 fn max_source_voxels() -> usize {
     std::env::var("NEUROVUE_MAX_SOURCE_VOXELS")
@@ -3556,9 +3600,9 @@ fn peek_nifti_header_bytes(path: &FsPath) -> Option<[u8; 348]> {
 }
 
 /// Frames beyond the spatial dims: the product of dim[4..=dim[0]] (time,
-/// components, ...), at least 1. A 4D file is read whole, so neurovue-web
-/// counts these toward the voxel ceiling; the desktop app counts one frame,
-/// as it always has, so large 4D runs it opened before still open.
+/// components, ...), at least 1. A 4D file is read whole, so neurovue-web and
+/// iOS count these toward the voxel ceiling; desktop counts one frame, as it
+/// always has, so large 4D runs it opened before still open.
 fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
     let little_endian = i32::from_le_bytes(header[0..4].try_into().ok()?) == 348;
     let dim = |index: usize| -> i16 {
@@ -3577,11 +3621,24 @@ fn nifti_frame_count(header: &[u8; 348]) -> Option<usize> {
 
 /// Frames counted toward the voxel ceiling (see `nifti_frame_count`).
 fn source_frames(header: &[u8; 348]) -> Option<usize> {
-    if cfg!(neurovue_web) {
+    if cfg!(any(neurovue_web, target_os = "ios")) {
         nifti_frame_count(header)
     } else {
         Some(1)
     }
+}
+
+/// The spatial voxel count, if it times `source_frames` is within `max_voxels`.
+fn spatial_voxels_within(
+    header: &NiftiHeader,
+    header_bytes: &[u8; 348],
+    max_voxels: usize,
+) -> Option<usize> {
+    let spatial_voxels = usize::from(header.shape[0])
+        .checked_mul(usize::from(header.shape[1]))?
+        .checked_mul(usize::from(header.shape[2]))?;
+    (spatial_voxels.checked_mul(source_frames(header_bytes)?)? <= max_voxels)
+        .then_some(spatial_voxels)
 }
 
 fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
@@ -3589,17 +3646,17 @@ fn read_nifti_file(path: &FsPath) -> Option<(NiftiHeader, Vec<u8>)> {
     // huge) full read, so an oversized volume bails instead of OOMing.
     let header_bytes = peek_nifti_header_bytes(path)?;
     let header = parse_nifti_header(&header_bytes)?;
-    let voxels = usize::from(header.shape[0])
-        .checked_mul(usize::from(header.shape[1]))?
-        .checked_mul(usize::from(header.shape[2]))?
-        .checked_mul(source_frames(&header_bytes)?)?;
-    if voxels > max_source_voxels() {
-        return None;
-    }
+    let spatial_voxels = spatial_voxels_within(&header, &header_bytes, max_source_voxels())?;
 
     let bytes = if is_gzipped_nifti(path) {
+        // A gzip bomb can claim a small header and inflate far past it: stop at
+        // the widest voxel (16-byte complex) in every frame, plus room for header
+        // extensions. All frames, even where the ceiling counts one: 4D is read whole.
+        let all_voxels = spatial_voxels.checked_mul(nifti_frame_count(&header_bytes)?)? as u64;
+        let limit = all_voxels.saturating_mul(16).saturating_add(1 << 20);
         let mut bytes = Vec::new();
         GzDecoder::new(File::open(path).ok()?)
+            .take(limit)
             .read_to_end(&mut bytes)
             .ok()?;
         bytes
@@ -5446,7 +5503,7 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState {
-            base_url: "http://127.0.0.1:4242".to_string(),
+            base_url: "http://127.0.0.1:4242/t0ken".to_string(),
             volumes: Arc::new(Mutex::new(Vec::new())),
             dataset_root: Arc::new(Mutex::new(None)),
             discovery_stats: Arc::new(Mutex::new(DiscoveryStats::default())),
@@ -5460,12 +5517,12 @@ mod tests {
 
     async fn status_for_host(host: Option<&str>) -> StatusCode {
         use tower::ServiceExt;
-        let mut request = axum::http::Request::builder().uri("/api");
+        let mut request = axum::http::Request::builder().uri("/t0ken/api");
         if let Some(host) = host {
             request = request.header(header::HOST, host);
         }
         let request = request.body(axum::body::Body::empty()).unwrap();
-        build_router(test_state(), 4242)
+        build_router(test_state(), 4242, "/t0ken")
             .oneshot(request)
             .await
             .unwrap()
@@ -5492,13 +5549,13 @@ mod tests {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             async fn status(state: &AppState, url: &str) -> StatusCode {
-                let path = url.strip_prefix(&state.base_url).unwrap();
+                let path = url.strip_prefix("http://127.0.0.1:4242").unwrap();
                 let request = axum::http::Request::builder()
                     .uri(path)
                     .header(header::HOST, "127.0.0.1:4242")
                     .body(axum::body::Body::empty())
                     .unwrap();
-                build_router(state.clone(), 4242)
+                build_router(state.clone(), 4242, "/t0ken")
                     .oneshot(request)
                     .await
                     .unwrap()
@@ -5514,6 +5571,37 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root_a);
         let _ = fs::remove_dir_all(&root_b);
+    }
+
+    #[test]
+    fn served_sources_obey_the_voxel_ceiling() {
+        let root = scratch_dir("ceiling");
+        let path = root.join("big.nii.gz");
+        write_nifti(&path, [16, 16, 16], 1);
+        assert_eq!(check_source_ceiling(&path, 16 * 16 * 16), Ok(()));
+        assert_eq!(
+            check_source_ceiling(&path, 16 * 16 * 16 - 1),
+            Err(StatusCode::PAYLOAD_TOO_LARGE)
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn router_requires_the_launch_token() {
+        use tower::ServiceExt;
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let request = axum::http::Request::builder()
+                .uri("/api")
+                .header(header::HOST, "127.0.0.1:4242")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = build_router(test_state(), 4242, "/t0ken")
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        });
     }
 
     #[test]

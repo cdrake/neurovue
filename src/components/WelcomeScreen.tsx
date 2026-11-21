@@ -1,8 +1,10 @@
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import {
   Brain,
   FileJson,
   Folder,
   FolderOpen,
+  Laptop,
   LoaderCircle,
   PackageOpen,
   Shapes,
@@ -30,6 +32,7 @@ export function WelcomeScreen({
   onOpenSample,
   onRemoveRecent,
   onReopenLastChange,
+  onReceive,
 }: {
   busy: boolean
   /** Set while starting up or reopening: what the app is waiting on. */
@@ -38,13 +41,16 @@ export function WelcomeScreen({
   reopenLast: boolean
   onOpenBundle: () => void
   onOpenFile: () => void
-  onOpenFolder: () => void
+  /** Absent where there is no folder picker (iOS). */
+  onOpenFolder?: () => void
   onOpenMesh: () => void
   onOpenRecent: (path: string) => void
   /** Null when this build ships no sample. */
   onOpenSample: (() => void) | null
   onRemoveRecent: (path: string) => void
   onReopenLastChange: (reopen: boolean) => void
+  /** Set on an iPad not yet receiving sends from a Mac. */
+  onReceive?: () => void
 }): JSX.Element {
   if (openingLabel !== null) {
     return (
@@ -63,20 +69,25 @@ export function WelcomeScreen({
         <header className="nv-welcome-header">
           <h2 id="nv-welcome-title">Welcome to NeuroVue</h2>
           <p>Open a NIfTI volume or a BIDS dataset to start.</p>
+          <p className="nv-welcome-disclaimer" role="note">
+            For research use only. Not for clinical diagnosis.
+          </p>
         </header>
 
         <div className="nv-welcome-columns">
           <section aria-labelledby="nv-welcome-start">
             <h3 id="nv-welcome-start">Start</h3>
             <div className="nv-welcome-actions">
-              <WelcomeAction
-                className="nv-desktop-only"
-                disabled={busy}
-                hint="A folder of NIfTI volumes, such as a BIDS dataset"
-                icon={<FolderOpen aria-hidden="true" size={16} />}
-                label="Open folder…"
-                onClick={onOpenFolder}
-              />
+              {onOpenFolder && (
+                <WelcomeAction
+                  className="nv-desktop-only"
+                  disabled={busy}
+                  hint="A folder of NIfTI volumes, such as a BIDS dataset"
+                  icon={<FolderOpen aria-hidden="true" size={16} />}
+                  label="Open folder…"
+                  onClick={onOpenFolder}
+                />
+              )}
               <WelcomeAction
                 disabled={busy}
                 hint="A single .nii or .nii.gz volume"
@@ -105,6 +116,15 @@ export function WelcomeScreen({
                   icon={<Brain aria-hidden="true" size={16} />}
                   label="Open sample data"
                   onClick={onOpenSample}
+                />
+              ) : null}
+              {onReceive ? (
+                <WelcomeAction
+                  disabled={busy}
+                  hint="Lets a Mac running NeuroVue send here. Unencrypted: use on trusted networks only."
+                  icon={<Laptop aria-hidden="true" size={16} />}
+                  label="Receive from a Mac"
+                  onClick={onReceive}
                 />
               ) : null}
             </div>
@@ -157,6 +177,20 @@ export function WelcomeScreen({
           />
           Reopen the last dataset when NeuroVue starts
         </label>
+        <a
+          className="nv-welcome-privacy"
+          href="https://cdrake.github.io/neurovue/privacy"
+          onClick={(event) => {
+            // The app's webview won't follow external links; the system browser opens it.
+            if (!isTauri()) return
+            event.preventDefault()
+            void invoke('open_privacy_policy')
+          }}
+          rel="noopener"
+          target="_blank"
+        >
+          Privacy policy
+        </a>
       </div>
     </section>
   )

@@ -1,5 +1,6 @@
 // niimath (a native sidecar) and the integrated terminal (a PTY/shell) both
 // spawn subprocesses, which iOS/Android forbid, so both modules are desktop-only.
+mod background;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod bonjour;
 mod dataset;
@@ -66,6 +67,18 @@ const MENU_PIPELINES: &str = "view-pipelines";
 const MENU_CLEAR_ALL: &str = "view-clear-all";
 #[cfg(desktop)]
 const MENU_CONTROLS: &str = "help-controls";
+#[cfg(desktop)]
+const MENU_PRIVACY: &str = "privacy-policy";
+const PRIVACY_POLICY_URL: &str = "https://cdrake.github.io/neurovue/privacy";
+
+/// App Review 5.1.1(i) wants the policy reachable in the app, not just the store.
+#[tauri::command]
+fn open_privacy_policy(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(PRIVACY_POLICY_URL, None::<&str>)
+        .map_err(|error| error.to_string())
+}
 
 /// The label of the window NeuroVue opens at launch.
 const MAIN_WINDOW: &str = "main";
@@ -122,6 +135,7 @@ struct RuntimeCapabilities {
     terminal_available: bool,
     native_niimath_available: bool,
     airdrop_available: bool,
+    file_dialogs_available: bool,
 }
 
 #[tauri::command]
@@ -130,6 +144,9 @@ fn neurovue_runtime_capabilities() -> RuntimeCapabilities {
         terminal_available: cfg!(desktop),
         native_niimath_available: cfg!(desktop),
         airdrop_available: cfg!(target_os = "macos") || cfg!(target_os = "ios"),
+        // Mobile tauri-plugin-dialog has no folder picker, and its save dialog
+        // hands back an empty placeholder outside the sandbox (#81).
+        file_dialogs_available: cfg!(desktop),
     }
 }
 
@@ -188,9 +205,10 @@ async fn export_dataset_bundle(
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
+        let _background = background::BackgroundTask::begin("Export bundle");
         let result = volumetric_server::export_bundle(
             &server,
-            Path::new(&dest_path),
+            Path::new(&normalize_local_path(&dest_path)),
             &volume_ids,
             &view,
             &created_at,
@@ -240,24 +258,65 @@ fn stage_share_bundle(
     Ok((result, dest))
 }
 
-/// Devices on the network that can take a Send to iPad (or, from an iPad, a
-/// drawing sent back).
-/// Listens for sends and advertises the port (see receive.rs, bonjour.rs).
-fn start_receiving(app: &tauri::AppHandle) {
-    match receive::start(app) {
-        Ok(port) => {
-            eprintln!("NeuroVue: receiving sends on port {port}");
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
-            if let Err(error) = bonjour::advertise(port) {
-                eprintln!("NeuroVue: {error}");
-            }
-        }
-        Err(error) => eprintln!("NeuroVue: can't receive sends ({error})"),
+/// Set once someone uses Send to iPad here, so the Local Network prompt follows
+/// an action of theirs rather than greeting them at first launch.
+fn receive_marker() -> std::path::PathBuf {
+    volumetric_server::data_root().join("receive-enabled")
+}
+
+fn receiving_enabled() -> bool {
+    receive_marker().exists()
+}
+
+/// Whether this session's listener is up: receive::start manages the
+/// Receiver only once it has bound.
+fn receiver_running(app: &tauri::AppHandle) -> bool {
+    app.try_state::<std::sync::Arc<receive::Receiver>>()
+        .is_some()
+}
+
+/// Starts receiving, now and at every later launch; persisted only once it works.
+#[tauri::command]
+fn enable_receiving(app: tauri::AppHandle) -> Result<(), String> {
+    if receiving_enabled() && receiver_running(&app) {
+        return Ok(());
     }
+    try_start_receiving(&app)?;
+    let marker = receive_marker();
+    if let Some(dir) = marker.parent() {
+        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(&marker, b"").map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn list_send_targets() -> Result<Vec<send::SendTarget>, String> {
+fn is_receiving(app: tauri::AppHandle) -> bool {
+    receiver_running(&app)
+}
+
+/// Listens for sends and advertises the port (see receive.rs, bonjour.rs).
+fn try_start_receiving(app: &tauri::AppHandle) -> Result<(), String> {
+    let port = receive::start(app).map_err(|error| format!("Can't receive sends ({error})."))?;
+    eprintln!("NeuroVue: receiving sends on port {port}");
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    bonjour::advertise(port)?;
+    Ok(())
+}
+
+fn start_receiving(app: &tauri::AppHandle) {
+    if let Err(error) = try_start_receiving(app) {
+        eprintln!("NeuroVue: {error}");
+    }
+}
+
+/// Devices on the network that can take a Send to iPad (or, from an iPad, a
+/// drawing sent back). Looking for devices means using Send to iPad, so this device starts
+/// listening too: a Mac for drawings sent back, an iPad for sends.
+#[tauri::command]
+async fn list_send_targets(app: tauri::AppHandle) -> Result<Vec<send::SendTarget>, String> {
+    if let Err(error) = enable_receiving(app) {
+        eprintln!("NeuroVue: {error}");
+    }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     return tauri::async_runtime::spawn_blocking(|| {
         bonjour::browse(std::time::Duration::from_millis(1500))
@@ -282,6 +341,7 @@ async fn send_view_to_device(
     view: serde_json::Value,
     created_at: String,
     name: String,
+    code: String,
     on_offered: tauri::ipc::Channel<()>,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
@@ -292,7 +352,7 @@ async fn send_view_to_device(
             return Err(format!("Couldn't find {} on the network.", target.name));
         }
         let _ = on_offered.send(());
-        send::send_file(&addresses, &target.name, &dest, &send::device_name())?;
+        send::send_file(&addresses, &target.name, &dest, &send::device_name(), &code)?;
         Ok(ExportBundleResult {
             bundle_path: result.bundle_path,
             volume_count: result.volume_count,
@@ -327,6 +387,7 @@ async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), 
         .map_err(|error| format!("send_drawing_to_device: target: {error}"))?;
     let base = meta["base"].clone();
     let created_at = meta["createdAt"].as_str().unwrap_or_default().to_string();
+    let code = meta["code"].as_str().unwrap_or_default().to_string();
     let drawing = drawing.to_vec();
     tauri::async_runtime::spawn_blocking(move || {
         let label = base["label"].as_str().unwrap_or("volume");
@@ -348,7 +409,7 @@ async fn send_drawing_to_device(request: tauri::ipc::Request<'_>) -> Result<(), 
         if addresses.is_empty() {
             return Err(format!("Couldn't find {} on the network.", target.name));
         }
-        let sent = send::send_file(&addresses, &target.name, &dest, &send::device_name());
+        let sent = send::send_file(&addresses, &target.name, &dest, &send::device_name(), &code);
         let _ = std::fs::remove_file(&dest);
         sent
     })
@@ -448,7 +509,29 @@ fn sanitize_share_name(name: &str) -> String {
 /// Writes to a path the person picked in the save dialog (SVG, mask exports).
 #[tauri::command]
 async fn write_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
-    // Raw body: u32 LE path length, the UTF-8 path, then the file's bytes.
+    let (path, bytes) = split_file_body(&request)?;
+    let path = normalize_local_path(path);
+    std::fs::write(&path, bytes).map_err(|error| format!("{path}: {error}"))
+}
+
+/// Where there is no save dialog (iOS): stages the file in temp and offers the
+/// share sheet, whose "Save to Files" is the save. Same body as `write_file`,
+/// with a file name for the path.
+#[tauri::command]
+async fn share_file(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let (name, bytes) = split_file_body(&request)?;
+    // shortcut: staged files stay until the OS purges temp; prune if they pile up.
+    let dir = std::env::temp_dir().join("exports");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("share_file: {error}"))?;
+    let path = dir.join(sanitize_share_name(name));
+    std::fs::write(&path, bytes).map_err(|error| format!("share_file: {error}"))?;
+    share::share_via_airdrop(&app, vec![path.display().to_string()])
+}
+
+/// Raw body: u32 LE path length, the UTF-8 path, then the file's bytes.
+fn split_file_body<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+) -> Result<(&'a str, &'a [u8]), String> {
     let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
         return Err("write_file: expected the file's bytes".to_string());
     };
@@ -460,7 +543,7 @@ async fn write_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
         .get(..length)
         .and_then(|path| std::str::from_utf8(path).ok())
         .ok_or("write_file: bad path")?;
-    std::fs::write(path, &rest[length..]).map_err(|error| format!("{path}: {error}"))
+    Ok((path, &rest[length..]))
 }
 
 #[tauri::command]
@@ -663,14 +746,23 @@ fn neurovue_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::Resu
         true,
         None::<&str>,
     )?;
+    let privacy = MenuItem::with_id(handle, MENU_PRIVACY, "Privacy Policy", true, None::<&str>)?;
     let existing_help = menu.items()?.into_iter().find_map(|item| {
         item.as_submenu()
             .filter(|submenu| submenu.text().is_ok_and(|text| text == "Help"))
             .cloned()
     });
     match existing_help {
-        Some(help_menu) => help_menu.prepend(&controls)?,
-        None => menu.append(&Submenu::with_items(handle, "Help", true, &[&controls])?)?,
+        Some(help_menu) => {
+            help_menu.prepend(&controls)?;
+            help_menu.append(&privacy)?;
+        }
+        None => menu.append(&Submenu::with_items(
+            handle,
+            "Help",
+            true,
+            &[&controls, &privacy],
+        )?)?,
     }
     Ok(menu)
 }
@@ -753,6 +845,7 @@ fn set_recent_menu(window: tauri::WebviewWindow, paths: Vec<String>) -> tauri::R
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_pencil::init())
         .manage(opened::OpenedFiles::default())
         .on_window_event(|window, event| {
@@ -802,7 +895,7 @@ pub fn run() {
             // The iPad listens for Send to iPad from a Mac, and the Mac for
             // drawings sent back. Elsewhere nothing advertises the port, so
             // only listen when asked.
-            if cfg!(any(target_os = "ios", target_os = "macos"))
+            if (cfg!(any(target_os = "ios", target_os = "macos")) && receiving_enabled())
                 || std::env::var_os("NEUROVUE_RECEIVE").is_some()
             {
                 start_receiving(app.handle());
@@ -815,10 +908,16 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder.menu(neurovue_menu).on_menu_event(|app, event| {
         let id = event.id().as_ref();
+        if id == MENU_PRIVACY {
+            let _ = open_privacy_policy(app.clone());
+            return;
+        }
         if id == mcp::MENU_ALLOW_AGENTS {
             let checked = mcp::allow_agents_item(app).and_then(|item| item.is_checked().ok());
-            if let Some(enabled) = checked {
-                mcp::set_enabled(app, enabled);
+            match checked {
+                Some(true) => mcp::confirm_enable(app),
+                Some(false) => mcp::set_enabled(app, false),
+                None => {}
             }
             return;
         }
@@ -855,6 +954,8 @@ pub fn run() {
             read_mask_file,
             export_dataset_bundle,
             write_file,
+            share_file,
+            open_privacy_policy,
             read_bundle_manifest,
             read_document_manifest,
             share_view_via_airdrop,
@@ -862,6 +963,8 @@ pub fn run() {
             opened::keep_picked_file,
             receive::answer_send_offer,
             list_send_targets,
+            enable_receiving,
+            is_receiving,
             send_view_to_device,
             send_drawing_to_device,
             attach_drawing,
@@ -888,6 +991,12 @@ pub fn run() {
             set_express_menu_label,
             set_recent_menu
         ]);
+    // WebKit kills the page's process under memory pressure (large volumes on
+    // iPad), leaving a blank window; reloading brings the Welcome screen back.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        let _ = webview.reload();
+    });
     #[cfg(not(desktop))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         neurovue_runtime_capabilities,
@@ -901,10 +1010,14 @@ pub fn run() {
         read_bundle_manifest,
         read_document_manifest,
         share_view_via_airdrop,
+        share_file,
+        open_privacy_policy,
         opened::take_opened_files,
         opened::keep_picked_file,
         receive::answer_send_offer,
         list_send_targets,
+        enable_receiving,
+        is_receiving,
         send_view_to_device,
         send_drawing_to_device,
         attach_drawing,
@@ -926,8 +1039,7 @@ pub fn run() {
         tauri::RunEvent::Opened { urls } => opened::receive(_app, urls),
         // A suspended iOS app can lose its listening socket and its Bonjour
         // registration, so the iPad would no longer show up to send to.
-        // The app has no UIScene manifest, so coming back is WindowEvent::Resumed
-        // (applicationWillEnterForeground); with scenes it would be Focused(true).
+        // In UIScene mode coming back is Focused(true) (sceneDidBecomeActive).
         #[cfg(target_os = "ios")]
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::Resumed | tauri::WindowEvent::Focused(true),
@@ -940,7 +1052,8 @@ pub fn run() {
                         eprintln!("NeuroVue: {error}");
                     }
                 }
-                None => start_receiving(&app),
+                None if receiving_enabled() => start_receiving(&app),
+                None => {}
             });
         }
         _ => {}

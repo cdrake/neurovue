@@ -79,6 +79,21 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
       segmented('look', 'Look', state.look.presets, state.look.value),
     )
   }
+  if (state.magnify !== null) {
+    controls.push(toggle('magnify', 'Magnify', state.magnify, true))
+  }
+  if (state.magnifyZoom !== null) {
+    controls.push({
+      id: 'magnify-zoom',
+      kind: 'slider',
+      label: 'Magnify zoom',
+      min: 1.5,
+      max: 10,
+      step: 0.1,
+      value: state.magnifyZoom,
+      enabled: true,
+    })
+  }
   const { box, measure, shapes, draw } = state
   if (box) {
     controls.push(toggle('box', 'Box', box.active, box.enabled))
@@ -100,8 +115,8 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
     if (shapes.active) {
       controls.push(
         segmented('shape-tool', 'Shape', shapes.tools, shapes.tool),
-        button('shape-undo', 'Undo', true),
-        button('shape-redo', 'Redo', true),
+        button('shape-undo', 'Undo shape', true),
+        button('shape-redo', 'Redo shape', true),
         button('clear-shapes', 'Clear shapes', true),
       )
     }
@@ -111,7 +126,7 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
     if (draw.active) {
       controls.push(
         segmented('draw-tool', 'Draw tool', draw.tools, draw.tool),
-        button('undo', 'Undo', draw.hasDrawing),
+        button('undo', 'Undo ink', draw.hasDrawing),
         button('clear-drawing', 'Clear ink', draw.hasDrawing),
         button('interpolate', 'Interpolate', draw.hasDrawing),
         button('save-mask', 'Save mask', draw.hasDrawing),
@@ -224,7 +239,8 @@ export function setStageControl(
       }
       // The stage's tool buttons toggle, so press only to change.
       if (value !== control.value) {
-        if (id === 'box') actions.box()
+        if (id === 'magnify') actions.magnify()
+        else if (id === 'box') actions.box()
         else if (id === 'measure') actions.measure()
         else if (id === 'shapes') actions.shapes()
         else if (id === 'draw') actions.draw()
@@ -265,6 +281,10 @@ export function setStageControl(
         actions.wandTolerance(clamped)
         return { ...control, value: clamped }
       }
+      if (id === 'magnify-zoom') {
+        actions.magnifyZoom(clamped)
+        return { ...control, value: clamped }
+      }
       const plane = state.clip?.slider
       if (plane) actions.clipDepth(plane.id, clamped)
       return { ...control, value: clamped }
@@ -298,4 +318,28 @@ export const stageControlSurface: HostedControls = {
   clear() {
     throw new Error(FIXED)
   },
+}
+
+const PRESS: Record<string, keyof StageControlsActions> = {
+  'box-cut': 'cutOutBox',
+  'clear-measure': 'clearMeasurements',
+  'shape-undo': 'shapeUndo',
+  'shape-redo': 'shapeRedo',
+  'clear-shapes': 'clearShapes',
+  undo: 'undo',
+  'clear-drawing': 'clearDrawing',
+  interpolate: 'interpolate',
+  'save-mask': 'saveMask',
+  'load-mask': 'loadMask',
+  'export-svg': 'exportSVG',
+  send: 'send',
+}
+
+/** Presses one of `stageControlStates`' buttons, as a click would. */
+export function pressStageButton(
+  actions: StageControlsActions,
+  id: string,
+): void {
+  const action = PRESS[id]
+  if (action) (actions[action] as () => void)()
 }

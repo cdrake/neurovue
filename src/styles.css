@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   color: #f0eee2;
   background: #10110f;
   font-family:
@@ -19,15 +20,26 @@
   /* Set from the local time by startDayTint (domain/dayTint.ts); "r g b". */
   --day-tint: 215 166 66;
   --day-light: 1;
-  /* Chrome base, from near-black blue at night to a lit olive at midday. */
+  /* Chrome base, from near-black blue at night to a lit olive at midday,
+     dark enough at noon for ink and muted text to keep 4.5:1 and amber 3:1. */
   --day-pct: calc(var(--day-light) * 100%);
-  --day-bg-top: color-mix(in srgb, #88835b var(--day-pct), #0a0c16);
-  --day-bg-bottom: color-mix(in srgb, #4e4c36 var(--day-pct), #030409);
-  --day-bar-top: color-mix(in srgb, #78754f var(--day-pct), #10121c);
-  --day-bar-bottom: color-mix(in srgb, #615e43 var(--day-pct), #0a0b12);
+  --day-bg-top: color-mix(in srgb, #44422e var(--day-pct), #0a0c16);
+  --day-bg-bottom: color-mix(in srgb, #27261b var(--day-pct), #030409);
+  --day-bar-top: color-mix(in srgb, #3c3a28 var(--day-pct), #10121c);
+  --day-bar-bottom: color-mix(in srgb, #302f22 var(--day-pct), #0a0b12);
   /* Secondary text lightens by day to keep ~4:1 on the lit base. */
   --muted: color-mix(in srgb, #ebe7d8 var(--day-pct), #a6a18f);
   --faint: color-mix(in srgb, #d6d1bf var(--day-pct), #928c79);
+}
+
+/* Increase Contrast: startDayTint holds the night base with no glow; this
+   brightens secondary text and lines. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted: #d6d1bf;
+    --faint: #c4bfad;
+    --line: #6b6a52;
+  }
 }
 
 * {
@@ -78,6 +90,19 @@ button {
   color: inherit;
 }
 
+/* Touch devices follow Larger Text (Dynamic Type): it sets the root size the
+   rem font sizes scale from (17px at the default setting). */
+@supports (font: -apple-system-body) {
+  @media (pointer: coarse) {
+    :root {
+      /* biome-ignore lint/a11y/useGenericFontNames: a system text style; font-family follows. */
+      font: -apple-system-body;
+      font-family:
+        "Avenir Next", "Gill Sans", "Trebuchet MS", system-ui, sans-serif;
+    }
+  }
+}
+
 .nv-app {
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr) 34px;
@@ -116,7 +141,7 @@ button {
   border-top: 1px solid var(--line);
   border-bottom: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   gap: 14px;
   justify-content: flex-start;
   padding: 0 14px;
@@ -142,7 +167,7 @@ button {
   background: var(--panel-2);
   box-shadow: 0 12px 40px var(--shadow);
   padding: 14px 16px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .nv-send-offer p {
@@ -189,7 +214,7 @@ button {
   font-weight: 600;
 }
 
-.nv-status .nv-visually-hidden {
+.nv-visually-hidden {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -212,8 +237,8 @@ button {
 }
 
 .nv-status .nv-disclaimer {
-  flex: 0 1 auto;
-  min-width: 0;
+  /* The other notes give way first: the disclaimer must stay whole (App Review 1.4.1). */
+  flex: 0 0 auto;
   margin-left: auto;
   color: var(--amber);
   font-weight: 600;
@@ -244,7 +269,7 @@ button {
 
 .nv-brand h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: 1.125rem;
   line-height: 1.1;
   letter-spacing: 0;
 }
@@ -254,7 +279,7 @@ button {
   margin: 3px 0 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -282,7 +307,7 @@ button {
   color: var(--muted);
   cursor: pointer;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -342,7 +367,7 @@ button {
   margin: 0;
   padding: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-recent-row {
@@ -374,12 +399,12 @@ button {
 }
 
 .nv-recent-item-name {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
 }
 
 .nv-recent-item-path {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -570,14 +595,14 @@ button {
   min-height: 30px;
   margin-bottom: 10px;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .nv-control-section > .nv-panel-heading {
-  font-size: 13px;
+  font-size: 0.8125rem;
   letter-spacing: 0;
   text-transform: none;
 }
@@ -692,7 +717,7 @@ button {
   background: #12130f;
   color: var(--ink);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-filter-clear:hover:not(:disabled),
@@ -714,7 +739,7 @@ button {
   min-width: 0;
   gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.1;
 }
@@ -752,7 +777,7 @@ button {
   min-height: 24px;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 2px 4px;
 }
 
@@ -823,7 +848,7 @@ button {
   gap: 6px 8px;
   margin: 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-volume-filter-details dt {
@@ -842,7 +867,7 @@ button {
 .nv-filter-empty {
   border: 1px dashed #464631;
   color: var(--faint);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 9px;
 }
 
@@ -885,7 +910,7 @@ button {
 .nv-volume-card small {
   margin-top: 5px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-volume-card.is-selected {
@@ -967,7 +992,7 @@ button {
   align-content: start;
   gap: 8px;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .nv-pipelines-state p {
@@ -984,7 +1009,7 @@ button {
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   white-space: pre-wrap;
 }
 
@@ -1001,7 +1026,7 @@ button {
   background: var(--panel-2);
   color: var(--ink);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 4px 8px;
 }
 
@@ -1021,7 +1046,7 @@ button {
   border-radius: 8px;
   background: var(--panel);
   color: var(--ink);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-pipelines-error {
@@ -1154,7 +1179,7 @@ button {
   background: #10110d;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -1201,7 +1226,7 @@ button {
   align-items: center;
   white-space: nowrap;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1211,7 +1236,7 @@ button {
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1220,7 +1245,7 @@ button {
   min-width: 0;
   overflow: hidden;
   color: var(--amber);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-style: normal;
   text-align: right;
   text-overflow: ellipsis;
@@ -1350,14 +1375,19 @@ button {
 .nv-welcome-header h2 {
   margin: 0;
   color: var(--ink);
-  font-size: 26px;
+  font-size: 1.625rem;
   font-weight: 700;
+}
+
+.nv-welcome-header .nv-welcome-disclaimer {
+  color: var(--amber);
+  font-weight: 600;
 }
 
 .nv-welcome-header p {
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 
 .nv-welcome-columns {
@@ -1369,7 +1399,7 @@ button {
 .nv-welcome-columns h3 {
   margin: 0 0 10px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1414,7 +1444,7 @@ button {
 
 .nv-welcome-action strong,
 .nv-welcome-recent strong {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
@@ -1422,7 +1452,7 @@ button {
 .nv-welcome-recent small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1476,8 +1506,14 @@ button {
   margin: 0;
   border: 1px dashed var(--line);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
   padding: 16px 12px;
+}
+
+.nv-welcome-privacy {
+  justify-self: start;
+  color: var(--muted);
+  font-size: 0.75rem;
 }
 
 .nv-welcome-reopen {
@@ -1487,7 +1523,7 @@ button {
   justify-self: start;
   color: var(--muted);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .nv-welcome-reopen input {
@@ -1500,7 +1536,7 @@ button {
   gap: 10px;
   margin: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .nv-welcome-opening svg {
@@ -1556,7 +1592,7 @@ button {
   border: 1px solid rgba(215, 166, 66, 0.28);
   background: rgba(8, 8, 6, 0.76);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   padding: 0 9px;
 }
@@ -1717,7 +1753,7 @@ button {
   left: 8px;
   border: 1px solid rgba(115, 198, 155, 0.34);
   color: var(--green);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 3px 6px;
 }
 
@@ -1727,7 +1763,7 @@ button {
   left: 8px;
   overflow: hidden;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 6px 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1744,7 +1780,7 @@ button {
   display: grid;
   place-items: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .nv-osd-footer {
@@ -1784,7 +1820,7 @@ button {
   border: 1px solid rgba(215, 166, 66, 0.32);
   background: rgba(17, 17, 15, 0.78);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   line-height: 16px;
   overflow: hidden;
@@ -1806,7 +1842,7 @@ button {
   width: 100%;
   gap: 7px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   overflow: hidden;
 }
 
@@ -1815,7 +1851,7 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--association);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -1843,7 +1879,7 @@ button {
   border: 1px solid rgba(215, 166, 66, 0.32);
   background: rgba(17, 17, 15, 0.78);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   backdrop-filter: blur(8px);
 }
 
@@ -1944,7 +1980,7 @@ button {
   border: 1px solid rgba(215, 166, 66, 0.32);
   background: rgba(8, 8, 6, 0.78);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 7px 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2009,7 +2045,7 @@ button {
   border: 1px solid rgba(197, 156, 255, 0.52);
   background: rgba(197, 156, 255, 0.12);
   color: var(--association);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   padding: 2px 6px;
@@ -2025,7 +2061,7 @@ button {
   min-height: 28px;
   padding: 0 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-wheel-row > span {
@@ -2100,7 +2136,7 @@ button {
 .nv-mode-note {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
@@ -2122,7 +2158,7 @@ button {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
   color: var(--ink);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
@@ -2148,7 +2184,7 @@ button {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--ink);
 }
 
@@ -2177,7 +2213,7 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--muted);
 }
 
@@ -2188,7 +2224,7 @@ button {
   border-radius: 6px;
   background: rgba(215, 166, 66, 0.18);
   color: var(--amber);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
@@ -2200,7 +2236,7 @@ button {
 .nv-block-hint {
   margin: 10px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
@@ -2211,7 +2247,7 @@ button {
 
 .nv-layer-select {
   width: 100%;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-layer-load-button {
@@ -2224,7 +2260,7 @@ button {
   background: rgba(15, 25, 18, 0.78);
   color: var(--green);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -2245,7 +2281,7 @@ button {
   align-items: center;
   justify-content: space-between;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -2273,7 +2309,7 @@ button {
   border-radius: 4px;
   background: rgba(215, 166, 66, 0.1);
   color: var(--amber);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.35;
 }
 .nv-layer-banner > svg {
@@ -2302,7 +2338,7 @@ button {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--muted);
 }
 
@@ -2406,7 +2442,7 @@ button {
   min-width: 0;
 }
 .nv-layer-row-title strong {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--ink);
   white-space: nowrap;
@@ -2414,7 +2450,7 @@ button {
   text-overflow: ellipsis;
 }
 .nv-layer-row-title small {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--faint);
   white-space: nowrap;
   overflow: hidden;
@@ -2458,7 +2494,7 @@ button {
 .nv-layer-add-other > summary {
   cursor: pointer;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 4px 6px;
 }
 .nv-layer-add-other > summary em {
@@ -2504,7 +2540,7 @@ button {
   min-width: 0;
 }
 .nv-layer-add-option strong {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: inherit;
   white-space: nowrap;
@@ -2512,7 +2548,7 @@ button {
   text-overflow: ellipsis;
 }
 .nv-layer-add-option small {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--faint);
   white-space: nowrap;
   overflow: hidden;
@@ -2533,7 +2569,7 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--ink);
 }
 .nv-crosshair-readout > span {
@@ -2582,7 +2618,7 @@ button {
   background: rgba(115, 198, 155, 0.08);
   color: var(--green);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .nv-crosshair-go:hover:not(:disabled),
 .nv-crosshair-go:focus-visible {
@@ -2607,7 +2643,7 @@ button {
   justify-content: space-between;
   gap: 8px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-window-heading em {
@@ -2632,7 +2668,7 @@ button {
 
 .nv-window-row .nv-text-input {
   padding: 4px 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   height: 28px;
 }
 
@@ -2642,7 +2678,7 @@ button {
   border-radius: 6px;
   background: rgba(16, 17, 13, 0.72);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 0 11px;
   cursor: pointer;
 }
@@ -2661,7 +2697,7 @@ button {
   border-radius: 6px;
   background: transparent;
   color: var(--faint);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 5px 0;
   cursor: pointer;
 }
@@ -2675,7 +2711,7 @@ button {
   grid-template-columns: auto minmax(58px, 1fr) auto;
   height: 28px;
   padding: 0 6px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-layer-colormap-select.is-disabled {
@@ -2688,7 +2724,7 @@ button {
 
 .nv-clip-flip {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-slider {
@@ -2698,7 +2734,7 @@ button {
   gap: 8px;
   margin-top: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-slider input {
@@ -2728,7 +2764,7 @@ button {
   min-width: 0;
   gap: 5px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-field-wide {
@@ -2737,7 +2773,7 @@ button {
 
 .nv-field-hint {
   color: var(--green);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2778,7 +2814,7 @@ button {
   min-height: 34px;
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.4;
 }
 
@@ -2815,7 +2851,7 @@ button {
   min-width: 0;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding-top: 9px;
 }
 
@@ -2843,16 +2879,16 @@ button {
 }
 
 .nv-command-field > span:first-child {
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-command-input {
   font-family: var(--mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-command-stderr {
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .nv-command-stderr summary {
@@ -2869,7 +2905,7 @@ button {
   border-radius: 6px;
   background: var(--panel, rgba(0, 0, 0, 0.3));
   color: var(--ink);
-  font-size: 11px;
+  font-size: 0.6875rem;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2881,13 +2917,13 @@ button {
 .nv-readout h2 {
   margin: 0 0 10px;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .nv-readout p {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 
@@ -2896,7 +2932,7 @@ button {
   grid-template-columns: minmax(62px, 28%) minmax(0, 1fr);
   gap: 8px;
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-readout dl + dl,
@@ -2949,7 +2985,7 @@ button {
   padding: 0 9px;
   cursor: pointer;
   color: var(--ink);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-sidecar summary span {
@@ -2971,7 +3007,7 @@ button {
   overflow: auto;
   border-top: 1px solid var(--line);
   color: #d8d2bd;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
   padding: 10px;
   white-space: pre-wrap;
@@ -2982,7 +3018,7 @@ button {
   margin-top: 12px;
   border: 1px dashed #464631;
   color: var(--faint);
-  font-size: 12px;
+  font-size: 0.75rem;
   padding: 10px;
 }
 
@@ -3034,7 +3070,7 @@ button {
   }
 
   .nv-panel-heading {
-    font-size: 11px;
+    font-size: 0.6875rem;
   }
 }
 
@@ -3084,8 +3120,9 @@ button {
   .nv-sidebar,
   .nv-controls {
     position: fixed;
-    top: 64px;
-    bottom: 0;
+    /* Fixed boxes ignore .nv-app's safe-area padding, so add it back. */
+    top: calc(64px + env(safe-area-inset-top));
+    bottom: env(safe-area-inset-bottom);
     width: min(86vw, 340px);
     z-index: 50;
     overflow-y: auto;
@@ -3094,18 +3131,18 @@ button {
   }
 
   .nv-sidebar {
-    left: 0;
-    transform: translateX(-100%);
+    left: env(safe-area-inset-left);
+    transform: translateX(calc(-100% - env(safe-area-inset-left)));
   }
   .nv-workbench:not(.is-file-list-collapsed) .nv-sidebar {
     transform: translateX(0);
   }
 
   .nv-controls {
-    right: 0;
+    right: env(safe-area-inset-right);
     border-right: 0;
     border-left: 1px solid var(--line);
-    transform: translateX(100%);
+    transform: translateX(calc(100% + env(safe-area-inset-right)));
   }
   .nv-workbench:not(.is-controls-collapsed) .nv-controls {
     transform: translateX(0);
@@ -3128,7 +3165,7 @@ button {
   .nv-mobile-scrim {
     display: block;
     position: fixed;
-    inset: 64px 0 0 0;
+    inset: calc(64px + env(safe-area-inset-top)) 0 0 0;
     z-index: 40;
     border: 0;
     padding: 0;
@@ -3158,9 +3195,9 @@ button {
      toolbar button ran its left edge off a narrow phone. */
   .nv-recent-menu {
     position: fixed;
-    top: 66px;
-    right: 10px;
-    left: 10px;
+    top: calc(66px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     min-width: 0;
     max-width: none;
     max-height: 60vh;
@@ -3351,7 +3388,7 @@ button {
   background: color-mix(in srgb, var(--panel-3) 82%, transparent);
   color: var(--muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-wheel-badge.is-plane {
@@ -3390,19 +3427,19 @@ button {
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .nv-controls-hint {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .nv-controls-help h3 {
   margin: 16px 0 6px;
   color: var(--amber);
-  font-size: 12px;
+  font-size: 0.75rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -3423,7 +3460,7 @@ button {
   gap: 12px;
   padding: 4px 0;
   border-top: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .nv-controls-help dd {
@@ -3434,4 +3471,19 @@ button {
 .nv-controls-help kbd {
   font-family: inherit;
   white-space: pre;
+}
+
+/* Touch: Apple's 44 pt minimum hit target for every HTML control. */
+@media (pointer: coarse) {
+  button,
+  select,
+  input[type="range"],
+  [role="menuitem"],
+  [role="tab"] {
+    min-height: 44px;
+  }
+  .nv-tool-button,
+  .nv-welcome-recent-remove {
+    min-width: 44px;
+  }
 }

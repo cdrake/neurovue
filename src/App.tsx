@@ -106,12 +106,15 @@ import {
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
+  confirmationCode,
   type DrawingBase,
   type ExportBundleResult,
+  enableReceiving,
   exportDatasetBundle,
   formatBundleBytes,
   isBundlePath,
   isDocumentPath,
+  isReceiving,
   listSendTargets,
   pickBundle,
   readBundle,
@@ -624,7 +627,10 @@ export function App(): JSX.Element {
   const [isTerminalAvailable, setIsTerminalAvailable] = useState(false)
   const [isNiimathAvailable, setIsNiimathAvailable] = useState(false)
   const [isAirdropAvailable, setIsAirdropAvailable] = useState(false)
+  const [isFileDialogsAvailable, setIsFileDialogsAvailable] = useState(false)
   const [isSharingBundle, setIsSharingBundle] = useState(false)
+  // iPad only: Macs can send here once the person turns it on (#88).
+  const [canTurnOnReceiving, setCanTurnOnReceiving] = useState(false)
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false)
   const recentMenuRef = useRef<HTMLDivElement | null>(null)
   const [isShareMenuOpen, setIsShareMenuOpen] = useState(false)
@@ -656,6 +662,12 @@ export function App(): JSX.Element {
       setIsTerminalAvailable(capabilities.terminalAvailable)
       setIsNiimathAvailable(capabilities.nativeNiimathAvailable)
       setIsAirdropAvailable(capabilities.airdropAvailable)
+      setIsFileDialogsAvailable(capabilities.fileDialogsAvailable)
+      if (capabilities.airdropAvailable && !capabilities.fileDialogsAvailable) {
+        void isReceiving().then(
+          (receiving) => !cancelled && setCanTurnOnReceiving(!receiving),
+        )
+      }
     })
     return () => {
       cancelled = true
@@ -1246,13 +1258,16 @@ export function App(): JSX.Element {
       `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
         `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
     )
+    const code = confirmationCode()
     try {
       const result = await sendViewToDevice({
         target,
         name: shareName,
         volumeIds,
         view,
-        onOffered: () => setStatus(`Waiting for ${target.name} to accept…`),
+        code,
+        onOffered: () =>
+          setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
       })
       setStatus(
         `Sent ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
@@ -1865,8 +1880,11 @@ export function App(): JSX.Element {
         )
         return
       }
-      setStatus(`Waiting for ${target.name} to accept the drawing…`)
-      await sendDrawingToDevice({ target, base: drawingBase, drawing })
+      const code = confirmationCode()
+      setStatus(
+        `Waiting for ${target.name} to accept the drawing (code ${code})…`,
+      )
+      await sendDrawingToDevice({ target, base: drawingBase, drawing, code })
       setStatus(`Sent the drawing to ${target.name}.`, 'success')
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
@@ -1996,21 +2014,23 @@ export function App(): JSX.Element {
                   <FileJson size={14} />
                   <span className="nv-recent-item-name">Open NIfTI file…</span>
                 </button>
-                <button
-                  className="nv-recent-item nv-recent-open nv-desktop-only"
-                  disabled={isOpeningDataset}
-                  onClick={() => {
-                    setIsRecentMenuOpen(false)
-                    void openLocalDataset()
-                  }}
-                  type="button"
-                  role="menuitem"
-                >
-                  <FolderOpen size={14} />
-                  <span className="nv-recent-item-name">
-                    Open dataset directory…
-                  </span>
-                </button>
+                {isFileDialogsAvailable && (
+                  <button
+                    className="nv-recent-item nv-recent-open nv-desktop-only"
+                    disabled={isOpeningDataset}
+                    onClick={() => {
+                      setIsRecentMenuOpen(false)
+                      void openLocalDataset()
+                    }}
+                    type="button"
+                    role="menuitem"
+                  >
+                    <FolderOpen size={14} />
+                    <span className="nv-recent-item-name">
+                      Open dataset directory…
+                    </span>
+                  </button>
+                )}
                 <button
                   aria-label="Open bundle"
                   className="nv-recent-item nv-recent-open"
@@ -2174,6 +2194,13 @@ export function App(): JSX.Element {
                         Looking for devices running NeuroVue…
                       </span>
                     </div>
+                  ) : sendTargets.length === 0 ? (
+                    <div className="nv-recent-item nv-share-looking">
+                      <span className="nv-recent-item-path">
+                        No device found. On an iPad, choose Receive from a Mac.
+                        Sends are unencrypted: trusted networks only.
+                      </span>
+                    </div>
                   ) : (
                     sendTargets.flatMap((target) => {
                       const key = `${target.name}@${target.host}:${target.port}`
@@ -2312,12 +2339,35 @@ export function App(): JSX.Element {
           reopenLast={reopenLast}
           onOpenBundle={() => void handleImportBundle()}
           onOpenFile={() => void openLocalVolumeFile()}
-          onOpenFolder={() => void openLocalDataset()}
+          onOpenFolder={
+            isFileDialogsAvailable ? () => void openLocalDataset() : undefined
+          }
           onOpenMesh={() => void loadMeshes()}
           onOpenRecent={(path) => void openRecentEntry(path)}
           onOpenSample={samplePath ? () => void openSampleDataset() : null}
           onRemoveRecent={removeRecent}
           onReopenLastChange={setReopenLast}
+          onReceive={
+            canTurnOnReceiving
+              ? () => {
+                  setCanTurnOnReceiving(false)
+                  enableReceiving().then(
+                    () =>
+                      setStatus(
+                        'Macs on this network running NeuroVue can now send here.',
+                        'success',
+                      ),
+                    (error) => {
+                      setCanTurnOnReceiving(true)
+                      setStatus(
+                        error instanceof Error ? error.message : String(error),
+                        'error',
+                      )
+                    },
+                  )
+                }
+              : undefined
+          }
         />
       ) : (
         <>
@@ -2835,10 +2885,21 @@ export function App(): JSX.Element {
           role="alertdialog"
         >
           <p>
-            <strong>{sendOffer.offer.from}</strong> wants to send{' '}
-            <strong>{sendOffer.offer.name}</strong> (
+            <strong>{sendOffer.offer.from}</strong> ({sendOffer.offer.address})
+            wants to send <strong>{sendOffer.offer.name}</strong> (
             {formatBundleBytes(sendOffer.offer.size)}).
           </p>
+          {sendOffer.offer.code ? (
+            <p>
+              Accept only if the sender shows code{' '}
+              <strong>{sendOffer.offer.code}</strong>.
+            </p>
+          ) : (
+            <p>
+              No confirmation code: accept only if you just sent this from your
+              own Mac.
+            </p>
+          )}
           <div className="nv-send-offer-actions">
             <button
               className="nv-tool-button"
@@ -2899,10 +2960,10 @@ export function App(): JSX.Element {
         <span
           className="nv-disclaimer"
           role="note"
-          title="Research/preview tool — not a certified diagnostic device. Do not use for clinical diagnosis."
+          title="For research use only. Not a certified diagnostic device. Do not use for clinical diagnosis."
         >
           <AlertTriangle size={12} />
-          Research preview — not for clinical diagnosis
+          Research use only. Not for clinical diagnosis.
         </span>
       </footer>
     </main>
@@ -3108,6 +3169,7 @@ function DesktopZoomControls({
         disabled={zoom <= MIN_DESKTOP_ZOOM}
         onClick={onZoomOut}
         title="Zoom out"
+        aria-label="Zoom out"
         type="button"
       >
         <ZoomOut size={15} />
@@ -3117,6 +3179,7 @@ function DesktopZoomControls({
         disabled={zoom >= MAX_DESKTOP_ZOOM}
         onClick={onZoomIn}
         title="Zoom in"
+        aria-label="Zoom in"
         type="button"
       >
         <ZoomIn size={15} />

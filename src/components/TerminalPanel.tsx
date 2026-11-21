@@ -299,6 +299,7 @@ export function TerminalPanel({
             className="nv-icon-button"
             onClick={() => void handleSelectChange(BROWSE_VALUE)}
             title="Browse for a Python interpreter"
+            aria-label="Browse for a Python interpreter"
             type="button"
           >
             <FolderSearch size={15} />
@@ -307,6 +308,7 @@ export function TerminalPanel({
             className="nv-icon-button"
             onClick={restartSession}
             title="Restart terminal"
+            aria-label="Restart terminal"
             type="button"
           >
             <RotateCcw size={15} />
@@ -315,6 +317,7 @@ export function TerminalPanel({
             className="nv-icon-button"
             onClick={killSession}
             title="Kill terminal"
+            aria-label="Kill terminal"
             type="button"
           >
             <Trash2 size={15} />

@@ -46,6 +46,7 @@ tauri-plugin-pencil = { path = "plugins/pencil" }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tokio-util = { version = "0.7", features = ["io"] }
+tauri-plugin-opener = "2"
 
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the axum router in tests without binding a port.
@@ -68,6 +69,10 @@ objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSArray"
 objc2-app-kit = { version = "0.3", features = ["NSSharingService"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+# Expiration handler for background tasks (src/background.rs).
+block2 = "0.6"
+# Runs UIKit calls on the main thread from transfer workers (src/background.rs).
+dispatch2 = "0.3"
 objc2-ui-kit = { version = "0.3", features = [
   "block2",
   "UIActivityViewController",
@@ -83,3 +88,7 @@ objc2-ui-kit = { version = "0.3", features = [
 # neurovue-web (web/) sets cfg(neurovue_web) on the sources it shares with this crate.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(neurovue_web)"] }
+
+[profile.release]
+# Symbols and their build paths stay out of shipped binaries.
+strip = true

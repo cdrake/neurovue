@@ -51,8 +51,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.1.0
-        CFBundleVersion: "0.1.0"
+        CFBundleShortVersionString: 0.2.12
+        CFBundleVersion: "2"
         ITSAppUsesNonExemptEncryption: false
     entitlements:
       path: neurovue_iOS/neurovue_iOS.entitlements

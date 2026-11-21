@@ -49,3 +49,25 @@ choices that keep that path open. Concretely:
 
 When a proposed change would trade away mobile portability, call it out and
 prefer the portable option.
+
+## iOS notes
+
+iPhone and iPad both ship (`TARGETED_DEVICE_FAMILY` 1,2). Gotchas:
+
+- iOS plist keys go in `src-tauri/Info.ios.plist`; edits to `gen/apple` plists
+  are overwritten by the CLI merge.
+- Revert `DEVELOPMENT_TEAM` in `project.pbxproj` after iOS builds.
+- `bun tauri ios build` exits 1 after `BUILD SUCCEEDED` in the simulator build;
+  harmless.
+- `gen/apple/Sources/neurovue/main.mm` swizzles `TaoSceneDelegate` for UIScene.
+- Data protection is `NSFileProtectionComplete` (the profile requires it).
+- Receiving is opt-in (`receive-enabled` marker in the data root); sends carry a
+  4-digit code and are unencrypted.
+- Touch: 44 pt targets on coarse pointers; font sizes in rem, and the root
+  follows Dynamic Type (`-apple-system-body`) on touch devices.
+- The canvas stage controls are mirrored in a hidden DOM
+  (`StageControlsMirror`) for VoiceOver. Keep it in sync via `stageControlStates`
+  in `src/domain/stageControlSurface.ts`.
+- Open submission blockers: #80 (privacy policy/support URLs), #93 (Mac App
+  Store: sandbox, security-scoped bookmarks, helpers). macOS ships as a
+  Developer ID DMG.
