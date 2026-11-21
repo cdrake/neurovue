@@ -3089,8 +3089,9 @@ button {
   .nv-sidebar,
   .nv-controls {
     position: fixed;
-    top: 64px;
-    bottom: 0;
+    /* Fixed boxes ignore .nv-app's safe-area padding, so add it back. */
+    top: calc(64px + env(safe-area-inset-top));
+    bottom: env(safe-area-inset-bottom);
     width: min(86vw, 340px);
     z-index: 50;
     overflow-y: auto;
@@ -3099,18 +3100,18 @@ button {
   }
 
   .nv-sidebar {
-    left: 0;
-    transform: translateX(-100%);
+    left: env(safe-area-inset-left);
+    transform: translateX(calc(-100% - env(safe-area-inset-left)));
   }
   .nv-workbench:not(.is-file-list-collapsed) .nv-sidebar {
     transform: translateX(0);
   }
 
   .nv-controls {
-    right: 0;
+    right: env(safe-area-inset-right);
     border-right: 0;
     border-left: 1px solid var(--line);
-    transform: translateX(100%);
+    transform: translateX(calc(100% + env(safe-area-inset-right)));
   }
   .nv-workbench:not(.is-controls-collapsed) .nv-controls {
     transform: translateX(0);
@@ -3133,7 +3134,7 @@ button {
   .nv-mobile-scrim {
     display: block;
     position: fixed;
-    inset: 64px 0 0 0;
+    inset: calc(64px + env(safe-area-inset-top)) 0 0 0;
     z-index: 40;
     border: 0;
     padding: 0;
@@ -3163,9 +3164,9 @@ button {
      toolbar button ran its left edge off a narrow phone. */
   .nv-recent-menu {
     position: fixed;
-    top: 66px;
-    right: 10px;
-    left: 10px;
+    top: calc(66px + env(safe-area-inset-top));
+    right: calc(10px + env(safe-area-inset-right));
+    left: calc(10px + env(safe-area-inset-left));
     min-width: 0;
     max-width: none;
     max-height: 60vh;
@@ -3439,4 +3440,19 @@ button {
 .nv-controls-help kbd {
   font-family: inherit;
   white-space: pre;
+}
+
+/* Touch: Apple's 44 pt minimum hit target for every HTML control. */
+@media (pointer: coarse) {
+  button,
+  select,
+  input[type="range"],
+  [role="menuitem"],
+  [role="tab"] {
+    min-height: 44px;
+  }
+  .nv-tool-button,
+  .nv-welcome-recent-remove {
+    min-width: 44px;
+  }
 }

@@ -28,8 +28,12 @@ const MUTED: RGBA = [0.651, 0.631, 0.561, 1]
 const INK: RGBA = [0.941, 0.933, 0.886, 1]
 const DIM: RGBA = [0.651, 0.631, 0.561, 0.4]
 
-// Every control is one row high, as the HTML chips were.
-const CONTROL_HEIGHT = 28
+// A finger needs Apple's 44 pt minimum target; a mouse keeps the compact
+// row the HTML chips had.
+const COARSE_POINTER =
+  typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+// Every control is one row high.
+const CONTROL_HEIGHT = COARSE_POINTER ? 44 : 28
 
 const BUTTON_STYLE: Partial<ButtonStyle> = {
   fill: PANEL,
@@ -92,7 +96,7 @@ const ROW_GAP = 6
 export const TOP_RIGHT_CLEARANCE = TOP + CONTROL_HEIGHT + ROW_GAP
 const GAP = 2
 const GROUP_GAP = 10
-const SWATCH = 28
+const SWATCH = CONTROL_HEIGHT
 const WAND_SLIDER = 140
 const WAND_SCOPES = [
   { value: 'slice', label: 'Slice' },
@@ -650,23 +654,32 @@ export class StageControls implements UIKitOverlayRenderer {
         x: Math.max(EDGE, width - EDGE - modes.width),
       })
     }
-    const rowX: number[] = []
     const lookWidth = look ? (this.segmenteds.getLayout('look')?.width ?? 0) : 0
-    let x = look ? EDGE + lookWidth + GROUP_GAP : EDGE
-    for (const spec of row) {
-      if (GROUP_STARTS.has(spec.id) && row[0] !== spec) x += GROUP_GAP - GAP
-      rowX.push(x)
-      x += (this.buttons.getLayout(spec.id)?.width ?? 0) + GAP
-    }
-    // A row that would run into the view modes (a narrow pane) drops below them.
+    const rowStart = look ? EDGE + lookWidth + GROUP_GAP : EDGE
+    const buttonWidth = (spec: (typeof row)[number]): number =>
+      this.buttons.getLayout(spec.id)?.width ?? 0
+    const gapBefore = (spec: (typeof row)[number]): number =>
+      GROUP_STARTS.has(spec.id) && row[0] !== spec ? GROUP_GAP : GAP
+    let x = rowStart
+    for (const spec of row) x += gapBefore(spec) - GAP + buttonWidth(spec) + GAP
+    // A row that would run into the view modes (a narrow pane) drops below
+    // them, and wraps where even the full width is too narrow (a phone).
     const modesLeft = width - EDGE - (modes?.width ?? 0)
     const rowY =
       x - GAP + GROUP_GAP > modesLeft ? TOP + CONTROL_HEIGHT + ROW_GAP : TOP
-    for (const [index, spec] of row.entries()) {
-      this.buttons.updateButton(spec.id, { x: rowX[index], y: rowY })
+    let cx = rowStart
+    let cy = rowY
+    for (const spec of row) {
+      if (row[0] !== spec) cx += gapBefore(spec) - GAP
+      if (cx > EDGE && cx + buttonWidth(spec) > width - EDGE) {
+        cx = EDGE
+        cy += CONTROL_HEIGHT + ROW_GAP
+      }
+      this.buttons.updateButton(spec.id, { x: cx, y: cy })
+      cx += buttonWidth(spec) + GAP
     }
     if (look) this.segmenteds.updateSegmented('look', { x: EDGE, y: rowY })
-    let nextY = rowY + CONTROL_HEIGHT + ROW_GAP
+    let nextY = cy + CONTROL_HEIGHT + ROW_GAP
     if (picked) {
       this.segmenteds.updateSegmented(picked.id, { x: EDGE, y: nextY })
       nextY += CONTROL_HEIGHT + ROW_GAP
