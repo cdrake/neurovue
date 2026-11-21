@@ -108,7 +108,8 @@ Sign in to your Apple ID in Xcode → Settings → Accounts first: automatic
 signing creates the App Store profile. The build writes
 `src-tauri/gen/apple/build/arm64/NeuroVue.ipa` and an `.xcarchive` beside it.
 Open the archive in Xcode's Organizer and choose Distribute App → TestFlight to
-upload it. Raise `CFBundleVersion` for every upload.
+upload it. Raise `bundle.iOS.bundleVersion` in `tauri.conf.json` (an integer
+build number, at most three dot-separated parts) for every upload.
 
 iPhone and iPad are both targets (`TARGETED_DEVICE_FAMILY` 1,2). iOS plist keys
 live in `src-tauri/Info.ios.plist`, not in `gen/apple`. Files are protected with
