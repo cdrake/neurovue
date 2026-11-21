@@ -51,7 +51,7 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.2.12
+        CFBundleShortVersionString: 0.2.13
         CFBundleVersion: "2"
         ITSAppUsesNonExemptEncryption: false
     entitlements:
