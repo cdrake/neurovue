@@ -22,9 +22,9 @@
   },
   "dependencies": {
     "@medview/neuroflow-react": "^0.3.0",
-    "@niivue/niivue": "^1.0.0-rc.231",
+    "@niivue/niivue": "^1.0.0-rc.237",
     "@niivue/nv-mcp": "1.0.0-rc.228",
-    "@niivue/uikit": "^1.0.0-rc.230",
+    "@niivue/uikit": "^1.0.0-rc.236",
     "@tauri-apps/api": "~2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@xterm/addon-fit": "^0.11.0",

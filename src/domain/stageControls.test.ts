@@ -90,7 +90,7 @@ const phone: StageControlsState = {
     eraser: false,
   },
   wand: null,
-  slice: { label: 'Axial', value: 3, max: 9 },
+  slice: { label: 'Axial', value: 3, max: 9, marks: [] },
   clip: null,
 }
 

@@ -162,7 +162,13 @@ export interface StageControlsState {
   } | null
   /** The magic wand's tolerance (a fraction of the window) and reach. */
   wand: { tolerance: number; volume: boolean } | null
-  slice: { label: string; value: number; max: number } | null
+  slice: {
+    label: string
+    value: number
+    max: number
+    /** Runs of slices holding a drawing, as inclusive [first, last]. */
+    marks: readonly (readonly [number, number])[]
+  } | null
   clip: {
     planes: readonly { id: string; label: string }[]
     /** The plane the slider moves, highlighted only while it is active. */
@@ -602,6 +608,8 @@ export class StageControls implements UIKitOverlayRenderer {
         max,
         step: 1,
         value: slice.value,
+        // UIKit's default mark red is the first pen's, so it reads as "drawing here".
+        marks: slice.marks,
         showValue: true,
         format: (value) => `${value + 1} / ${max + 1}`,
         onInput: (value) => this.actions?.slice(value),

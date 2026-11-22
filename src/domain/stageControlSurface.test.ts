@@ -40,7 +40,7 @@ const state: StageControlsState = {
   box: null,
   palette: null,
   wand: null,
-  slice: { label: 'Axial', value: 3, max: 9 },
+  slice: { label: 'Axial', value: 3, max: 9, marks: [] },
   clip: null,
 }
 
