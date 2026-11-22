@@ -655,6 +655,19 @@ export class StageControls implements UIKitOverlayRenderer {
 
     this.reconcile(buttons, segmenteds, sliders)
 
+    // A segmented control can't wrap, so one wider than the stage (a tool
+    // picker in a phone's pane) squeezes its segments to fit.
+    const fitWidth = width - 2 * EDGE
+    for (const spec of segmenteds) {
+      const layout = this.segmenteds.getLayout(spec.id)
+      if (!layout || layout.width <= fitWidth) continue
+      const faces = layout.segments.length * (layout.segments[0]?.width ?? 0)
+      const inset = layout.width - faces
+      this.segmenteds.updateSegmented(spec.id, {
+        segmentWidth: Math.floor((fitWidth - inset) / spec.segments.length),
+      })
+    }
+
     // Positions, now the auto-sized controls have measured themselves.
     const modes = this.segmenteds.getLayout('view-mode')
     if (modes) {
@@ -824,7 +837,11 @@ export class StageControls implements UIKitOverlayRenderer {
     for (const spec of segmenteds) {
       if (existingSegmenteds.has(spec.id)) {
         const { id, value, ...patch } = spec
-        this.segmenteds.updateSegmented(id, patch)
+        // Drop a squeeze from a narrower stage; layout re-applies it if needed.
+        this.segmenteds.updateSegmented(id, {
+          segmentWidth: undefined,
+          ...patch,
+        })
         this.segmenteds.setValue(id, value)
       } else {
         this.segmenteds.addSegmented(spec)

@@ -13,6 +13,7 @@ type Spec = {
   width?: number
   label?: string
   segments?: unknown[]
+  segmentWidth?: number
 }
 
 // Stand-ins for uikit's overlays, with fixed widths in place of font metrics.
@@ -44,6 +45,13 @@ class FakeButtons extends FakeOverlay {
   removeButton = this.remove
 }
 class FakeSegmenteds extends FakeOverlay {
+  override getLayout(id: string) {
+    const layout = super.getLayout(id)
+    const width = this.specs.get(id)?.segmentWidth ?? 60
+    return (
+      layout && { ...layout, segments: layout.segments?.map(() => ({ width })) }
+    )
+  }
   addSegmented = this.add
   updateSegmented = this.update
   removeSegmented = this.remove
@@ -107,10 +115,30 @@ test.each([
       wand: { tolerance: 0.1, volume: false },
     },
   ],
+  [
+    'shape picker',
+    {
+      ...phone,
+      draw: {
+        ...(phone.draw as NonNullable<StageControlsState['draw']>),
+        active: false,
+      },
+      shapes: {
+        active: true,
+        enabled: true,
+        tools: ['Free', 'Rect', 'Ellipse', 'Arrow', 'Spline', 'Livewire'].map(
+          (label) => ({ id: label, label }),
+        ),
+        tool: 'Free',
+      },
+    },
+  ],
 ])('the %s settings fit a 375 px stage', (_, state) => {
   const overlays = [
     new FakeButtons((spec) => spec.width ?? 18 + 8 * (spec.label?.length ?? 0)),
-    new FakeSegmenteds((spec) => 60 * (spec.segments?.length ?? 0)),
+    new FakeSegmenteds(
+      (spec) => (spec.segmentWidth ?? 60) * (spec.segments?.length ?? 0),
+    ),
     new FakeSliders((spec) => spec.width ?? 0),
   ]
   const controls = new StageControls({} as never)
@@ -133,5 +161,6 @@ test.each([
     }),
   )
   expect(placed.length).toBeGreaterThan(15)
-  expect(placed.filter((control) => control.right > 375)).toEqual([])
+  // Inside the 14 px edge margin.
+  expect(placed.filter((control) => control.right > 361)).toEqual([])
 })
