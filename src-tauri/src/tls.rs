@@ -212,6 +212,18 @@ mod tests {
     }
 
     #[test]
+    fn a_stalled_peer_is_dropped() {
+        use std::io::Read;
+        let listener = listen(|_| panic!("a stalled peer was accepted")).unwrap();
+        let started = std::time::Instant::now();
+        let mut stalled = std::net::TcpStream::connect(loopback(listener.port)).unwrap();
+        stalled.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        // Says nothing; the listener hangs up (EOF or reset) rather than waiting.
+        let _ = stalled.read(&mut [0; 1]);
+        assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    #[test]
     fn dropping_the_listener_frees_its_callback() {
         let held = std::sync::Arc::new(());
         let (tx, rx) = mpsc::channel();

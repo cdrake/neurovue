@@ -21,6 +21,8 @@
 static const char EXPORTER_LABEL[] = "EXPORTER-neurovue-send";
 // Handshakes allowed per minute: guessing a 6-digit code needs about a million.
 static const int HANDSHAKES_PER_MINUTE = 12;
+// A peer that stalls its handshake or code exchange is dropped after this.
+static const int64_t EXCHANGE_SECONDS = 10;
 
 typedef void (*nv_tls_accept_fn)(void *context, int fd, const char *peer, const char *code);
 
@@ -339,11 +341,18 @@ uint16_t nv_tls_listen(nv_tls_accept_fn on_accept, void (*release)(void *), void
         [recent filterUsingPredicate:[NSPredicate predicateWithFormat:@"timeIntervalSinceNow > -60"]];
         if (recent.count >= HANDSHAKES_PER_MINUTE) return nw_connection_cancel(connection);
         [recent addObject:[NSDate date]];
-        nw_connection_set_queue(connection, dispatch_queue_create("neurovue.tls.accepted", DISPATCH_QUEUE_SERIAL));
+        dispatch_queue_t accepted = dispatch_queue_create("neurovue.tls.accepted", DISPATCH_QUEUE_SERIAL);
+        nw_connection_set_queue(connection, accepted);
+        // Read and written only on `accepted`.
+        __block bool exchanged = false;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, EXCHANGE_SECONDS * NSEC_PER_SEC), accepted, ^{
+            if (!exchanged) nw_connection_cancel(connection);
+        });
         nw_connection_set_state_changed_handler(connection, ^(nw_connection_state_t state, nw_error_t error) {
             if (state == nw_connection_state_failed) nw_connection_cancel(connection);
             if (state != nw_connection_state_ready) return;
             receiverExchange(connection, ^(NSString *code) {
+                exchanged = true;
                 int pair[2];
                 if (!code || !makePair(pair)) return nw_connection_cancel(connection);
                 bridge(connection, pair[1]);

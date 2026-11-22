@@ -1001,8 +1001,11 @@ export function App(): JSX.Element {
     if (!confirmed) return
     try {
       const cleared = await clearStoredData()
+      // Windows paths come back with backslashes.
+      const slashed = (path: string) => path.replace(/\\/g, '/')
+      const dirs = cleared.map((dir) => `${slashed(dir)}/`)
       for (const path of recentDatasets) {
-        if (cleared.some((dir) => path.startsWith(`${dir}/`)))
+        if (dirs.some((dir) => slashed(path).startsWith(dir)))
           removeRecent(path)
       }
       setStatus('Stored data cleared.', 'success')
