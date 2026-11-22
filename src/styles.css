@@ -1516,6 +1516,18 @@ button {
   font-size: 0.75rem;
 }
 
+.nv-welcome-clear {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.75rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .nv-welcome-reopen {
   display: inline-flex;
   align-items: center;
@@ -1954,6 +1966,11 @@ button {
   min-height: 0;
   overflow: hidden;
   contain: size layout paint;
+  /* A long press or drag on iPad otherwise selects the canvas (blue highlight). */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
   background:
     linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),

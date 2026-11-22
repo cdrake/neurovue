@@ -33,6 +33,7 @@ export function WelcomeScreen({
   onRemoveRecent,
   onReopenLastChange,
   onReceive,
+  onClearStoredData,
 }: {
   busy: boolean
   /** Set while starting up or reopening: what the app is waiting on. */
@@ -51,6 +52,8 @@ export function WelcomeScreen({
   onReopenLastChange: (reopen: boolean) => void
   /** Set on an iPad not yet receiving sends from a Mac. */
   onReceive?: () => void
+  /** Absent where NeuroVue keeps no files of its own (the web build). */
+  onClearStoredData?: () => void
 }): JSX.Element {
   if (openingLabel !== null) {
     return (
@@ -177,6 +180,16 @@ export function WelcomeScreen({
           />
           Reopen the last dataset when NeuroVue starts
         </label>
+        {onClearStoredData ? (
+          <button
+            className="nv-welcome-clear"
+            disabled={busy}
+            onClick={onClearStoredData}
+            type="button"
+          >
+            Clear stored data…
+          </button>
+        ) : null}
         <a
           className="nv-welcome-privacy"
           href="https://cdrake.github.io/neurovue/privacy"

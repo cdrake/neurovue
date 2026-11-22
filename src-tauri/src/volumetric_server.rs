@@ -1263,9 +1263,81 @@ pub fn attach_drawing(
         })
         .find(|path| !path.exists())
         .expect("an unused name");
-    fs::copy(drawing, &dest)
+    let bytes = drawing_on_base_grid(drawing, &source)
+        .map_err(|why| format!("The drawing doesn't fit {base_label}: {why}."))?;
+    fs::write(&dest, bytes)
         .map_err(|error| format!("attach_drawing: {}: {error}", dest.display()))?;
     register_derived_volume(handle, &source, &dest, "drawing")
+}
+
+/// The drawing on `base`'s grid: as it came when drawn on the base itself, or
+/// padded out to it when drawn on a block cut from it (a whole-voxel offset
+/// along the same axes, found from the two affines).
+fn drawing_on_base_grid(drawing: &FsPath, base: &FsPath) -> Result<Vec<u8>, String> {
+    let (header, bytes) = read_nifti_file(drawing).ok_or("it isn't a readable NIfTI")?;
+    let base_header = peek_nifti_header_bytes(base).ok_or("the volume can't be read")?;
+    let base_dims = parse_nifti_header(&base_header)
+        .ok_or("the volume can't be read")?
+        .shape
+        .map(usize::from);
+    let dims = header.shape.map(usize::from);
+    if dims == base_dims {
+        return Ok(bytes);
+    }
+    if header.bitpix != 8 {
+        return Err("it isn't a label map".into());
+    }
+    let drawing_header: [u8; 348] = bytes[..348].try_into().expect("read_nifti_file checks 348");
+    let start = block_start(&nifti_affine(&base_header), &nifti_affine(&drawing_header))
+        .filter(|start| (0..3).all(|axis| start[axis] + dims[axis] <= base_dims[axis]))
+        .ok_or("it was drawn on a different grid")?;
+    let voxels = bytes
+        .get(header.vox_offset..header.vox_offset + dims.iter().product::<usize>())
+        .ok_or("it is shorter than its header says")?;
+
+    let le = header_is_little_endian(&base_header);
+    let mut out_header = base_header;
+    put_header_i16(&mut out_header, 40, 3, le); // dim[0]: one 3D frame
+    for offset in [48, 50, 52, 54] {
+        put_header_i16(&mut out_header, offset, 1, le);
+    }
+    put_header_i16(&mut out_header, 70, 2, le); // datatype: uint8
+    put_header_i16(&mut out_header, 72, 8, le); // bitpix
+    put_header_f32(&mut out_header, 108, 352.0, le);
+    put_header_f32(&mut out_header, 112, 1.0, le);
+    put_header_f32(&mut out_header, 116, 0.0, le);
+    let mut out = vec![0u8; 352 + base_dims.iter().product::<usize>()];
+    out[..348].copy_from_slice(&out_header);
+    for z in 0..dims[2] {
+        for y in 0..dims[1] {
+            let from = (z * dims[1] + y) * dims[0];
+            let to = 352 + ((start[2] + z) * base_dims[1] + start[1] + y) * base_dims[0] + start[0];
+            out[to..to + dims[0]].copy_from_slice(&voxels[from..from + dims[0]]);
+        }
+    }
+    Ok(out)
+}
+
+/// Where a block's voxel (0,0,0) sits in its source's voxels: None unless the
+/// block shares the source's axes and spacing and starts on a whole voxel.
+fn block_start(source: &[[f64; 4]; 3], block: &[[f64; 4]; 3]) -> Option<[usize; 3]> {
+    // f32 header fields carry ~1e-6 relative error.
+    const TOLERANCE: f64 = 1e-3;
+    if (0..3).any(|r| (0..3).any(|c| (source[r][c] - block[r][c]).abs() > TOLERANCE)) {
+        return None;
+    }
+    let inverse = invert_3x3(source.map(|row| [row[0], row[1], row[2]]))?;
+    let shift = [0, 1, 2].map(|r| block[r][3] - source[r][3]);
+    let mut start = [0; 3];
+    for axis in 0..3 {
+        let voxel = (0..3).map(|c| inverse[axis][c] * shift[c]).sum::<f64>();
+        let whole = voxel.round();
+        if whole < 0.0 || (voxel - whole).abs() > 0.01 {
+            return None;
+        }
+        start[axis] = whole as usize;
+    }
+    Some(start)
 }
 
 /// Cuts the part of a volume inside `corners_mm` (a block's corners in the
@@ -5331,6 +5403,56 @@ mod tests {
         let voxels = shape.iter().map(|dim| *dim as usize).product::<usize>();
         bytes.extend(std::iter::repeat(fill).take(voxels));
         bytes
+    }
+
+    #[test]
+    fn a_drawing_on_a_block_is_padded_out_to_its_source() {
+        // sform_code 1, scaled axes, origin `at`.
+        fn with_sform(mut bytes: Vec<u8>, at: [f32; 3]) -> Vec<u8> {
+            bytes[254..256].copy_from_slice(&1_i16.to_le_bytes());
+            for (row, origin) in at.iter().enumerate() {
+                let mut srow = [0.0_f32; 4];
+                srow[row] = 2.0;
+                srow[3] = *origin;
+                for (col, value) in srow.iter().enumerate() {
+                    let offset = 280 + row * 16 + col * 4;
+                    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            bytes
+        }
+        let dir = scratch_dir("drawing-on-block");
+        let base = dir.join("base.nii");
+        let drawing = dir.join("drawing.nii");
+        fs::write(
+            &base,
+            with_sform(nifti_bytes([4, 5, 6], 0), [-10.0, 0.0, 0.0]),
+        )
+        .unwrap();
+        // A 2x2x2 block starting at voxel (1, 2, 3).
+        fs::write(
+            &drawing,
+            with_sform(nifti_bytes([2, 2, 2], 7), [-8.0, 4.0, 6.0]),
+        )
+        .unwrap();
+
+        let out = drawing_on_base_grid(&drawing, &base).unwrap();
+        let header = parse_nifti_header(out[..348].try_into().unwrap()).unwrap();
+        assert_eq!(header.shape, [4, 5, 6]);
+        let voxels = &out[352..];
+        assert_eq!(voxels.len(), 4 * 5 * 6);
+        assert_eq!(voxels.iter().filter(|v| **v == 7).count(), 8);
+        assert_eq!(voxels[(3 * 5 + 2) * 4 + 1], 7);
+        assert_eq!(voxels[(4 * 5 + 3) * 4 + 2], 7);
+
+        // Off by half a voxel: not a block of it.
+        fs::write(
+            &drawing,
+            with_sform(nifti_bytes([2, 2, 2], 7), [-9.0, 4.0, 6.0]),
+        )
+        .unwrap();
+        assert!(drawing_on_base_grid(&drawing, &base).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn write_nifti(path: &FsPath, shape: [i16; 3], fill: u8) {

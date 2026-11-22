@@ -230,6 +230,11 @@ export async function enableReceiving(): Promise<void> {
   await invoke('enable_receiving')
 }
 
+/** Deletes NeuroVue's own copies and caches; resolves to the cleared dirs. */
+export async function clearStoredData(): Promise<string[]> {
+  return invoke<string[]>('clear_stored_data')
+}
+
 /** Sends the dataset to `target` as a bundle. `onOffered` gets the code both
  *  ends show, once the bundle is staged and the person there is being asked. Resolves once they
  *  have accepted it and it has arrived; rejects with a status-line sentence

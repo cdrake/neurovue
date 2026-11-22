@@ -296,6 +296,36 @@ fn is_receiving(app: tauri::AppHandle) -> bool {
     receiver_running(&app)
 }
 
+/// Deletes what NeuroVue keeps for itself: the temp cache, copies of opened and
+/// received files, extracted bundles, and saved drawings, blocks and derivatives.
+/// Never the person's own folders. Returns the cleared dirs so the page can drop
+/// recents inside them.
+#[tauri::command]
+fn clear_stored_data() -> Result<Vec<String>, String> {
+    let data = volumetric_server::data_root();
+    let mut dirs: Vec<std::path::PathBuf> = [
+        "imports",
+        "working-derivatives",
+        "drawings",
+        "blocks",
+        "received",
+    ]
+    .iter()
+    .map(|name| data.join(name))
+    .collect();
+    dirs.push(volumetric_server::cache_root());
+    dirs.extend(opened::received_dir().cloned());
+    for dir in &dirs {
+        match std::fs::remove_dir_all(dir) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("Couldn't clear {}: {error}", dir.display()));
+            }
+            _ => {}
+        }
+    }
+    Ok(dirs.iter().map(|dir| dir.display().to_string()).collect())
+}
+
 /// Listens for sends and advertises the port (see receive.rs, bonjour.rs).
 fn try_start_receiving(app: &tauri::AppHandle) -> Result<(), String> {
     let port = receive::start(app).map_err(|error| format!("Can't receive sends ({error})."))?;
@@ -986,6 +1016,7 @@ pub fn run() {
             list_send_targets,
             enable_receiving,
             is_receiving,
+            clear_stored_data,
             send_view_to_device,
             send_drawing_to_device,
             attach_drawing,
@@ -1023,6 +1054,7 @@ pub fn run() {
         neurovue_runtime_capabilities,
         neurovue_server_info,
         open_dataset_path,
+        close_dataset,
         add_overlay_volume_path,
         read_mesh_file,
         read_mask_file,
@@ -1039,6 +1071,7 @@ pub fn run() {
         list_send_targets,
         enable_receiving,
         is_receiving,
+        clear_stored_data,
         send_view_to_device,
         send_drawing_to_device,
         attach_drawing,

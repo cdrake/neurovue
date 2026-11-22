@@ -131,3 +131,7 @@ export async function save(
 ): Promise<string | null> {
   return window.prompt(`${options.title ?? 'Save'}: path on the server`)
 }
+
+export function ask(message: string): Promise<boolean> {
+  return Promise.resolve(window.confirm(message))
+}

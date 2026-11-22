@@ -2,6 +2,7 @@ import type { RunStructured } from '@medview/neuroflow-react'
 import type { NiiVueLocation } from '@niivue/niivue'
 import { isTauri } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { ask } from '@tauri-apps/plugin-dialog'
 import {
   AlertTriangle,
   Boxes,
@@ -106,6 +107,7 @@ import {
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
+  clearStoredData,
   type DrawingBase,
   type ExportBundleResult,
   enableReceiving,
@@ -991,6 +993,24 @@ export function App(): JSX.Element {
     }
   }
 
+  async function clearStoredFiles(): Promise<void> {
+    const confirmed = await ask(
+      'Delete the copies NeuroVue keeps of opened, received and bundled files, its cache, and saved drawings and derivatives? Your own folders are not touched.',
+      { title: 'Clear stored data', kind: 'warning', okLabel: 'Delete' },
+    )
+    if (!confirmed) return
+    try {
+      const cleared = await clearStoredData()
+      for (const path of recentDatasets) {
+        if (cleared.some((dir) => path.startsWith(`${dir}/`)))
+          removeRecent(path)
+      }
+      setStatus('Stored data cleared.', 'success')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
   function toggleOverlayLayer(itemId: string): void {
     setOverlayIds((current) => {
       const next = new Set(current)
@@ -1687,9 +1707,18 @@ export function App(): JSX.Element {
   // Each volume that arrived in a bundle → its entry there, which a drawing
   // made on it names so the Mac that sent it can find the original.
   const drawingBasesRef = useRef(new Map<string, DrawingBase>())
-  const drawingBase = selected
-    ? drawingBasesRef.current.get(selected.id)
-    : undefined
+  // A block cut from one of them counts too: the Mac pads the drawing back out.
+  let drawingBase: DrawingBase | undefined
+  for (
+    let item = selected ?? undefined;
+    item && !drawingBase;
+    item =
+      item.derivation?.operation === 'block'
+        ? items.find((candidate) => candidate.id === item?.derivedFrom)
+        : undefined
+  ) {
+    drawingBase = drawingBasesRef.current.get(item.id)
+  }
 
   // Files that arrive once the page is up. Until startup has looked, they wait
   // for the effect above, which takes them first.
@@ -2052,6 +2081,22 @@ export function App(): JSX.Element {
                   )}
                   <span className="nv-recent-item-name">Open bundle…</span>
                 </button>
+                {showWelcome ? null : (
+                  <button
+                    className="nv-recent-item nv-recent-open"
+                    disabled={isBusyOpening}
+                    onClick={() => {
+                      setIsRecentMenuOpen(false)
+                      void clearAll()
+                    }}
+                    title="Close the dataset, overlays and meshes and return to the Welcome screen"
+                    type="button"
+                    role="menuitem"
+                  >
+                    <X size={14} />
+                    <span className="nv-recent-item-name">Close dataset</span>
+                  </button>
+                )}
                 {samplePath ? (
                   <button
                     className="nv-recent-item nv-recent-open"
@@ -2348,6 +2393,9 @@ export function App(): JSX.Element {
           onOpenSample={samplePath ? () => void openSampleDataset() : null}
           onRemoveRecent={removeRecent}
           onReopenLastChange={setReopenLast}
+          onClearStoredData={
+            isTauri() ? () => void clearStoredFiles() : undefined
+          }
           onReceive={
             canTurnOnReceiving
               ? () => {
