@@ -112,6 +112,7 @@ import {
   type ExportBundleResult,
   enableReceiving,
   exportDatasetBundle,
+  focusedViewState,
   formatBundleBytes,
   isBundlePath,
   isDocumentPath,
@@ -1194,7 +1195,6 @@ export function App(): JSX.Element {
       atlasId,
       layerSettings,
       viewMode,
-      backend,
       clipPlanes,
       crosshairPos:
         Array.isArray(crosshairMm) && crosshairMm.length >= 3
@@ -1787,10 +1787,10 @@ export function App(): JSX.Element {
     // Map each recorded (original-dataset) id → its freshly-registered id.
     const remap = new Map<string, string>()
     const newIds = bundleVolumeIds(
-      bundle.manifest.volumes.map((volume) => volume.data),
+      bundle.manifest.resources.map((resource) => resource.data),
     )
     drawingBasesRef.current.clear()
-    for (const volume of bundle.manifest.volumes) {
+    for (const volume of bundle.manifest.resources) {
       const newId = newIds.get(volume.data) ?? volume.id
       remap.set(volume.id, newId)
       if (volume.sha256) {
@@ -1802,7 +1802,7 @@ export function App(): JSX.Element {
       }
     }
 
-    const view = bundle.manifest.view
+    const view = focusedViewState(bundle.view)
     if (view) {
       const nextSettings: Record<string, LayerSettings> = {}
       const nextOverlays = new Set<string>()
@@ -1854,7 +1854,7 @@ export function App(): JSX.Element {
         : ''
     const source = isDocumentPath(path) ? 'document' : 'bundle'
     setStatus(
-      `Imported ${volumeCountLabel(bundle.manifest.volumes.length)} from ${source}.${integrity}`,
+      `Imported ${volumeCountLabel(bundle.manifest.resources.length)} from ${source}.${integrity}`,
       failures.length > 0 ? 'error' : 'success',
     )
     return true
@@ -1864,7 +1864,7 @@ export function App(): JSX.Element {
     bundle: BundleReadResult,
   ): Promise<boolean> {
     const base = bundle.manifest.base
-    const drawing = bundle.manifest.volumes[0]
+    const drawing = bundle.manifest.resources[0]
     if (!base || !drawing || !bundle.allVerified) {
       setStatus("The drawing arrived damaged, so it wasn't added.", 'error')
       return false

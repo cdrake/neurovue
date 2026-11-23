@@ -101,7 +101,6 @@ fn default_view(ids: &[String], clip_planes: &Value) -> Value {
         "scene": { "crosshairPos": null, "clipPlanes": enabled_planes(clip_planes) },
         "volumes": volumes,
         "viewMode": "multiplanar",
-        "backend": "webgl2",
     })
 }
 

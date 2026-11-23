@@ -2,11 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { BlockSettings } from './blocks'
-import {
-  type Backend,
-  type ClipPlane,
-  resolveRuntimeCapabilities,
-} from './desktop'
+import { type ClipPlane, resolveRuntimeCapabilities } from './desktop'
 import { keepPickedFile } from './openedFiles'
 
 // A NeuroVue bundle (`.nvbundle`) is a self-describing, transport-agnostic
@@ -76,7 +72,6 @@ export interface BundleViewState {
   /** Volumes in render order (base → overlays → atlas); mirrors `NVDocumentData.volumes`. */
   volumes: BundleDocumentVolume[]
   viewMode: string
-  backend: Backend
   /**
    * Block (volume-chunk explode) settings applied across the loaded layers.
    * Optional and forward-compatible: bundles written before this feature omit
@@ -98,7 +93,6 @@ export function buildBundleViewState(params: {
   atlasId: string | null
   layerSettings: Record<string, BundleLayerSettings>
   viewMode: string
-  backend: Backend
   clipPlanes: ClipPlane[]
   crosshairPos: [number, number, number] | null
   blocks?: BlockSettings
@@ -140,7 +134,6 @@ export function buildBundleViewState(params: {
     },
     volumes,
     viewMode: params.viewMode,
-    backend: params.backend,
     ...(params.blocks ? { blocks: params.blocks } : {}),
     ...(params.annotations?.length ? { annotations: params.annotations } : {}),
   }
@@ -338,13 +331,35 @@ export interface BundleVerifyEntry {
   status: BundleVerifyStatus
 }
 
-/** One volume as recorded in a bundle manifest (see Rust `export_bundle`). */
-export interface BundleManifestVolume {
+/**
+ * One data file a bundle carries (see Rust `export_bundle`).
+ */
+export interface BundleResource {
   id: string
+  kind: 'volume' | 'drawing'
   role: string
   label?: string
   data: string
   sha256?: string
+}
+
+/** A saved view's entry in the manifest; the deck is their order. */
+export interface BundleViewEntry {
+  id: string
+  data?: string
+  sha256?: string
+}
+
+/** One viewer in a saved view. */
+export interface BundlePane {
+  documentKind?: string
+  document?: BundleViewState
+}
+
+/** A saved view: its viewers, keyed by id (docs/nvbundle-v2.md). */
+export interface BundleView {
+  panes: Record<string, BundlePane>
+  focus?: string
 }
 
 /** The volume a drawing was made on, as its bundle recorded it. */
@@ -365,12 +380,15 @@ export interface BundleManifest {
     datasetDoi?: string | null
     datasetRoot?: string | null
   }
-  volumes: BundleManifestVolume[]
-  view?: BundleViewState
+  resources: BundleResource[]
+  views?: BundleViewEntry[]
+  start?: string
 }
 
 export interface BundleReadResult {
   manifest: BundleManifest
+  /** The start view, already read from the bundle; null when it has none. */
+  view: BundleView | null
   bundlePath: string
   dataDir: string
   verification: BundleVerifyEntry[]
@@ -470,6 +488,15 @@ function fnv1a32Hex(value: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0
   }
   return hash.toString(16).padStart(8, '0')
+}
+
+/** The view state of a saved view's focused viewer. */
+export function focusedViewState(
+  view: BundleView | null,
+): BundleViewState | undefined {
+  if (!view) return undefined
+  const pane = view.panes[view.focus ?? ''] ?? Object.values(view.panes)[0]
+  return pane?.document
 }
 
 /** Count the files in a verification list that failed the integrity check. */

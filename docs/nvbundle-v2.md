@@ -1,6 +1,6 @@
 # nvbundle v2: documents that save everything
 
-Status: proposal. Extends `.nvbundle` v1 (`src/domain/bundle.ts`, `export_bundle`/`read_bundle` in
+Status: PR 1 (container, manifest) implemented; the rest is proposal. Extends `.nvbundle` v1 (`src/domain/bundle.ts`, `export_bundle`/`read_bundle` in
 `src-tauri/src/volumetric_server.rs`) and the `nvbundle: "2"` already planned in
 [provenance.md](provenance.md). No new format.
 
@@ -42,18 +42,19 @@ travel as data with `derivation`, never as commands).
 - Canonical form: a **Stored** (uncompressed) zip, as v1 already writes. Volumes are read in place;
   bounded memory on iOS. A directory is a desktop working form only; the zip is what travels.
 - First entry `mimetype`, uncompressed, `application/vnd.neurovue.bundle+zip` (ODF/EPUB trick, so
-  `file` and sniffers identify it). Then `manifest.json`, then parts.
+  `file` and sniffers identify it). Then parts, then `manifest.json` last (a zip cut short has no
+  manifest, so it never reads as complete).
 - All paths bundle-relative; no `..`, no absolute or source paths (iOS sandbox; Rust already
   enforces).
 
 ```
 mimetype
-manifest.json
 data/            volumes, meshes, drawings, sidecars (v1 layout)
 slides/<id>.zarr whole-slide images, OME-Zarr
 views/<id>.json  one saved view: panes, layout, sync, controls
 thumbs/<id>.png  per view; doubles as the Quick Look / share preview
 prov/            provenance.md's PROV-JSON + hash-chained log
+manifest.json
 ```
 
 ## Manifest
@@ -61,18 +62,17 @@ prov/            provenance.md's PROV-JSON + hash-chained log
 ```jsonc
 {
   "nvbundle": "2",
-  "$schema": "https://neurovue.org/schema/nvbundle/2.json",
   "created": "…", "generator": "NeuroVue 0.3.0",
   "resources": [            // generalizes v1 volumes[]
-    { "id": "t1", "kind": "volume", "path": "data/t1.nii.gz", "mediaType": "application/x-nifti",
+    { "id": "t1", "kind": "volume", "data": "data/t1.nii.gz", "mediaType": "application/x-nifti",
       "sha256": "…", "bytes": 123, "shape": [], "dtype": "", "role": "base",
       "derivedFrom": [], "derivation": {}, "generatedBy": {} },
-    { "id": "draw1", "kind": "drawing", "path": "data/draw1.nii.gz", "base": "t1", "sha256": "…" },
-    { "id": "lh", "kind": "mesh", "path": "data/lh.pial.gii", "sha256": "…" },
-    { "id": "wsi", "kind": "slide", "path": "slides/wsi.zarr", "sha256": "…" }
+    { "id": "draw1", "kind": "drawing", "data": "data/draw1.nii.gz", "base": "t1", "sha256": "…" },
+    { "id": "lh", "kind": "mesh", "data": "data/lh.pial.gii", "sha256": "…" },
+    { "id": "wsi", "kind": "slide", "data": "slides/wsi.zarr", "sha256": "…" }
   ],
   "views": [                // ordered: the deck. v1 = one entry.
-    { "id": "v1", "path": "views/v1.json", "sha256": "…", "title": "", "notes": "",
+    { "id": "v1", "data": "views/v1.json", "sha256": "…", "title": "", "notes": "",
       "thumbnail": "thumbs/v1.png" }
   ],
   "start": "v1",
@@ -110,8 +110,10 @@ prov/            provenance.md's PROV-JSON + hash-chained log
 ```
 
 - **Panes** are NVDocuments so mono owns scene serialization and migration; NeuroVue adds only
-  `app`. Until mono's `json(embedImages=false)` lands, `document` may be the v1 `BundleViewState`
-  shape (`"documentKind": "neurovue-view-1"`).
+  `app`. Until panes switch to mono's linked JSON documents (`serializeDocument({ linkData: true,
+  format: 'json' })` and `loadDocument`'s `resolveUrl`; mesh linking and a save-side URL hook are
+  still to come), `document` is the v1 `BundleViewState` shape (`"documentKind":
+  "neurovue-view-1"`).
 - **Layout** is a logical tree with weights, never pixels. A compact width (iPhone, Slide Over) may
   show it as tabs or one pane at a time; the author's layout is a request, not a requirement.
 - **Sync** mirrors NiiVue's `broadcastTo`/`SyncOpts` (crosshair, zoom/pan, camera, 2D/3D) as named
@@ -139,27 +141,28 @@ prov/            provenance.md's PROV-JSON + hash-chained log
 
 - Any object may carry `extensions: {"org.lab.foo": {…}}` (reverse-DNS) and free-form `extras`.
   Top-level `extensionsUsed` / `extensionsRequired`.
-- Unknown required extension, or a newer major `nvbundle`: open read-only and say why.
+- Unknown required extension, or a newer major `nvbundle`: refuse to open and say why (read-only
+  opening is a later option).
 - Unknown keys and parts survive a round trip: `#[serde(flatten)] extra` on Rust structs, spread the
   original object under edits in TS, copy unknown parts byte for byte. One test injects unknown
   keys and parts, saves, and checks they're still there.
-- `nvbundle` is the major version (breaking only); additive fields don't bump it. Read runs the
-  migration chain v1→v2; write is always latest. v1 → one view, one pane, `document` = its
-  `BundleViewState`, `controls` absent.
+- `nvbundle` is the major version (breaking only); additive fields don't bump it. v1 predates any
+  users, so a reader refuses other majors rather than migrating; later majors get a migration
+  chain once bundles exist in the wild.
 - Integrity: a hash mismatch on a resource opens read-only with the failing parts named (v1 only
   warns).
 
 ## Plan (separate PRs)
 
 1. **Container and manifest v2:** `mimetype` entry, `resources[]` (volumes + drawings + meshes),
-   hashed `views[]`, v1 migration, round-trip test for unknown keys; move `backend` to prefs.
+   hashed `views[]`, refuse other formats, round-trip test for unknown keys; move `backend` to prefs.
 2. **Complete single-pane round trip:** export the live draw layer, meshes, shading, camera/pan,
    block drill-down, legend toggles, annotations on any layer; `controls` hint via
    `stageControlStates`/`setStageControl`.
 3. **Deck:** save/insert/reorder views with title, notes, thumbnail; present mode (next/previous,
    touch and keyboard); Quick Look uses `thumbs/`.
 4. **Panes in NVDocument:** switch `document` to mono NVDocument JSON with linkData once
-   `json(embedImages=false)` ships (mono PR).
+   mono links meshes and maps URLs to resource ids on save (mono PR).
 5. **Multiple viewers:** layout tree, sync groups, lazy mounting; compact-width presentation. The
    largest change: `NiivueStage` assumes one instance.
 6. **Slides:** OME-Zarr whole-slide resources and NVDocument `slidePlane` in panes.

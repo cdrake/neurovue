@@ -1108,6 +1108,7 @@ fn write_bundle_zip(
         .compression_method(CompressionMethod::Stored)
         .large_file(true);
 
+    write_bundle_mimetype(&mut zip)?;
     let mut used_names: HashSet<String> = HashSet::new();
     let mut total_bytes: u64 = 0;
     let mut manifest_volumes: Vec<Value> = Vec::with_capacity(selected.len());
@@ -1136,6 +1137,7 @@ fn write_bundle_zip(
 
         manifest_volumes.push(json!({
             "id": entry.id,
+            "kind": "volume",
             "role": entry.role,
             "label": entry.label,
             "data": rel,
@@ -1150,9 +1152,16 @@ fn write_bundle_zip(
         }));
     }
 
+    let view_text = serde_json::to_vec_pretty(&single_pane_view(view.clone()))
+        .map_err(|error| format!("export_bundle: serialize view: {error}"))?;
+    let view_data = format!("views/{MAIN_VIEW}.json");
+    zip.start_file(&view_data, options)
+        .and_then(|()| zip.write_all(&view_text).map_err(Into::into))
+        .map_err(|error| format!("export_bundle: zip {view_data}: {error}"))?;
+
     let bids = bids_dataset_info(handle);
     let manifest = json!({
-        "nvbundle": "1",
+        "nvbundle": BUNDLE_FORMAT.to_string(),
         "kind": "dataset-subset",
         "createdAt": created_at,
         "tool": { "name": "NeuroVue", "version": env!("CARGO_PKG_VERSION") },
@@ -1160,8 +1169,14 @@ fn write_bundle_zip(
             "datasetName": bids.as_ref().and_then(|info| info.name.clone()),
             "datasetDoi": bids.as_ref().and_then(|info| info.dataset_doi.clone()),
         },
-        "volumes": manifest_volumes,
-        "view": view,
+        "resources": manifest_volumes,
+        "views": [{
+            "id": MAIN_VIEW,
+            "data": view_data,
+            "sha256": format!("{:x}", Sha256::digest(&view_text)),
+            "bytes": view_text.len(),
+        }],
+        "start": MAIN_VIEW,
     });
 
     let manifest_text = serde_json::to_string_pretty(&manifest)
@@ -1173,6 +1188,60 @@ fn write_bundle_zip(
     zip.finish()
         .map_err(|error| format!("export_bundle: finalize {}: {error}", dest.display()))?;
     Ok(total_bytes)
+}
+
+/// The bundle format's major version; it changes only when older readers would
+/// misread a bundle. Additive fields don't bump it.
+const BUNDLE_FORMAT: u64 = 2;
+const BUNDLE_MIME: &str = "application/vnd.neurovue.bundle+zip";
+const MAIN_VIEW: &str = "main";
+
+/// The first entry, uncompressed and without extra fields, so its content sits
+/// at byte 38 where `file` and other sniffers look (the ODF/EPUB convention).
+fn write_bundle_mimetype(zip: &mut ZipWriter<File>) -> Result<(), String> {
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    zip.start_file("mimetype", options)
+        .and_then(|()| zip.write_all(BUNDLE_MIME.as_bytes()).map_err(Into::into))
+        .map_err(|error| format!("bundle: zip mimetype: {error}"))
+}
+
+/// A saved view of one viewer, holding today's `BundleViewState`; more panes,
+/// a layout and sync come with multiple viewers (docs/nvbundle-v2.md).
+fn single_pane_view(document: Value) -> Value {
+    json!({
+        "panes": { MAIN_VIEW: { "documentKind": "neurovue-view-1", "document": document } },
+        "focus": MAIN_VIEW,
+    })
+}
+
+/// Refuse a manifest this build would misread: another format version (v1 bundles predate any
+/// users, so there's no migration) or a required extension it lacks.
+fn check_manifest(manifest: &Value) -> Result<(), String> {
+    let major = manifest["nvbundle"]
+        .as_str()
+        .and_then(|version| version.split('.').next()?.parse::<u64>().ok())
+        .ok_or("This file is not a NeuroVue bundle.")?;
+    if major > BUNDLE_FORMAT {
+        return Err(format!(
+            "This bundle was made by a newer NeuroVue (format {major}). Update NeuroVue to open it."
+        ));
+    }
+    if major < BUNDLE_FORMAT {
+        return Err(format!(
+            "This bundle uses an old format ({major}) that NeuroVue no longer opens."
+        ));
+    }
+    if let Some(required) = manifest["extensionsRequired"]
+        .as_array()
+        .filter(|required| !required.is_empty())
+    {
+        let names: Vec<&str> = required.iter().filter_map(Value::as_str).collect();
+        return Err(format!(
+            "This bundle needs features this NeuroVue doesn't have: {}.",
+            names.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// A drawing made on another device (the iPad's draw tool), as a bundle of one
@@ -1196,15 +1265,17 @@ pub fn export_drawing_bundle(
     let mut zip = ZipWriter::new(zip_file);
     // Unlike a volume, an uncompressed label map is mostly zeros.
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    write_bundle_mimetype(&mut zip)?;
     let data = "data/drawing.nii";
     let manifest = json!({
-        "nvbundle": "1",
+        "nvbundle": BUNDLE_FORMAT.to_string(),
         "kind": "drawing",
         "createdAt": created_at,
         "tool": { "name": "NeuroVue", "version": env!("CARGO_PKG_VERSION") },
         "base": base,
-        "volumes": [{
+        "resources": [{
             "id": "drawing",
+            "kind": "drawing",
             "role": "drawing",
             "label": format!("Drawing on {base_label}"),
             "data": data,
@@ -1733,27 +1804,47 @@ pub fn read_bundle(path: &FsPath) -> Result<Value, String> {
         .map_err(|error| format!("read_bundle: read {}: {error}", manifest_path.display()))?;
     let manifest: Value = serde_json::from_str(&text)
         .map_err(|error| format!("read_bundle: parse {}: {error}", manifest_path.display()))?;
+    check_manifest(&manifest)?;
 
     let mut verification: Vec<Value> = Vec::new();
     let mut all_verified = true;
-    if let Some(volumes) = manifest.get("volumes").and_then(Value::as_array) {
-        for volume in volumes {
-            verify_bundle_entry(&root, volume, &mut verification, &mut all_verified);
-            if let Some(sidecars) = volume.get("sidecars").and_then(Value::as_array) {
-                for sidecar in sidecars {
-                    verify_bundle_entry(&root, sidecar, &mut verification, &mut all_verified);
-                }
-            }
+    for resource in manifest["resources"].as_array().into_iter().flatten() {
+        verify_bundle_entry(&root, resource, &mut verification, &mut all_verified);
+        for sidecar in resource["sidecars"].as_array().into_iter().flatten() {
+            verify_bundle_entry(&root, sidecar, &mut verification, &mut all_verified);
         }
     }
+    for view in manifest["views"].as_array().into_iter().flatten() {
+        verify_bundle_entry(&root, view, &mut verification, &mut all_verified);
+    }
+    let start_view = (|| {
+        let start = manifest["start"].as_str()?;
+        let entry = manifest["views"]
+            .as_array()?
+            .iter()
+            .find(|v| v["id"] == start)?;
+        let file = bundle_entry_path(&root, entry["data"].as_str()?)?;
+        serde_json::from_slice::<Value>(&fs::read(file).ok()?).ok()
+    })();
 
     Ok(json!({
         "manifest": manifest,
+        "view": start_view,
         "bundlePath": root.display().to_string(),
         "dataDir": root.join("data").display().to_string(),
         "verification": verification,
         "allVerified": all_verified,
     }))
+}
+
+/// `rel` inside the bundle root; None when it would escape (absolute or `..`).
+fn bundle_entry_path(root: &FsPath, rel: &str) -> Option<PathBuf> {
+    let rel_path = FsPath::new(rel);
+    let escapes = rel_path.is_absolute()
+        || rel_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir));
+    (!escapes).then(|| root.join(rel_path))
 }
 
 /// Hash-check one manifest entry (`{ data, sha256 }`) and push a result record.
@@ -1769,24 +1860,14 @@ fn verify_bundle_entry(
     };
     let expected = entry.get("sha256").and_then(Value::as_str).unwrap_or("");
 
-    let rel_path = FsPath::new(rel);
-    let escapes = rel_path.is_absolute()
-        || rel_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir));
-    let (status, actual) = if escapes {
-        ("invalid", None)
-    } else {
-        let file = root.join(rel_path);
-        if !file.is_file() {
-            ("missing", None)
-        } else {
-            match sha256_file(&file) {
-                Ok(hash) if hash == expected => ("ok", Some(hash)),
-                Ok(hash) => ("mismatch", Some(hash)),
-                Err(_) => ("unreadable", None),
-            }
-        }
+    let (status, actual) = match bundle_entry_path(root, rel) {
+        None => ("invalid", None),
+        Some(file) if !file.is_file() => ("missing", None),
+        Some(file) => match sha256_file(&file) {
+            Ok(hash) if hash == expected => ("ok", Some(hash)),
+            Ok(hash) => ("mismatch", Some(hash)),
+            Err(_) => ("unreadable", None),
+        },
     };
     if status != "ok" {
         *all_verified = false;
@@ -1883,6 +1964,7 @@ pub fn read_document(path: &FsPath) -> Result<Value, String> {
         let role = if index == 0 { "base" } else { "overlay" };
         manifest_volumes.push(json!({
             "id": id,
+            "kind": "volume",
             "role": role,
             "label": name,
             "data": format!("data/{file_name}"),
@@ -1910,18 +1992,21 @@ pub fn read_document(path: &FsPath) -> Result<Value, String> {
     .map_err(|error| format!("read_document: write dataset_description.json: {error}"))?;
     Ok(json!({
         "manifest": {
-            "nvbundle": "nvd",
+            "nvbundle": BUNDLE_FORMAT.to_string(),
+            "kind": "document",
             "source": { "datasetName": label },
-            "volumes": manifest_volumes,
-            "view": {
-                "version": 1,
-                // The document's crosshair is a fraction of NiiVue's resliced
-                // volume, which doesn't map back to millimetres here.
-                "scene": { "crosshairPos": null, "clipPlanes": [] },
-                "volumes": view_volumes,
-                "viewMode": "",
-            },
+            "resources": manifest_volumes,
+            "views": [{ "id": MAIN_VIEW }],
+            "start": MAIN_VIEW,
         },
+        "view": single_pane_view(json!({
+            "version": 1,
+            // The document's crosshair is a fraction of NiiVue's resliced
+            // volume, which doesn't map back to millimetres here.
+            "scene": { "crosshairPos": null, "clipPlanes": [] },
+            "volumes": view_volumes,
+            "viewMode": "",
+        })),
         "bundlePath": out_root.display().to_string(),
         "dataDir": data_dir.display().to_string(),
         "verification": [],
@@ -5287,12 +5372,63 @@ mod tests {
         assert_eq!(state["dataset"]["name"], "Tiny");
         assert_eq!(state["volumes"].as_array().unwrap().len(), 1);
         assert_eq!(state["view"]["volumes"][0]["id"], patch["asset"]["id"]);
-        assert!(out.join("review.nvbundle").metadata().unwrap().len() > 0);
+        let bundle = fs::read(out.join("review.nvbundle")).unwrap();
+        assert_eq!(&bundle[30..38], b"mimetype");
+        assert_eq!(&bundle[38..38 + BUNDLE_MIME.len()], BUNDLE_MIME.as_bytes());
+        let read = read_unzipped(&out.join("review.nvbundle"), &dir.join("unzipped"));
+        assert_eq!(read["allVerified"], true);
+        assert_eq!(read["manifest"]["nvbundle"], "2");
+        assert_eq!(read["manifest"]["resources"][0]["kind"], "volume");
+        assert_eq!(read["manifest"]["views"][0]["data"], "views/main.json");
+        assert_eq!(
+            read["view"]["panes"]["main"]["document"]["volumes"][0]["id"],
+            patch["asset"]["id"]
+        );
+        assert!(read["verification"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["data"] == "views/main.json"));
         let provenance = fs::read_to_string(session.join("provenance.jsonl")).unwrap();
         let line: Value = serde_json::from_str(provenance.lines().last().unwrap()).unwrap();
         assert_eq!(line["action"], "review.headless");
         assert_eq!(line["step"], "review");
         assert_eq!(line["outputs"], outputs);
+    }
+
+    /// Unzip a bundle into `dir` and read it in place, so tests stay out of the
+    /// app's imports directory.
+    fn read_unzipped(zip_path: &FsPath, dir: &FsPath) -> Value {
+        ZipArchive::new(File::open(zip_path).unwrap())
+            .unwrap()
+            .extract(dir)
+            .unwrap();
+        read_bundle(dir).unwrap()
+    }
+
+    #[test]
+    fn other_formats_and_unknown_required_extensions_are_refused() {
+        let check = |manifest: Value| check_manifest(&manifest).unwrap_err();
+        assert!(check(json!({ "nvbundle": "3" })).contains("newer NeuroVue"));
+        assert!(check(json!({ "nvbundle": "1", "volumes": [] })).contains("old format"));
+        let required = json!({ "nvbundle": "2", "extensionsRequired": ["org.lab.warp"] });
+        assert!(check(required).contains("org.lab.warp"));
+        assert!(check_manifest(&json!({ "nvbundle": "nvd" })).is_err());
+        assert!(check_manifest(&json!({ "nvbundle": "2", "x-later": true })).is_ok());
+    }
+
+    #[test]
+    fn drawing_bundles_read_back_with_their_base() {
+        let dir = scratch_dir("bundle-drawing");
+        let base = json!({ "id": "t1", "sha256": "abc", "label": "T1" });
+        let zip_path = dir.join("drawing.nvbundle");
+        export_drawing_bundle(&zip_path, b"labels", &base, "2026-11-23T00:00:00Z").unwrap();
+        let read = read_unzipped(&zip_path, &dir.join("unzipped"));
+        assert_eq!(read["allVerified"], true);
+        assert_eq!(read["manifest"]["kind"], "drawing");
+        assert_eq!(read["manifest"]["base"], base);
+        assert_eq!(read["manifest"]["resources"][0]["kind"], "drawing");
+        assert!(read["view"].is_null());
     }
 
     #[test]
