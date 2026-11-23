@@ -10,6 +10,19 @@ volumes. Frontend is React + TypeScript (`src/`) rendering with
 (`src-tauri/src/`) embeds a local axum HTTP server that serves volumes, IIIF
 image previews, and a multi-resolution pyramid, and exposes Tauri commands.
 
+## Commands
+
+```bash
+bun install
+bun run typecheck   # app + mcp-server
+bun run lint        # Biome
+bun test
+bun run tauri:dev   # desktop app
+bun tauri ios build # iOS (see iOS notes)
+```
+
+Run typecheck, lint and test before calling a change done.
+
 ## Mobile portability is a hard constraint
 
 **Goal: ship iPhone and iPad apps from this same codebase.** The project is
@@ -18,19 +31,20 @@ already structurally mobile-capable (Tauri v2, `mobile_entry_point` in
 designs or implementations that would prevent an iOS/iPadOS build, and prefer
 choices that keep that path open. Concretely:
 
-- **Keep the data transport swappable.** The embedded `127.0.0.1` HTTP server is
-  a desktop convenience; on iOS the idiomatic path is a custom protocol / IPC
-  (cleartext HTTP is blocked by App Transport Security and sockets are subject to
-  app lifecycle). Access server data through the existing `serverUrl` + `fetch`
-  seam and avoid HTTP-only semantics (range requests, `Cache-Control` reliance,
-  multiple ports) that a custom protocol couldn't replicate.
+- **Keep the data transport swappable.** The embedded `127.0.0.1` HTTP server
+  runs on iOS too (App Transport Security allows loopback), but its socket is
+  subject to app lifecycle, and a custom protocol / IPC may replace it. Access
+  server data through the existing `serverUrl` + `fetch` seam and avoid
+  HTTP-only semantics (range requests, `Cache-Control` reliance, multiple ports)
+  that a custom protocol couldn't replicate.
 - **Subprocess implementations stay desktop-only.** iOS forbids spawning
   external executables/PTYs. The Python terminal (`portable-pty`) is desktop-only
   outright (`src-tauri/src/terminal.rs`, `#[cfg(desktop)]`). niimath runs as a
-  native sidecar on desktop (`src-tauri/src/niimath.rs`, `#[cfg(desktop)]`) — but
-  niimath also ships as a **WebAssembly build**, so niimath stays a cross-platform
-  feature: the mobile/web path should run the WASM build behind the same frontend
-  interface (`src/domain/niimath.ts`), not the native command. Keep desktop-only
+  native sidecar on desktop (`src-tauri/src/niimath.rs`, `#[cfg(desktop)]`), so
+  it is desktop-only for now. niimath also ships as a **WebAssembly build**: the
+  planned mobile/web path runs it behind the same frontend interface
+  (`src/domain/niimath.ts`, today only the native command), so keep that
+  interface free of desktop assumptions. Keep desktop-only
   deps behind target cfgs and never make a subprocess command load-bearing.
 - **Don't assume arbitrary filesystem access.** iOS sandboxes the filesystem
   (document-picker URLs / security-scoped bookmarks, not free `canonicalize()`
@@ -55,14 +69,19 @@ prefer the portable option.
 Every UI change (DOM or canvas/UIKit overlay) must lay out on all three before
 it is done:
 
-- **iPhone:** portrait (~375–430 pt wide) and landscape; safe-area insets
-  (notch, home indicator); coarse pointer, 44 pt targets.
+- **iPhone:** portrait (~375–430 pt wide) and landscape (~390 pt tall);
+  safe-area insets (notch, home indicator); coarse pointer, 44 pt targets.
 - **iPad:** full screen, Split View/Stage Manager widths (down to iPhone size),
   both orientations; Pencil and finger.
 - **Mac:** a small window as well as a large one; mouse and trackpad.
+- **Short panes:** landscape iPhone, Slide Over, and two panes side by side are
+  short as well as narrow. Check height, not just width.
 
 Canvas overlays wrap or shrink to the stage width (pass `maxWidth`, place with
-`measure()`) instead of assuming one row fits. Say in the PR which of the three
+`getLayout()`, or `measure()` for the tool palette) instead of assuming one row
+fits, and give way vertically when a short pane can't fit them all (see the
+slice slider and tool palette in `src/domain/stageControls.ts`). Its layout
+tests (`stageControls.test.ts`) are the quick check. Say in the PR which of the three
 were checked and how (device, simulator, or narrowed window).
 
 ## iOS notes
