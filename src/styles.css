@@ -212,6 +212,10 @@ button {
 .nv-status .nv-status-message.is-error {
   color: var(--danger);
   font-weight: 600;
+  /* Two lines fit the 34px bar; an error is the one note worth reading whole. */
+  max-height: 2.4em;
+  line-height: 1.2;
+  white-space: normal;
 }
 
 .nv-visually-hidden {

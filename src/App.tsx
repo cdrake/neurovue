@@ -2988,7 +2988,8 @@ export function App(): JSX.Element {
           ) : null}
           {status}
         </span>
-        {warmStatus ? (
+        {/* An error keeps the bar until the next action, so the passing notes give way. */}
+        {warmStatus && statusTone !== 'error' ? (
           <span className="nv-warm-status">
             {warmProgress?.active ? (
               <LoaderCircle size={12} />
@@ -2998,7 +2999,7 @@ export function App(): JSX.Element {
             {warmStatus}
           </span>
         ) : null}
-        {locationStatus ? (
+        {locationStatus && statusTone !== 'error' ? (
           <span className="nv-location-status" title={locationReadout?.string}>
             <Crosshair size={12} />
             {locationStatus}
