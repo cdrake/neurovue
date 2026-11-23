@@ -1239,7 +1239,7 @@ export function App(): JSX.Element {
   // handed to the host for the next export.
   async function stageCurrentParts(base: DesktopItem): Promise<BundlePart[]> {
     const drawing = await stageSnapshotRef.current?.().drawing?.()
-    return Promise.all([
+    const parts = await Promise.all([
       ...(drawing
         ? [
             stageBundlePart(
@@ -1253,13 +1253,17 @@ export function App(): JSX.Element {
             ),
           ]
         : []),
-      ...meshes.map(async (mesh) =>
-        stageBundlePart(
+    ])
+    // One at a time: a mesh can be hundreds of MB.
+    for (const mesh of meshes) {
+      parts.push(
+        await stageBundlePart(
           { kind: 'mesh', id: mesh.id, name: mesh.name },
           new Uint8Array(await mesh.file.arrayBuffer()),
         ),
-      ),
-    ])
+      )
+    }
+    return parts
   }
 
   async function handleExportBundle(): Promise<void> {

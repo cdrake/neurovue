@@ -967,9 +967,16 @@ pub fn stage_bundle_part(bytes: &[u8]) -> Result<String, String> {
         }
     }
     let sha = format!("{:x}", Sha256::digest(bytes));
-    let temp = dir.join(format!("{sha}.partial"));
+    let dest = dir.join(&sha);
+    if dest.is_file() {
+        return Ok(sha);
+    }
+    // Per call, so two stagings of the same bytes don't share a temp file.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = dir.join(format!("{sha}.{call}.partial"));
     fs::write(&temp, bytes)
-        .and_then(|()| fs::rename(&temp, dir.join(&sha)))
+        .and_then(|()| fs::rename(&temp, &dest))
         .map_err(|error| format!("stage_bundle_part: {error}"))?;
     Ok(sha)
 }
@@ -5537,6 +5544,8 @@ mod tests {
         let parts = [
             part("drawing", "t1_drawing", "t1_drawing.nii", b"labels"),
             part("mesh", "mesh-1", "lh.pial", b"surface"),
+            // The same file added twice.
+            part("mesh", "mesh-2", "lh.pial", b"surface"),
         ];
         let view = json!({ "version": 1 });
         let zip_path = dir.join("parts.nvbundle");
@@ -5549,18 +5558,22 @@ mod tests {
             "2026-11-23T00:00:00Z",
         )
         .unwrap();
-        let read = read_unzipped(&zip_path, &dir.join("unzipped"));
+        let read = read_bundle(&zip_path).unwrap();
         assert_eq!(read["allVerified"], true);
         let resources = read["manifest"]["resources"].as_array().unwrap();
-        let by_kind = |kind: &str| resources.iter().find(|r| r["kind"] == kind).unwrap();
-        assert_eq!(by_kind("drawing")["data"], "drawings/t1_drawing.nii");
-        assert_eq!(by_kind("drawing")["base"], ids[0].as_str());
-        assert_eq!(by_kind("mesh")["data"], "meshes/lh.pial");
+        let by_id = |id: &str| resources.iter().find(|r| r["id"] == id).unwrap();
+        assert_eq!(by_id("t1_drawing")["data"], "drawings/t1_drawing.nii");
+        assert_eq!(by_id("t1_drawing")["base"], ids[0].as_str());
+        assert_eq!(by_id("mesh-1")["data"], "meshes/lh.pial");
+        assert_eq!(by_id("mesh-2")["data"], "meshes/1-lh.pial");
+        let root = FsPath::new(read["bundlePath"].as_str().unwrap());
+        assert_eq!(fs::read(root.join("meshes/1-lh.pial")).unwrap(), b"surface");
 
         let key = share_cache_key(&handle, &ids, &parts, &view);
         let redrawn = [
             part("drawing", "t1_drawing", "t1_drawing.nii", b"more"),
             parts[1].clone(),
+            parts[2].clone(),
         ];
         assert_ne!(key, share_cache_key(&handle, &ids, &redrawn, &view));
 
