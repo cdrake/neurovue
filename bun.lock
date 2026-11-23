@@ -8,7 +8,7 @@
         "@medview/neuroflow-react": "^0.3.0",
         "@niivue/niivue": "^1.0.0-rc.237",
         "@niivue/nv-mcp": "1.0.0-rc.228",
-        "@niivue/uikit": "^1.0.0-rc.237",
+        "@niivue/uikit": "^1.0.0-rc.239",
         "@tauri-apps/api": "~2.11.0",
         "@tauri-apps/plugin-dialog": "~2.7.1",
         "@xterm/addon-fit": "^0.11.0",
@@ -169,7 +169,7 @@
 
     "@niivue/nv-mcp": ["@niivue/nv-mcp@1.0.0-rc.228", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.30.0", "zod": "^4.6.5" }, "peerDependencies": { "@niivue/niivue": "1.0.0-rc.231", "@niivue/uikit": "1.0.0-rc.230" }, "optionalPeers": ["@niivue/niivue", "@niivue/uikit"] }, "sha512-hUyy0xEHPUzw2pt8D1ndrJlpGWt2m8xmpXop4Fe/jVwXedvEC+cpV8SoVyzzU39nCEYM/hWAFFOODbZvs2T8aw=="],
 
-    "@niivue/uikit": ["@niivue/uikit@1.0.0-rc.237", "", { "peerDependencies": { "@niivue/niivue": ">=1.0.0-rc.87 <2" } }, "sha512-gA6eq3p1PtlzouP+5iTDI/54hOD6LP/LyxyxqoNi0COapVLn0RmdAhrobGe01rW01BuQ7mDbrm1hmbRfoiZVrw=="],
+    "@niivue/uikit": ["@niivue/uikit@1.0.0-rc.239", "", { "peerDependencies": { "@niivue/niivue": ">=1.0.0-rc.87 <2" } }, "sha512-EPXbMOZVmB6HlrCmBmONU0FsPiU5K0/MuswGl9R4N7Gj6hXMbcRE9DmEOVHcIGMWwfiUli/nA0Z+0o9N3NrQxQ=="],
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.0-beta.27", "", {}, "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA=="],
 

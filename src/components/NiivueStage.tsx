@@ -1345,9 +1345,12 @@ export function NiivueStage({
   // in Settings: the eraser switch toggles pen and eraser, and a palette
   // shows or hides the tools.
   useEffect(() => {
-    if (!isDrawActive) return
+    if (!isDrawActive && !isShapesActive) return
     return listenToPencil((action, at) => {
-      if (action === 'switchEraser' || action === 'switchPrevious') {
+      if (
+        isDrawActive &&
+        (action === 'switchEraser' || action === 'switchPrevious')
+      ) {
         setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser'))
       } else if (
         action === 'showColorPalette' ||
@@ -1360,7 +1363,7 @@ export function NiivueStage({
       }
       pencilFeedback('alignment', at)
     })
-  }, [isDrawActive])
+  }, [isDrawActive, isShapesActive])
 
   // From the 3D render, drawing or shaping starts on one big axial slice; a
   // box can be picked in either.

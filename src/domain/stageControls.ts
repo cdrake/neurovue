@@ -103,6 +103,13 @@ const TOOL_LOOKS: Record<string, ToolLook> = {
   fill: 'marker',
   wand: 'wand',
   eraser: 'eraser',
+  // NiiVue's shape tools, by annotation tool id.
+  freehand: 'freehand',
+  rectangle: 'rectangle',
+  ellipse: 'ellipse',
+  arrow: 'arrow',
+  spline: 'spline',
+  livewire: 'livewire',
 }
 
 // Where the controls sit, in CSS pixels, as the HTML ones did.
@@ -446,12 +453,6 @@ export class StageControls implements UIKitOverlayRenderer {
       )
       if (shapes.active) {
         row.push(
-          this.toolButton('shape-undo', 'Undo', true, {
-            click: () => this.actions?.shapeUndo(),
-          }),
-          this.toolButton('shape-redo', 'Redo', true, {
-            click: () => this.actions?.shapeRedo(),
-          }),
           this.toolButton('clear-shapes', 'Clear shapes', true, {
             click: () => this.actions?.clearShapes(),
           }),
@@ -516,7 +517,6 @@ export class StageControls implements UIKitOverlayRenderer {
         group: state.measure,
         pick: this.actions?.measureTool,
       },
-      { id: 'shape-tool', group: state.shapes, pick: this.actions?.shapeTool },
     ].find((candidate) => shown && candidate.group?.active)
     if (picked?.group) {
       segmenteds.push({
@@ -536,32 +536,42 @@ export class StageControls implements UIKitOverlayRenderer {
     }
 
     // The pen's colors and brush sizes (or the wand's settings), under that.
-    // Drawing gets the tool palette, bottom centre; shapes keep these rows.
+    // Drawing and shapes get the tool palette, bottom centre, instead.
     const drawing = shown && draw?.active ? draw : null
-    if (!drawing) this.paletteFolded = false
-    const toolPalette = drawing && !this.paletteFolded ? state.palette : null
-    const palette = shown && !drawing ? state.palette : null
-    if (toolPalette && drawing) {
+    const shaping = shown && shapes?.active ? shapes : null
+    const tooling = drawing ?? shaping
+    if (!tooling) this.paletteFolded = false
+    const toolPalette = tooling && !this.paletteFolded ? state.palette : null
+    const palette = shown && !tooling ? state.palette : null
+    if (toolPalette) {
+      // Next to the thumb: the Tools button brings the palette back.
+      const hide = { id: 'hide', label: 'Hide' }
       const spec = {
         x: 0,
         y: 0,
         maxWidth: width - 2 * EDGE,
-        actions: [
-          {
-            id: 'undo',
-            label: 'Undo',
-            icon: 'undo' as const,
-            enabled: drawing.hasDrawing,
-          },
-          // Next to the thumb: the Tools button brings the palette back.
-          { id: 'hide', label: 'Hide' },
-        ],
-        tools: drawing.tools.map((tool) => ({
-          id: tool.id,
-          label: tool.label,
-          look: TOOL_LOOKS[tool.id] ?? ('pen' as const),
-        })),
-        tool: drawing.tool,
+        actions: drawing
+          ? [
+              {
+                id: 'undo',
+                label: 'Undo',
+                icon: 'undo' as const,
+                enabled: drawing.hasDrawing,
+              },
+              hide,
+            ]
+          : [
+              { id: 'undo', label: 'Undo', icon: 'undo' as const },
+              { id: 'redo', label: 'Redo', icon: 'redo' as const },
+              hide,
+            ],
+        tools:
+          tooling?.tools.map((tool) => ({
+            id: tool.id,
+            label: tool.label,
+            look: TOOL_LOOKS[tool.id] ?? ('pen' as const),
+          })) ?? [],
+        tool: tooling?.tool ?? '',
         colors: toolPalette.colors.map((color) => ({
           id: String(color.value),
           label: color.name,
@@ -576,7 +586,8 @@ export class StageControls implements UIKitOverlayRenderer {
         // A pick leaves focus on the palette, which would keep the arrow keys.
         onTool: (id: string) => {
           this.palette.blur()
-          this.actions?.drawTool(id)
+          if (drawing) this.actions?.drawTool(id)
+          else this.actions?.shapeTool(id)
         },
         onColor: (id: string) => {
           this.palette.blur()
@@ -588,9 +599,12 @@ export class StageControls implements UIKitOverlayRenderer {
         },
         onAction: (id: string) => {
           this.palette.blur()
-          if (id !== 'hide') this.actions?.undo()
-          else if (this.paletteCrowds) this.foldPalette()
-          else this.toggleTools()
+          if (id === 'hide') {
+            if (this.paletteCrowds) this.foldPalette()
+            else this.toggleTools()
+          } else if (drawing) this.actions?.undo()
+          else if (id === 'undo') this.actions?.shapeUndo()
+          else this.actions?.shapeRedo()
         },
       }
       if (this.palette.isShown) this.palette.update(spec)

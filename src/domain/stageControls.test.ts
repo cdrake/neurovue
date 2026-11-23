@@ -116,7 +116,7 @@ test.each([
     },
   ],
   [
-    'shape picker',
+    'shapes palette',
     {
       ...phone,
       draw: {
@@ -126,10 +126,19 @@ test.each([
       shapes: {
         active: true,
         enabled: true,
-        tools: ['Free', 'Rect', 'Ellipse', 'Arrow', 'Spline', 'Livewire'].map(
-          (label) => ({ id: label, label }),
-        ),
-        tool: 'Free',
+        tools: [
+          'freehand',
+          'rectangle',
+          'ellipse',
+          'arrow',
+          'spline',
+          'livewire',
+        ].map((id) => ({ id, label: id.slice(0, 7) })),
+        tool: 'freehand',
+      },
+      palette: {
+        ...(phone.palette as NonNullable<StageControlsState['palette']>),
+        sizes: [],
       },
     },
   ],
@@ -172,6 +181,10 @@ test.each([
     placed.push({ id: `palette-${i}`, right: item.x + item.width })
   }
   expect(placed.length).toBeGreaterThan(15)
+  // Drawing and shapes pick their tools on the palette, not a picker.
+  expect(
+    palette?.items.some((item) => 'kind' in item && item.kind === 'tool'),
+  ).toBe(true)
   // Inside the 14 px edge margin.
   expect(placed.filter((control) => control.right > 361)).toEqual([])
 })
