@@ -240,7 +240,7 @@ fn stage_share_bundle(
     let name = sanitize_share_name(name);
     let dest = shares_dir.join(format!("{name}.nvbundle"));
     let sig_path = shares_dir.join(format!("{name}.nvbundle.sig"));
-    let key = volumetric_server::share_cache_key(server, volume_ids);
+    let key = volumetric_server::share_cache_key(server, volume_ids, view);
 
     if dest.is_file() && std::fs::read_to_string(&sig_path).is_ok_and(|sig| sig == key) {
         let total_bytes = std::fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);

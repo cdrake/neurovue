@@ -951,9 +951,15 @@ pub struct BundleExportResult {
 /// every interaction and would defeat the cache, and for a dataset hand-off the
 /// embedded view is only a default the recipient can change. So a cached bundle
 /// may carry a slightly stale view; the data (the expensive part) is exact.
-pub fn share_cache_key(handle: &ServerHandle, volume_ids: &[String]) -> String {
+/// Its annotations are the exception: shapes are content, not a default.
+pub fn share_cache_key(
+    handle: &ServerHandle,
+    volume_ids: &[String],
+    view: &Value,
+) -> String {
     let volumes = lock_recover(&handle.volumes);
     let mut hasher = DefaultHasher::new();
+    view.get("annotations").map(|a| a.to_string()).hash(&mut hasher);
     for id in volume_ids {
         id.hash(&mut hasher);
         if let Some(source) = volumes
