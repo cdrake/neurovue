@@ -1563,7 +1563,7 @@ export function App(): JSX.Element {
         if (!target) {
           throw new Error(
             targets.length === 0
-              ? 'No device is on the network; ask the person to open NeuroVue on it.'
+              ? 'No device is on the network; ask the person to open NeuroVue on it, and check Local Network is allowed for NeuroVue in Settings → Privacy & Security.'
               : device
                 ? `No device ${device} on the network; these are: ${names}.`
                 : `Several devices are on the network; pass device, one of: ${names}.`,
@@ -1904,7 +1904,7 @@ export function App(): JSX.Element {
         targets[0]
       if (!target) {
         setStatus(
-          "Couldn't find a Mac running NeuroVue on this network.",
+          "Couldn't find a Mac running NeuroVue on this network. If it's running, allow Local Network for NeuroVue in Settings → Privacy & Security.",
           'error',
         )
         return
@@ -2248,6 +2248,8 @@ export function App(): JSX.Element {
                     <div className="nv-recent-item nv-share-looking">
                       <span className="nv-recent-item-path">
                         No device found. On an iPad, choose Receive from a Mac.
+                        Allow Local Network for NeuroVue in Settings → Privacy &
+                        Security.
                       </span>
                     </div>
                   ) : (
@@ -2406,7 +2408,7 @@ export function App(): JSX.Element {
                   enableReceiving().then(
                     () =>
                       setStatus(
-                        'Macs on this network running NeuroVue can now send here.',
+                        'Macs on this network running NeuroVue can now send here. If a Mac can’t find this device, allow Local Network for NeuroVue in Settings → Privacy & Security.',
                         'success',
                       ),
                     (error) => {
@@ -2964,7 +2966,9 @@ export function App(): JSX.Element {
         </section>
       ) : null}
 
-      <footer className="nv-status">
+      <footer
+        className={`nv-status${statusTone === 'error' ? ' has-error' : ''}`}
+      >
         {/* One stable live region: swapping roles on the fly is announced
             unreliably, so errors stay "status" and say "Error:" instead. */}
         <span
@@ -2986,7 +2990,8 @@ export function App(): JSX.Element {
           ) : null}
           {status}
         </span>
-        {warmStatus ? (
+        {/* An error keeps the bar until the next action, so the passing notes give way. */}
+        {warmStatus && statusTone !== 'error' ? (
           <span className="nv-warm-status">
             {warmProgress?.active ? (
               <LoaderCircle size={12} />
@@ -2996,7 +3001,7 @@ export function App(): JSX.Element {
             {warmStatus}
           </span>
         ) : null}
-        {locationStatus ? (
+        {locationStatus && statusTone !== 'error' ? (
           <span className="nv-location-status" title={locationReadout?.string}>
             <Crosshair size={12} />
             {locationStatus}
