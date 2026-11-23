@@ -105,6 +105,7 @@ import {
 import {
   applyBundleView,
   attachDrawing,
+  type BundlePart,
   type BundleReadResult,
   type BundleViewState,
   buildBundleViewState,
@@ -128,6 +129,7 @@ import {
   sendDrawingToDevice,
   sendViewToDevice,
   shareViewViaAirDrop,
+  stageBundlePart,
 } from './domain/bundle'
 import type {
   Backend,
@@ -154,6 +156,7 @@ import {
   meshColorFromHex,
   meshColorHex,
   openMeshFiles,
+  readBundleMeshes,
   readMeshLayer,
 } from './domain/meshes'
 import {
@@ -165,6 +168,7 @@ import {
 import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
 import { groupOverlaysByRun, type RunTag } from './domain/overlayRuns'
 import type { BatchTarget } from './domain/pipelineTargets'
+import { readMaskFile } from './domain/saveFile'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import { pushCut, stackLevels } from './domain/subvolumeStack'
 import {
@@ -1220,7 +1224,42 @@ export function App(): JSX.Element {
           }
         : undefined,
     })
+    if (meshes.length > 0) {
+      view.meshes = meshes.map(({ id, color, opacity, visible }) => ({
+        id,
+        color,
+        opacity,
+        visible,
+      }))
+    }
     return { volumeIds: bundleViewVolumeIds(view), view }
+  }
+
+  // The live drawing and the meshes, whose bytes only the webview holds,
+  // handed to the host for the next export.
+  async function stageCurrentParts(base: DesktopItem): Promise<BundlePart[]> {
+    const drawing = await stageSnapshotRef.current?.().drawing?.()
+    return Promise.all([
+      ...(drawing
+        ? [
+            stageBundlePart(
+              {
+                kind: 'drawing',
+                id: `${base.id}_drawing`,
+                name: `${base.id}_drawing.nii`,
+                base: base.id,
+              },
+              drawing,
+            ),
+          ]
+        : []),
+      ...meshes.map(async (mesh) =>
+        stageBundlePart(
+          { kind: 'mesh', id: mesh.id, name: mesh.name },
+          new Uint8Array(await mesh.file.arrayBuffer()),
+        ),
+      ),
+    ])
   }
 
   async function handleExportBundle(): Promise<void> {
@@ -1240,6 +1279,7 @@ export function App(): JSX.Element {
       const result = await exportDatasetBundle({
         defaultName: selected.label ?? 'neurovue-bundle',
         volumeIds,
+        parts: await stageCurrentParts(selected),
         view,
       })
       if (!result) {
@@ -1298,6 +1338,7 @@ export function App(): JSX.Element {
         target,
         name: shareName,
         volumeIds,
+        parts: await stageCurrentParts(selected),
         view,
         onOffered: (code) =>
           setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
@@ -1350,6 +1391,7 @@ export function App(): JSX.Element {
       const result = await shareViewViaAirDrop({
         name: shareName,
         volumeIds,
+        parts: await stageCurrentParts(selected),
         view,
       })
       setStatus(
@@ -1799,11 +1841,12 @@ export function App(): JSX.Element {
 
     // Map each recorded (original-dataset) id → its freshly-registered id.
     const remap = new Map<string, string>()
-    const newIds = bundleVolumeIds(
-      bundle.manifest.resources.map((resource) => resource.data),
+    const volumes = bundle.manifest.resources.filter(
+      (resource) => resource.kind === 'volume',
     )
+    const newIds = bundleVolumeIds(volumes.map((resource) => resource.data))
     drawingBasesRef.current.clear()
-    for (const volume of bundle.manifest.resources) {
+    for (const volume of volumes) {
       const newId = newIds.get(volume.data) ?? volume.id
       remap.set(volume.id, newId)
       if (volume.sha256) {
@@ -1821,6 +1864,23 @@ export function App(): JSX.Element {
         const id = remap.get(recordedId) ?? recordedId
         return loadedIds.has(id) ? id : undefined
       })
+      const drawing = bundle.manifest.resources.find(
+        (resource) =>
+          resource.kind === 'drawing' &&
+          resource.base &&
+          remap.get(resource.base) === applied.baseId,
+      )
+      const drawingFile = drawing
+        ? await readMaskFile(`${bundle.bundlePath}/${drawing.data}`)
+        : null
+      const bundleMeshes = await readBundleMeshes(
+        bundle.bundlePath,
+        bundle.manifest.resources.filter(
+          (resource) => resource.kind === 'mesh',
+        ),
+        view.meshes ?? [],
+      )
+      setMeshes(bundleMeshes)
       setLayerSettings(applied.layerSettings)
       setOverlayIds(applied.overlayIds)
       setAtlasId(applied.atlasId)
@@ -1832,6 +1892,7 @@ export function App(): JSX.Element {
       applyClipPlanes(view.scene?.clipPlanes ?? [])
       if (applied.baseId) setSelectedId(applied.baseId)
       setViewTarget({
+        drawing: drawingFile,
         annotations: Object.fromEntries(
           Object.entries(applied.annotations).map(([id, shapes]) => [
             id,
@@ -1852,7 +1913,7 @@ export function App(): JSX.Element {
         : ''
     const source = isDocumentPath(path) ? 'document' : 'bundle'
     setStatus(
-      `Imported ${volumeCountLabel(bundle.manifest.resources.length)} from ${source}.${integrity}`,
+      `Imported ${volumeCountLabel(volumes.length)} from ${source}.${integrity}`,
       failures.length > 0 ? 'error' : 'success',
     )
     return true

@@ -402,7 +402,8 @@ export function replayStageControls(
         (a, b) => Number(b.kind === 'toggle') - Number(a.kind === 'toggle'),
       )
       for (const control of shown) {
-        if (!pending.has(control.id)) continue
+        // A control not enabled yet (volumes still settling) waits a frame.
+        if (!pending.has(control.id) || !control.enabled) continue
         const value = pending.get(control.id)
         pending.delete(control.id)
         try {

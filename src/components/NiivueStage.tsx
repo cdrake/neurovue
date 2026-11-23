@@ -90,6 +90,8 @@ export interface StageViewTarget {
   camera: BundleCamera | null
   hiddenLabels: Record<string, number[]>
   controls: Record<string, ControlValue> | null
+  /** The live drawing over the primary base. */
+  drawing: File | null
 }
 
 /** The scene state a saved view keeps that React doesn't hold. */
@@ -98,6 +100,8 @@ export interface StageSnapshot {
   camera: BundleCamera | null
   hiddenLabels: Record<string, number[]>
   controls: Record<string, ControlValue>
+  /** The live drawing's NIfTI bytes, when there is one. */
+  drawing: (() => Promise<Uint8Array | null>) | null
 }
 
 function cameraOf(nv: NiiVueLike): BundleCamera | null {
@@ -122,6 +126,7 @@ function applyViewTarget(
     state: StageControlsState
     actions: StageControlsActions
   } | null,
+  onDrawingLoaded: () => void,
 ): void {
   const { camera } = target
   if (camera) {
@@ -137,6 +142,11 @@ function applyViewTarget(
     }
   }
   if (target.controls) replayStageControls(controls, target.controls)
+  if (target.drawing) {
+    void nv.loadDrawing?.(target.drawing).then((loaded) => {
+      if (loaded) onDrawingLoaded()
+    })
+  }
   nv.drawScene()
 }
 
@@ -1130,6 +1140,7 @@ export function NiivueStage({
             view,
             loadedLayerIdsRef.current,
             () => stageControlsInputRef.current,
+            () => setHasDrawing(true),
           )
         }
         // Volumes (and their robust-range stats) are now loaded; re-run the
@@ -1630,6 +1641,7 @@ export function NiivueStage({
       viewTarget,
       loadedLayerIdsRef.current,
       () => stageControlsInputRef.current,
+      () => setHasDrawing(true),
     )
   }, [viewTarget])
 
@@ -2318,6 +2330,13 @@ export function NiivueStage({
         camera: nv ? cameraOf(nv) : null,
         hiddenLabels,
         controls: stageControlHint(stageControlsState),
+        drawing:
+          nv && hasDrawing
+            ? async () => {
+                const bytes = await nv.saveDrawing?.('')
+                return bytes instanceof Uint8Array ? bytes : null
+              }
+            : null,
       }
     }
   }

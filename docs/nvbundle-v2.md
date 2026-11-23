@@ -49,7 +49,9 @@ travel as data with `derivation`, never as commands).
 
 ```
 mimetype
-data/            volumes, meshes, drawings, sidecars (v1 layout)
+data/            volumes and sidecars (opened as the dataset)
+drawings/        live drawings, each over a `base` volume
+meshes/          surfaces and tracts
 slides/<id>.zarr whole-slide images, OME-Zarr
 views/<id>.json  one saved view: panes, layout, sync, controls
 thumbs/<id>.png  per view; doubles as the Quick Look / share preview
@@ -67,8 +69,8 @@ manifest.json
     { "id": "t1", "kind": "volume", "data": "data/t1.nii.gz", "mediaType": "application/x-nifti",
       "sha256": "…", "bytes": 123, "shape": [], "dtype": "", "role": "base",
       "derivedFrom": [], "derivation": {}, "generatedBy": {} },
-    { "id": "draw1", "kind": "drawing", "data": "data/draw1.nii.gz", "base": "t1", "sha256": "…" },
-    { "id": "lh", "kind": "mesh", "data": "data/lh.pial.gii", "sha256": "…" },
+    { "id": "draw1", "kind": "drawing", "data": "drawings/draw1.nii", "base": "t1", "sha256": "…" },
+    { "id": "lh", "kind": "mesh", "data": "meshes/lh.pial.gii", "sha256": "…" },
     { "id": "wsi", "kind": "slide", "data": "slides/wsi.zarr", "sha256": "…" }
   ],
   "views": [                // ordered: the deck. v1 = one entry.
@@ -113,7 +115,10 @@ manifest.json
   `app`. Until panes switch to mono's linked JSON documents (`serializeDocument({ linkData: true,
   format: 'json' })` and `loadDocument`'s `resolveUrl`; mesh linking and a save-side URL hook are
   still to come), `document` is the v1 `BundleViewState` shape (`"documentKind":
-  "neurovue-view-1"`).
+  "neurovue-view-1"`). Until then that document also carries `scene` camera (azimuth, elevation,
+  zoom, 2D pan), `hiddenLabels` per volume, `shading`, `stack` (drill-down levels and their
+  blocks), `annotations` per volume, `meshes` (look by resource id) and `controls`; they move to
+  `app`/`controls` with PR 4.
 - **Layout** is a logical tree with weights, never pixels. A compact width (iPhone, Slide Over) may
   show it as tabs or one pane at a time; the author's layout is a request, not a requirement.
 - **Sync** mirrors NiiVue's `broadcastTo`/`SyncOpts` (crosshair, zoom/pan, camera, 2D/3D) as named
@@ -168,6 +173,6 @@ manifest.json
 6. **Slides:** OME-Zarr whole-slide resources and NVDocument `slidePlane` in panes.
 7. **Interop (later):** RO-Crate export of the manifest + PROV.
 
-Open questions: should the `controls` hint apply by default or only in present mode? Do deck
+Decided: the `controls` hint applies on every open, not only in present mode. Open question: do deck
 steps share panes by id (one layer stack, many camera states) or stay full snapshots? Snapshots are
 simpler and robust to reordering; data is deduplicated by resource id anyway.

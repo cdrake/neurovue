@@ -106,6 +106,33 @@ export interface BundleViewState {
    * on open. Moves to the pane beside the NVDocument with PR 4.
    */
   controls?: Record<string, ControlValue>
+  /** Mesh display state by resource id, in draw order. */
+  meshes?: BundleMesh[]
+}
+
+export interface BundleMesh {
+  id: string
+  color: [number, number, number]
+  opacity: number
+  visible: boolean
+}
+
+/** A drawing or mesh staged for an export (see `stageBundlePart`). */
+export interface BundlePart {
+  sha256: string
+  kind: 'drawing' | 'mesh'
+  id: string
+  name: string
+  base?: string
+}
+
+/** Hands a drawing's or mesh's bytes to the host ahead of an export; the
+ *  export then names them by the returned SHA-256. */
+export async function stageBundlePart(
+  part: Omit<BundlePart, 'sha256'>,
+  bytes: Uint8Array,
+): Promise<BundlePart> {
+  return { ...part, sha256: await invoke<string>('stage_bundle_part', bytes) }
 }
 
 /**
@@ -285,12 +312,14 @@ export interface ExportBundleResult {
 export async function exportDatasetBundle(params: {
   defaultName: string
   volumeIds: string[]
+  parts: BundlePart[]
   view: BundleViewState
 }): Promise<ExportBundleResult | null> {
   if (!(await resolveRuntimeCapabilities()).fileDialogsAvailable) {
     return shareViewViaAirDrop({
       name: params.defaultName,
       volumeIds: params.volumeIds,
+      parts: params.parts,
       view: params.view,
     })
   }
@@ -303,6 +332,7 @@ export async function exportDatasetBundle(params: {
   return invoke<ExportBundleResult>('export_dataset_bundle', {
     destPath,
     volumeIds: params.volumeIds,
+    parts: params.parts,
     view: params.view,
     // Timestamp stays on the JS side (matches the savePatch convention and
     // avoids a time-format crate on the Rust side).
@@ -318,10 +348,12 @@ export async function exportDatasetBundle(params: {
 export async function shareViewViaAirDrop(params: {
   name: string
   volumeIds: string[]
+  parts: BundlePart[]
   view: BundleViewState
 }): Promise<ExportBundleResult> {
   return invoke<ExportBundleResult>('share_view_via_airdrop', {
     volumeIds: params.volumeIds,
+    parts: params.parts,
     view: params.view,
     createdAt: new Date().toISOString(),
     name: params.name,
@@ -369,6 +401,7 @@ export async function sendViewToDevice(params: {
   target: SendTarget
   name: string
   volumeIds: string[]
+  parts: BundlePart[]
   view: BundleViewState
   onOffered: (code: string) => void
 }): Promise<ExportBundleResult> {
@@ -377,6 +410,7 @@ export async function sendViewToDevice(params: {
   return invoke<ExportBundleResult>('send_view_to_device', {
     target: params.target,
     volumeIds: params.volumeIds,
+    parts: params.parts,
     view: params.view,
     createdAt: new Date().toISOString(),
     name: params.name,
@@ -469,8 +503,10 @@ export interface BundleVerifyEntry {
  */
 export interface BundleResource {
   id: string
-  kind: 'volume' | 'drawing'
-  role: string
+  kind: 'volume' | 'drawing' | 'mesh'
+  role?: string
+  /** A drawing's volume. */
+  base?: string
   label?: string
   data: string
   sha256?: string
