@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test'
 import {
   pressStageButton,
+  replayStageControls,
   setStageControl,
+  stageControlHint,
   stageControlStates,
 } from './stageControlSurface'
 import type { StageControlsActions, StageControlsState } from './stageControls'
@@ -185,4 +187,33 @@ test('names the slices holding a drawing', () => {
   }
   const slice = stageControlStates(marked).find((c) => c.id === 'slice')
   expect(slice?.label).toBe('Axial, drawings on slices 2–4, 8')
+})
+
+test('a saved tool hint replays a toggle, then its tool the next frame', () => {
+  const frames: (() => void)[] = []
+  const raf = globalThis.requestAnimationFrame
+  globalThis.requestAnimationFrame = (cb) => frames.push(() => cb(0))
+  try {
+    const { calls, actions } = recorder()
+    const live = { state: structuredClone(state), actions }
+    replayStageControls(() => live, {
+      draw: true,
+      'draw-tool': 'wand',
+      'view-mode': 'axial',
+      unknown: 1,
+    })
+    expect(calls).toEqual(['draw'])
+    // The re-render the press caused.
+    if (live.state.draw) live.state.draw.active = true
+    frames.shift()?.()
+    expect(calls).toEqual(['draw', 'drawTool:wand'])
+    expect(frames).toHaveLength(0)
+  } finally {
+    globalThis.requestAnimationFrame = raf
+  }
+})
+
+test('the hint keeps tool state, not scene state', () => {
+  const hint = stageControlHint(state)
+  expect(hint).toEqual({ draw: false })
 })

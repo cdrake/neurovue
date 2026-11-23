@@ -6,6 +6,7 @@
 import type {
   ControlPatch,
   ControlState,
+  ControlValue,
   HostedControls,
 } from '@niivue/nv-mcp/browser'
 import type { StageControlsActions, StageControlsState } from './stageControls'
@@ -350,4 +351,71 @@ export function pressStageButton(
 ): void {
   const action = PRESS[id]
   if (action) (actions[action] as () => void)()
+}
+
+// Tool state a saved view carries. View mode, levels, slice and clip planes
+// travel as scene state; the magnifier is a device preference.
+const HINT_IDS = new Set([
+  'box',
+  'measure',
+  'measure-tool',
+  'shapes',
+  'shape-tool',
+  'draw',
+  'draw-tool',
+  'pen',
+  'brush',
+  'wand-tolerance',
+  'wand-scope',
+])
+
+/** The tool controls' values now, for a saved view. */
+export function stageControlHint(
+  state: StageControlsState,
+): Record<string, ControlValue> {
+  return Object.fromEntries(
+    stageControlStates(state)
+      .filter((control) => HINT_IDS.has(control.id))
+      .map((control) => [control.id, control.value]),
+  )
+}
+
+/**
+ * Replays a saved view's tool values a frame at a time: a tool's own controls
+ * show only once its toggle is on. Unknown ids, values the stage refuses and
+ * controls that never show are dropped.
+ */
+export function replayStageControls(
+  source: () => Live | null,
+  values: Record<string, ControlValue>,
+  frames = 8,
+): void {
+  const pending = new Map(
+    Object.entries(values).filter(([id]) => HINT_IDS.has(id)),
+  )
+  const step = (left: number): void => {
+    const current = source()
+    if (current) {
+      const shown = stageControlStates(current.state)
+      // Toggles first, so their tools show by the next frame.
+      shown.sort(
+        (a, b) => Number(b.kind === 'toggle') - Number(a.kind === 'toggle'),
+      )
+      for (const control of shown) {
+        if (!pending.has(control.id)) continue
+        const value = pending.get(control.id)
+        pending.delete(control.id)
+        try {
+          setStageControl(current, control.id, { value })
+        } catch {
+          // A value this stage doesn't offer: the hint yields.
+        }
+        // A pressed toggle changes what shows; wait for the next frame's state.
+        if (control.kind === 'toggle' && value !== control.value) break
+      }
+    }
+    if (pending.size > 0 && left > 1)
+      requestAnimationFrame(() => step(left - 1))
+  }
+  step(frames)
 }

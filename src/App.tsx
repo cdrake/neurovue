@@ -84,6 +84,8 @@ import {
   type NiivueRenderLayer,
   NiivueStage,
   type ResolvedWindow,
+  type StageSnapshot,
+  type StageViewTarget,
   type ViewModeId,
 } from './components/NiivueStage'
 import { RenderShadingSection } from './components/RenderShadingSection'
@@ -101,11 +103,13 @@ import {
   MIN_EXPLODE,
 } from './domain/blocks'
 import {
+  applyBundleView,
   attachDrawing,
   type BundleReadResult,
   type BundleViewState,
   buildBundleViewState,
   bundleVerifyFailures,
+  bundleViewVolumeIds,
   bundleVolumeIds,
   clearStoredData,
   type DrawingBase,
@@ -516,11 +520,10 @@ export function App(): JSX.Element {
   const [crosshairTarget, setCrosshairTarget] = useState<{
     mm: [number, number, number]
   } | null>(null)
-  // A bundle's annotations, restored over its base volume.
-  const [annotationsTarget, setAnnotationsTarget] = useState<{
-    baseId: string
-    json: string
-  } | null>(null)
+  // A bundle's saved view (annotations, camera, legend, tools), restored by the stage.
+  const [viewTarget, setViewTarget] = useState<StageViewTarget | null>(null)
+  // Reads the stage's own scene state (camera, legend, annotations, tools) for export.
+  const stageSnapshotRef = useRef<(() => StageSnapshot) | null>(null)
   // Block (volume-chunk explode) settings, applied across every loaded layer and
   // persisted into the bundle/session.
   const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
@@ -1189,6 +1192,7 @@ export function App(): JSX.Element {
     view: BundleViewState
   } {
     const crosshairMm = locationReadout?.mm
+    const snapshot = stageSnapshotRef.current?.()
     const view = buildBundleViewState({
       baseId: base.id,
       overlayIds: Array.from(overlayIds),
@@ -1201,13 +1205,22 @@ export function App(): JSX.Element {
           ? [crosshairMm[0], crosshairMm[1], crosshairMm[2]]
           : null,
       blocks,
-      annotations: JSON.parse(
-        (
-          viewerRef.current as { getAnnotationsJSON?(): string } | null
-        )?.getAnnotationsJSON?.() ?? '[]',
-      ),
+      annotations: snapshot?.annotations,
+      camera: snapshot?.camera ?? undefined,
+      hiddenLabels: snapshot?.hiddenLabels,
+      controls: snapshot?.controls,
+      shading,
+      // The levels still loaded, and only while one of them is shown.
+      stack: subvolumeStack.includes(base.id)
+        ? {
+            levels: subvolumeStack.filter((id) =>
+              items.some((item) => item.id === id),
+            ),
+            blocks: { ...stackBlocks, [base.id]: blocks },
+          }
+        : undefined,
     })
-    return { volumeIds: view.volumes.map((volume) => volume.id), view }
+    return { volumeIds: bundleViewVolumeIds(view), view }
   }
 
   async function handleExportBundle(): Promise<void> {
@@ -1804,47 +1817,32 @@ export function App(): JSX.Element {
 
     const view = focusedViewState(bundle.view)
     if (view) {
-      const nextSettings: Record<string, LayerSettings> = {}
-      const nextOverlays = new Set<string>()
-      let nextAtlas: string | null = null
-      let nextBase: string | null = null
-
-      for (const docVolume of view.volumes) {
-        const newId = remap.get(docVolume.id) ?? docVolume.id
-        if (!loadedIds.has(newId)) continue
-
-        const settings: LayerSettings = {}
-        if (docVolume.colormap !== undefined)
-          settings.colormap = docVolume.colormap
-        if (docVolume.opacity !== undefined)
-          settings.opacity = docVolume.opacity
-        if (docVolume.hidden !== undefined) settings.hidden = docVolume.hidden
-        if (docVolume.calMin !== undefined && docVolume.calMax !== undefined) {
-          settings.window = { min: docVolume.calMin, max: docVolume.calMax }
-        }
-        if (Object.keys(settings).length > 0) nextSettings[newId] = settings
-
-        if (docVolume.role === 'base') nextBase = newId
-        else if (docVolume.role === 'overlay') nextOverlays.add(newId)
-        else if (docVolume.role === 'atlas') nextAtlas = newId
-      }
-
-      setLayerSettings(nextSettings)
-      setOverlayIds(nextOverlays)
-      setAtlasId(nextAtlas)
+      const applied = applyBundleView(view, (recordedId) => {
+        const id = remap.get(recordedId) ?? recordedId
+        return loadedIds.has(id) ? id : undefined
+      })
+      setLayerSettings(applied.layerSettings)
+      setOverlayIds(applied.overlayIds)
+      setAtlasId(applied.atlasId)
       if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
       setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
+      if (view.shading) setShading(view.shading)
+      setSubvolumeStack(applied.stack?.levels ?? [])
+      setStackBlocks(applied.stack?.blocks ?? {})
       applyClipPlanes(view.scene?.clipPlanes ?? [])
-      if (nextBase) setSelectedId(nextBase)
-      setAnnotationsTarget(
-        nextBase && view.annotations?.length
-          ? { baseId: nextBase, json: JSON.stringify(view.annotations) }
-          : null,
-      )
-      const crosshair = view.scene?.crosshairPos
-      if (Array.isArray(crosshair) && crosshair.length >= 3) {
-        setCrosshairTarget({ mm: [crosshair[0], crosshair[1], crosshair[2]] })
-      }
+      if (applied.baseId) setSelectedId(applied.baseId)
+      setViewTarget({
+        annotations: Object.fromEntries(
+          Object.entries(applied.annotations).map(([id, shapes]) => [
+            id,
+            JSON.stringify(shapes),
+          ]),
+        ),
+        camera: applied.camera,
+        hiddenLabels: applied.hiddenLabels,
+        controls: view.controls ?? null,
+      })
+      if (applied.crosshairPos) setCrosshairTarget({ mm: applied.crosshairPos })
     }
 
     const failures = bundleVerifyFailures(bundle.verification)
@@ -2655,7 +2653,8 @@ export function App(): JSX.Element {
                   blocks={blocks}
                   clipPlanes={clipPlanes}
                   crosshairTarget={crosshairTarget}
-                  annotationsTarget={annotationsTarget}
+                  viewTarget={viewTarget}
+                  snapshotRef={stageSnapshotRef}
                   isActive={mouseContext === 'niivue'}
                   item={selected}
                   layers={renderLayers}

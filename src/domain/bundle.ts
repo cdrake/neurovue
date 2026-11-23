@@ -1,9 +1,11 @@
+import type { ControlValue } from '@niivue/nv-mcp/browser'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { BlockSettings } from './blocks'
 import { type ClipPlane, resolveRuntimeCapabilities } from './desktop'
 import { keepPickedFile } from './openedFiles'
+import type { RenderShading } from './shading'
 
 // A NeuroVue bundle (`.nvbundle`) is a self-describing, transport-agnostic
 // hand-off of one or more volumes plus the view that was set up over them. It
@@ -50,6 +52,23 @@ export interface BundleDocumentVolume {
    * on port.
    */
   hidden?: boolean
+  /** Label values the legend hides — niivue's `hiddenLabels`. */
+  hiddenLabels?: number[]
+}
+
+/** The 3D camera and 2D pan/zoom, named after `NVDocumentData.scene`. */
+export interface BundleCamera {
+  azimuth: number
+  elevation: number
+  scaleMultiplier: number
+  /** 2D pan (x, y, z mm) and zoom (w). */
+  pan2Dxyzmm: [number, number, number, number]
+}
+
+/** Cut sub-volumes, whole volume first, and the blocks each was left at. */
+export interface BundleSubvolumeStack {
+  levels: string[]
+  blocks: Record<string, BlockSettings>
 }
 
 /**
@@ -68,7 +87,7 @@ export interface BundleViewState {
      * clip-plane params; it converts on port.
      */
     clipPlanes: ClipPlane[]
-  }
+  } & Partial<BundleCamera>
   /** Volumes in render order (base → overlays → atlas); mirrors `NVDocumentData.volumes`. */
   volumes: BundleDocumentVolume[]
   viewMode: string
@@ -78,8 +97,15 @@ export interface BundleViewState {
    * it, and the importer falls back to the untiled default.
    */
   blocks?: BlockSettings
-  /** Vector shapes and measurements, as NiiVue's getAnnotationsJSON. */
-  annotations?: unknown[]
+  /** Vector shapes and measurements per base volume id, as NiiVue's getAnnotationsJSON. */
+  annotations?: Record<string, unknown[]>
+  shading?: RenderShading
+  stack?: BundleSubvolumeStack
+  /**
+   * The tools' stage control values (`stageControlStates` ids), a hint replayed
+   * on open. Moves to the pane beside the NVDocument with PR 4.
+   */
+  controls?: Record<string, ControlValue>
 }
 
 /**
@@ -96,7 +122,12 @@ export function buildBundleViewState(params: {
   clipPlanes: ClipPlane[]
   crosshairPos: [number, number, number] | null
   blocks?: BlockSettings
-  annotations?: unknown[]
+  annotations?: Record<string, unknown[]>
+  camera?: BundleCamera
+  hiddenLabels?: Record<string, number[]>
+  shading?: RenderShading
+  stack?: BundleSubvolumeStack
+  controls?: Record<string, ControlValue>
 }): BundleViewState {
   const toVolume = (
     id: string,
@@ -111,6 +142,8 @@ export function buildBundleViewState(params: {
       volume.calMin = settings.window.min
       volume.calMax = settings.window.max
     }
+    const hiddenLabels = params.hiddenLabels?.[id]
+    if (hiddenLabels?.length) volume.hiddenLabels = hiddenLabels
     return volume
   }
 
@@ -126,17 +159,117 @@ export function buildBundleViewState(params: {
     volumes.push(toVolume(params.atlasId, 'atlas'))
   }
 
+  // The stack's levels travel as volumes too, so annotations may sit on any of them.
+  const stack =
+    params.stack && params.stack.levels.length > 1 ? params.stack : undefined
+  const exported = new Set([...seen, ...(stack?.levels ?? [])])
+  const annotations = Object.fromEntries(
+    Object.entries(params.annotations ?? {}).filter(
+      ([id, shapes]) => exported.has(id) && shapes.length > 0,
+    ),
+  )
   return {
     version: 1,
     scene: {
       crosshairPos: params.crosshairPos,
       clipPlanes: params.clipPlanes.filter((plane) => plane.enabled),
+      ...params.camera,
     },
     volumes,
     viewMode: params.viewMode,
     ...(params.blocks ? { blocks: params.blocks } : {}),
-    ...(params.annotations?.length ? { annotations: params.annotations } : {}),
+    ...(Object.keys(annotations).length ? { annotations } : {}),
+    ...(params.shading ? { shading: params.shading } : {}),
+    ...(stack ? { stack } : {}),
+    ...(params.controls ? { controls: params.controls } : {}),
   }
+}
+
+/** Volume ids a view's bundle carries: its layers, then any other stack levels. */
+export function bundleViewVolumeIds(view: BundleViewState): string[] {
+  const ids = view.volumes.map((volume) => volume.id)
+  return [
+    ...ids,
+    ...(view.stack?.levels ?? []).filter((id) => !ids.includes(id)),
+  ]
+}
+
+/** App state a saved view restores, with ids already mapped to this session's. */
+export interface AppliedBundleView {
+  layerSettings: Record<string, BundleLayerSettings>
+  baseId: string | null
+  overlayIds: Set<string>
+  atlasId: string | null
+  hiddenLabels: Record<string, number[]>
+  annotations: Record<string, unknown[]>
+  crosshairPos: [number, number, number] | null
+  camera: BundleCamera | null
+  stack: BundleSubvolumeStack | null
+}
+
+/**
+ * Map a saved view onto this session: `idFor` gives a recorded volume id's
+ * loaded id, or undefined when that volume didn't load (it's then skipped).
+ */
+export function applyBundleView(
+  view: BundleViewState,
+  idFor: (recordedId: string) => string | undefined,
+): AppliedBundleView {
+  const applied: AppliedBundleView = {
+    layerSettings: {},
+    baseId: null,
+    overlayIds: new Set(),
+    atlasId: null,
+    hiddenLabels: {},
+    annotations: {},
+    crosshairPos: null,
+    camera: null,
+    stack: null,
+  }
+  for (const volume of view.volumes) {
+    const id = idFor(volume.id)
+    if (!id) continue
+    const settings: BundleLayerSettings = {}
+    if (volume.colormap !== undefined) settings.colormap = volume.colormap
+    if (volume.opacity !== undefined) settings.opacity = volume.opacity
+    if (volume.hidden !== undefined) settings.hidden = volume.hidden
+    if (volume.calMin !== undefined && volume.calMax !== undefined) {
+      settings.window = { min: volume.calMin, max: volume.calMax }
+    }
+    if (Object.keys(settings).length > 0) applied.layerSettings[id] = settings
+    if (volume.hiddenLabels?.length)
+      applied.hiddenLabels[id] = volume.hiddenLabels
+    if (volume.role === 'base') applied.baseId = id
+    else if (volume.role === 'overlay') applied.overlayIds.add(id)
+    else if (volume.role === 'atlas') applied.atlasId = id
+  }
+  for (const [recordedId, shapes] of Object.entries(view.annotations ?? {})) {
+    const id = idFor(recordedId)
+    if (id) applied.annotations[id] = shapes
+  }
+  const { crosshairPos, azimuth, elevation, scaleMultiplier, pan2Dxyzmm } =
+    view.scene ?? {}
+  if (Array.isArray(crosshairPos) && crosshairPos.length >= 3) {
+    applied.crosshairPos = [crosshairPos[0], crosshairPos[1], crosshairPos[2]]
+  }
+  if (
+    azimuth !== undefined &&
+    elevation !== undefined &&
+    scaleMultiplier !== undefined &&
+    pan2Dxyzmm?.length === 4
+  ) {
+    applied.camera = { azimuth, elevation, scaleMultiplier, pan2Dxyzmm }
+  }
+  if (view.stack) {
+    const levels = view.stack.levels.flatMap((level) => idFor(level) ?? [])
+    const blocks: Record<string, BlockSettings> = {}
+    for (const [recordedId, settings] of Object.entries(view.stack.blocks)) {
+      const id = idFor(recordedId)
+      if (id) blocks[id] = settings
+    }
+    if (levels.length > 1) applied.stack = { levels, blocks }
+  }
+  return applied
 }
 
 export interface ExportBundleResult {
