@@ -169,3 +169,20 @@ test('every button the stage lists can be pressed', () => {
   for (const button of buttons) pressStageButton(actions, button.id)
   expect(pressed.length).toBe(buttons.length)
 })
+
+test('names the slices holding a drawing', () => {
+  const marked = {
+    ...state,
+    slice: {
+      label: 'Axial',
+      value: 3,
+      max: 9,
+      marks: [
+        [1, 3],
+        [7, 7],
+      ] as const,
+    },
+  }
+  const slice = stageControlStates(marked).find((c) => c.id === 'slice')
+  expect(slice?.label).toBe('Axial, drawings on slices 2–4, 8')
+})

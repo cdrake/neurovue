@@ -1969,7 +1969,7 @@ export function NiivueStage({
   const [layerSliceFlags, setLayerSliceFlags] = useState<Uint8Array | null>(
     null,
   )
-  // biome-ignore lint/correctness/useExhaustiveDependencies: loadedVersion rescans after a load.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rescan on a load, not on every display change that rebuilds `layers`.
   useEffect(() => {
     const nv = nvRef.current
     const dimsRAS = nv?.volumes?.[0]?.dimsRAS
@@ -2002,7 +2002,7 @@ export function NiivueStage({
       }
     })
     setLayerSliceFlags(flags)
-  }, [sliceAxis, layers, loadedVersion])
+  }, [sliceAxis, loadedVersion])
 
   // Loaded drawing layers plus the live drawing, so a drawing made on
   // another slice (or another device) can be found on the slider.

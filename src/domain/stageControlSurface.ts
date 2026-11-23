@@ -175,10 +175,18 @@ export function stageControlStates(state: StageControlsState): ControlState[] {
     )
   }
   if (state.slice) {
+    // The slider's marks, in words, for VoiceOver and agents (1-based, as shown).
+    const marked = state.slice.marks
+      .map(([first, last]) =>
+        first === last ? `${first + 1}` : `${first + 1}–${last + 1}`,
+      )
+      .join(', ')
     controls.push({
       id: 'slice',
       kind: 'slider',
-      label: state.slice.label,
+      label: marked
+        ? `${state.slice.label}, drawings on slices ${marked}`
+        : state.slice.label,
       min: 0,
       max: state.slice.max,
       step: 1,
