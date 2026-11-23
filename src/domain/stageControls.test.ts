@@ -141,7 +141,9 @@ test.each([
     ),
     new FakeSliders((spec) => spec.width ?? 0),
   ]
-  const controls = new StageControls({} as never)
+  const controls = new StageControls({
+    metrics: { glyphs: new Map() },
+  } as never)
   const [buttons, segmenteds, sliders] = overlays
   Object.assign(controls, {
     buttons,
@@ -160,7 +162,46 @@ test.each([
       return { id, right: box.x + box.width }
     }),
   )
+  // Drawing's tool palette counts each of its items.
+  const palette = (
+    controls as unknown as {
+      palette: { getLayout(): { items: { x: number; width: number }[] } | null }
+    }
+  ).palette.getLayout()
+  for (const [i, item] of (palette?.items ?? []).entries()) {
+    placed.push({ id: `palette-${i}`, right: item.x + item.width })
+  }
   expect(placed.length).toBeGreaterThan(15)
   // Inside the 14 px edge margin.
   expect(placed.filter((control) => control.right > 361)).toEqual([])
+})
+
+test('the tools fold away, and the slice slider gives way to them', () => {
+  const buttons = new FakeButtons((spec) => spec.width ?? 60)
+  const sliders = new FakeSliders((spec) => spec.width ?? 0)
+  const controls = new StageControls({
+    metrics: { glyphs: new Map() },
+  } as never)
+  Object.assign(controls, {
+    buttons,
+    segmenteds: new FakeSegmenteds((spec) => 60 * (spec.segments?.length ?? 0)),
+    sliders,
+    controls: { requestRedraw() {}, drawOverlay() {} },
+  })
+  const state = {
+    ...phone,
+    slice: { label: 'Axial', value: 0, max: 9, marks: [] },
+  } as StageControlsState
+  controls.update(state, {} as never)
+  // A landscape phone's short pane.
+  const frame = { bounds: { width: 375, height: 300 }, dpr: 1 }
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  expect(buttons.ids).toContain('draw')
+  expect(sliders.ids).not.toContain('slice')
+
+  const toggle = buttons.specs.get('tools') as unknown as { onClick(): void }
+  toggle.onClick()
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  expect(buttons.ids).toEqual(['tools'])
+  expect(sliders.ids).toEqual(['slice'])
 })

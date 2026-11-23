@@ -1343,7 +1343,7 @@ export function NiivueStage({
 
   // A double-tap or squeeze of the pencil does what the person chose for it
   // in Settings: the eraser switch toggles pen and eraser, and a palette
-  // steps to the next pen color, since there's no palette here to show.
+  // shows or hides the tools.
   useEffect(() => {
     if (!isDrawActive) return
     return listenToPencil((action, at) => {
@@ -1354,8 +1354,7 @@ export function NiivueStage({
         action === 'showInkAttributes' ||
         action === 'showContextualPalette'
       ) {
-        setDrawTool('pen')
-        setPenValue((current) => (current % DRAW_COLORS.length) + 1)
+        stageControlsRef.current?.toggleTools()
       } else {
         return
       }

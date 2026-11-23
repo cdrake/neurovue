@@ -6,12 +6,15 @@ import {
   type SegmentedStyle,
   type SliderSpec,
   type SliderStyle,
+  type ToolLook,
+  type ToolPaletteStyle,
   UIKitButtonOverlay,
   UIKitControls,
   type UIKitFont,
   type UIKitHost,
   UIKitSegmentedOverlay,
   UIKitSliderOverlay,
+  UIKitToolPaletteOverlay,
 } from '@niivue/uikit'
 import { provideStageControls } from './stageControlSurface'
 
@@ -86,6 +89,20 @@ const SLIDER_STYLE: Partial<SliderStyle> = {
   textSizePx: 12,
   textOutlineWidth: 1.5,
   focusRing: AMBER,
+}
+
+const PALETTE_STYLE: Partial<ToolPaletteStyle> = {
+  fill: [0.067, 0.067, 0.059, 0.96],
+  border: AMBER_LINE,
+  hoverFill: [1, 1, 1, 0.1],
+  selectedBorder: INK,
+  textColor: INK,
+  disabledTextColor: DIM,
+}
+const TOOL_LOOKS: Record<string, ToolLook> = {
+  fill: 'marker',
+  wand: 'wand',
+  eraser: 'eraser',
 }
 
 // Where the controls sit, in CSS pixels, as the HTML ones did.
@@ -226,10 +243,13 @@ export class StageControls implements UIKitOverlayRenderer {
   private readonly buttons: UIKitButtonOverlay
   private readonly segmenteds: UIKitSegmentedOverlay
   private readonly sliders: UIKitSliderOverlay
+  private readonly palette: UIKitToolPaletteOverlay
   private state: StageControlsState | null = null
   private actions: StageControlsActions | null = null
   private stateSignature = ''
   private layoutSignature = ''
+  // The tools fold away to show the image (a phone's pane is mostly tools).
+  private toolsHidden = false
   private host: UIKitHost | null = null
 
   constructor(font: UIKitFont) {
@@ -245,7 +265,15 @@ export class StageControls implements UIKitOverlayRenderer {
       cssUnits: true,
       style: SLIDER_STYLE,
     })
-    this.controls.add(this.sliders).add(this.segmenteds).add(this.buttons)
+    this.palette = new UIKitToolPaletteOverlay(font, {
+      cssUnits: true,
+      style: PALETTE_STYLE,
+    })
+    this.controls
+      .add(this.sliders)
+      .add(this.segmenteds)
+      .add(this.buttons)
+      .add(this.palette)
   }
 
   /**
@@ -280,6 +308,13 @@ export class StageControls implements UIKitOverlayRenderer {
     if (signature === this.stateSignature) return
     this.state = state
     this.stateSignature = signature
+    this.controls.requestRedraw()
+  }
+
+  /** Fold the tools away to show the image, or bring them back. */
+  toggleTools(): void {
+    this.toolsHidden = !this.toolsHidden
+    this.layoutSignature = ''
     this.controls.requestRedraw()
   }
 
@@ -337,7 +372,8 @@ export class StageControls implements UIKitOverlayRenderer {
     })
 
     // The render's look, then measure, then draw, along the top left.
-    const { look } = state
+    const shown = !this.toolsHidden
+    const look = shown ? state.look : null
     if (look) {
       segmenteds.push({
         id: 'look',
@@ -421,9 +457,6 @@ export class StageControls implements UIKitOverlayRenderer {
       )
       if (draw.active) {
         row.push(
-          this.toolButton('undo', 'Undo', draw.hasDrawing, {
-            click: () => this.actions?.undo(),
-          }),
           this.toolButton('clear-drawing', 'Clear ink', draw.hasDrawing, {
             click: () => this.actions?.clearDrawing(),
           }),
@@ -456,6 +489,13 @@ export class StageControls implements UIKitOverlayRenderer {
         )
       }
     }
+    if (!shown) row.length = 0
+    row.unshift(
+      this.toolButton('tools', 'Tools', true, {
+        on: shown,
+        click: () => this.toggleTools(),
+      }),
+    )
     buttons.push(...row)
 
     // The active tool's picker, under the tools.
@@ -466,8 +506,7 @@ export class StageControls implements UIKitOverlayRenderer {
         pick: this.actions?.measureTool,
       },
       { id: 'shape-tool', group: state.shapes, pick: this.actions?.shapeTool },
-      { id: 'draw-tool', group: state.draw, pick: this.actions?.drawTool },
-    ].find((candidate) => candidate.group?.active)
+    ].find((candidate) => shown && candidate.group?.active)
     if (picked?.group) {
       segmenteds.push({
         id: picked.id,
@@ -486,7 +525,53 @@ export class StageControls implements UIKitOverlayRenderer {
     }
 
     // The pen's colors and brush sizes (or the wand's settings), under that.
-    const { palette } = state
+    // Drawing gets the tool palette, bottom centre; shapes keep these rows.
+    const drawing = shown && draw?.active ? draw : null
+    const toolPalette = drawing ? state.palette : null
+    const palette = shown && !drawing ? state.palette : null
+    if (toolPalette && drawing) {
+      const spec = {
+        x: 0,
+        y: 0,
+        maxWidth: width - 2 * EDGE,
+        actions: [
+          {
+            id: 'undo',
+            label: 'Undo',
+            icon: 'undo' as const,
+            enabled: drawing.hasDrawing,
+          },
+          // Next to the thumb: the Tools button brings the palette back.
+          { id: 'hide', label: 'Hide' },
+        ],
+        tools: drawing.tools.map((tool) => ({
+          id: tool.id,
+          label: tool.label,
+          look: TOOL_LOOKS[tool.id] ?? ('pen' as const),
+        })),
+        tool: drawing.tool,
+        colors: toolPalette.colors.map((color) => ({
+          id: String(color.value),
+          label: color.name,
+          color: hexColor(color.css),
+        })),
+        color: String(toolPalette.penValue),
+        widths: toolPalette.sizes.map((size) => ({
+          id: String(size.size),
+          label: size.name,
+        })),
+        width: String(toolPalette.brushSize),
+        onTool: (id: string) => this.actions?.drawTool(id),
+        onColor: (id: string) => this.actions?.pen(Number(id)),
+        onWidth: (id: string) => this.actions?.brush(Number(id)),
+        onAction: (id: string) =>
+          id === 'hide' ? this.toggleTools() : this.actions?.undo(),
+      }
+      if (this.palette.isShown) this.palette.update(spec)
+      else this.palette.show(spec)
+    } else {
+      this.palette.hide()
+    }
     if (palette) {
       for (const color of palette.colors) {
         const fill = hexColor(color.css)
@@ -525,7 +610,7 @@ export class StageControls implements UIKitOverlayRenderer {
         })
       }
     }
-    const { levels } = state
+    const levels = shown ? state.levels : null
     if (levels) {
       segmenteds.push({
         id: 'levels',
@@ -542,7 +627,7 @@ export class StageControls implements UIKitOverlayRenderer {
         },
       })
     }
-    const { magnifyZoom } = state
+    const magnifyZoom = shown ? state.magnifyZoom : null
     if (magnifyZoom !== null) {
       sliders.push({
         id: 'magnify-zoom',
@@ -560,7 +645,7 @@ export class StageControls implements UIKitOverlayRenderer {
         onInput: (value) => this.actions?.magnifyZoom(value),
       })
     }
-    const { wand } = state
+    const wand = shown ? state.wand : null
     if (wand) {
       sliders.push({
         id: 'wand-tolerance',
@@ -679,7 +764,9 @@ export class StageControls implements UIKitOverlayRenderer {
     const buttonWidth = (spec: (typeof row)[number]): number =>
       this.buttons.getLayout(spec.id)?.width ?? 0
     const gapBefore = (spec: (typeof row)[number]): number =>
-      GROUP_STARTS.has(spec.id) || row[0] === spec ? GROUP_GAP : GAP
+      GROUP_STARTS.has(spec.id) || row[0] === spec || row[1] === spec
+        ? GROUP_GAP
+        : GAP
     const right = width - EDGE
     const rowEnd = { x: EDGE + lookWidth, y: 0 }
     for (const spec of row) flow(rowEnd, buttonWidth(spec), gapBefore(spec))
@@ -745,14 +832,35 @@ export class StageControls implements UIKitOverlayRenderer {
         flow(settings, scopeWidth, GROUP_GAP, right),
       )
     }
+    // A short pane can't fit the tools above the bottom controls: they give
+    // way while the tools are shown, and return when the tools fold away.
+    const stackBottom =
+      settings.x > EDGE ? settings.y + CONTROL_HEIGHT : nextY - ROW_GAP
     const bottom = height - clearance.colorbar - 8
+    // The palette sits above the slice slider, which gives way first.
+    let floor = bottom
     if (slice) {
       const layout = this.sliders.getLayout('slice')
       const sliderWidth = Math.min(560, width * 0.82)
-      this.sliders.updateSlider('slice', {
-        x: (width - sliderWidth) / 2,
-        y: bottom - (layout?.height ?? CONTROL_HEIGHT),
-        width: sliderWidth,
+      const top = bottom - (layout?.height ?? CONTROL_HEIGHT)
+      const size = this.palette.measure()
+      const above = size ? size.height + size.reach + ROW_GAP : 0
+      if (stackBottom + ROW_GAP > top - above) {
+        this.sliders.removeSlider('slice')
+      } else {
+        this.sliders.updateSlider('slice', {
+          x: (width - sliderWidth) / 2,
+          y: top,
+          width: sliderWidth,
+        })
+        floor = top - ROW_GAP
+      }
+    }
+    const size = this.palette.measure()
+    if (size) {
+      this.palette.update({
+        x: (width - size.width) / 2,
+        y: floor - size.height,
       })
     }
     if (clip) {
@@ -769,6 +877,11 @@ export class StageControls implements UIKitOverlayRenderer {
       )
       const left = (width - total) / 2
       const top = bottom - rowHeight
+      if (stackBottom + ROW_GAP > top) {
+        this.segmenteds.removeSegmented('clip-planes')
+        this.sliders.removeSlider('clip-depth')
+        return
+      }
       this.segmenteds.updateSegmented('clip-planes', {
         x: left,
         y: top + (rowHeight - (chips?.height ?? rowHeight)) / 2,
