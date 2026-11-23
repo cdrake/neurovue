@@ -202,6 +202,7 @@ async fn export_dataset_bundle(
     state: tauri::State<'_, NeuroVueState>,
     dest_path: String,
     volume_ids: Vec<String>,
+    parts: Vec<volumetric_server::BundlePart>,
     view: serde_json::Value,
     created_at: String,
 ) -> Result<ExportBundleResult, String> {
@@ -212,6 +213,7 @@ async fn export_dataset_bundle(
             &server,
             Path::new(&normalize_local_path(&dest_path)),
             &volume_ids,
+            &parts,
             &view,
             &created_at,
         )?;
@@ -232,6 +234,7 @@ async fn export_dataset_bundle(
 fn stage_share_bundle(
     server: &volumetric_server::ServerHandle,
     volume_ids: &[String],
+    parts: &[volumetric_server::BundlePart],
     view: &serde_json::Value,
     created_at: &str,
     name: &str,
@@ -240,7 +243,7 @@ fn stage_share_bundle(
     let name = sanitize_share_name(name);
     let dest = shares_dir.join(format!("{name}.nvbundle"));
     let sig_path = shares_dir.join(format!("{name}.nvbundle.sig"));
-    let key = volumetric_server::share_cache_key(server, volume_ids, view);
+    let key = volumetric_server::share_cache_key(server, volume_ids, parts, view);
 
     if dest.is_file() && std::fs::read_to_string(&sig_path).is_ok_and(|sig| sig == key) {
         let total_bytes = std::fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
@@ -255,7 +258,8 @@ fn stage_share_bundle(
     }
 
     volumetric_server::prune_share_cache(&shares_dir, 4);
-    let result = volumetric_server::export_bundle(server, &dest, volume_ids, view, created_at)?;
+    let result =
+        volumetric_server::export_bundle(server, &dest, volume_ids, parts, view, created_at)?;
     let _ = std::fs::write(&sig_path, &key); // export_bundle created shares_dir
     Ok((result, dest))
 }
@@ -370,6 +374,7 @@ async fn send_view_to_device(
     state: tauri::State<'_, NeuroVueState>,
     target: send::SendTarget,
     volume_ids: Vec<String>,
+    parts: Vec<volumetric_server::BundlePart>,
     view: serde_json::Value,
     created_at: String,
     name: String,
@@ -377,7 +382,8 @@ async fn send_view_to_device(
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
-        let (result, dest) = stage_share_bundle(&server, &volume_ids, &view, &created_at, &name)?;
+        let (result, dest) =
+            stage_share_bundle(&server, &volume_ids, &parts, &view, &created_at, &name)?;
         let addresses = target.addresses();
         if addresses.is_empty() {
             return Err(format!("Couldn't find {} on the network.", target.name));
@@ -516,13 +522,14 @@ async fn share_view_via_airdrop(
     window: tauri::Window,
     state: tauri::State<'_, NeuroVueState>,
     volume_ids: Vec<String>,
+    parts: Vec<volumetric_server::BundlePart>,
     view: serde_json::Value,
     created_at: String,
     name: String,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
     let (result, dest) = tauri::async_runtime::spawn_blocking(move || {
-        stage_share_bundle(&server, &volume_ids, &view, &created_at, &name)
+        stage_share_bundle(&server, &volume_ids, &parts, &view, &created_at, &name)
     })
     .await
     .map_err(|error| format!("share_view_via_airdrop: join error: {error}"))??;
@@ -563,6 +570,19 @@ async fn write_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let (path, bytes) = split_file_body(&request)?;
     let path = normalize_local_path(path);
     std::fs::write(&path, bytes).map_err(|error| format!("{path}: {error}"))
+}
+
+/// A drawing's or mesh's bytes for the next bundle export (raw body); returns
+/// the SHA-256 the export names it by.
+#[tauri::command]
+async fn stage_bundle_part(request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("stage_bundle_part: expected the part's bytes".to_string());
+    };
+    let body = body.clone();
+    tauri::async_runtime::spawn_blocking(move || volumetric_server::stage_bundle_part(&body))
+        .await
+        .map_err(|error| format!("stage_bundle_part: join error: {error}"))?
 }
 
 /// Where there is no save dialog (iOS): stages the file in temp and offers the
@@ -1005,6 +1025,7 @@ pub fn run() {
             read_mask_file,
             export_dataset_bundle,
             write_file,
+            stage_bundle_part,
             share_file,
             open_privacy_policy,
             read_bundle_manifest,

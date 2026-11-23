@@ -79,6 +79,7 @@ pub fn review(session_dir: PathBuf) -> Result<Value, String> {
             &handle,
             &ctx.output_dir.join("review.nvbundle"),
             &ids,
+            &[],
             &view,
             &iso8601_utc_now(),
         )?;

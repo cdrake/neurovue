@@ -80,6 +80,11 @@ export async function pickNifti(title: string): Promise<File | null> {
     filters: [{ name: 'NIfTI', extensions: ['nii', 'gz'] }],
   })
   if (typeof path !== 'string') return null
+  return readMaskFile(path)
+}
+
+/** A NIfTI mask on disk as a File for NiiVue's `loadDrawing`. */
+export async function readMaskFile(path: string): Promise<File> {
   const bytes = await invoke<ArrayBuffer>('read_mask_file', { path })
   return new File([bytes], path.split(/[\\/]/).pop() ?? 'mask.nii.gz')
 }

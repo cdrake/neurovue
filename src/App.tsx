@@ -84,6 +84,8 @@ import {
   type NiivueRenderLayer,
   NiivueStage,
   type ResolvedWindow,
+  type StageSnapshot,
+  type StageViewTarget,
   type ViewModeId,
 } from './components/NiivueStage'
 import { RenderShadingSection } from './components/RenderShadingSection'
@@ -101,11 +103,14 @@ import {
   MIN_EXPLODE,
 } from './domain/blocks'
 import {
+  applyBundleView,
   attachDrawing,
+  type BundlePart,
   type BundleReadResult,
   type BundleViewState,
   buildBundleViewState,
   bundleVerifyFailures,
+  bundleViewVolumeIds,
   bundleVolumeIds,
   clearStoredData,
   type DrawingBase,
@@ -124,6 +129,7 @@ import {
   sendDrawingToDevice,
   sendViewToDevice,
   shareViewViaAirDrop,
+  stageBundlePart,
 } from './domain/bundle'
 import type {
   Backend,
@@ -150,6 +156,7 @@ import {
   meshColorFromHex,
   meshColorHex,
   openMeshFiles,
+  readBundleMeshes,
   readMeshLayer,
 } from './domain/meshes'
 import {
@@ -161,6 +168,7 @@ import {
 import { onFilesOpened, takeOpenedFile } from './domain/openedFiles'
 import { groupOverlaysByRun, type RunTag } from './domain/overlayRuns'
 import type { BatchTarget } from './domain/pipelineTargets'
+import { readMaskFile } from './domain/saveFile'
 import { DEFAULT_RENDER_SHADING, type RenderShading } from './domain/shading'
 import { pushCut, stackLevels } from './domain/subvolumeStack'
 import {
@@ -516,11 +524,10 @@ export function App(): JSX.Element {
   const [crosshairTarget, setCrosshairTarget] = useState<{
     mm: [number, number, number]
   } | null>(null)
-  // A bundle's annotations, restored over its base volume.
-  const [annotationsTarget, setAnnotationsTarget] = useState<{
-    baseId: string
-    json: string
-  } | null>(null)
+  // A bundle's saved view (annotations, camera, legend, tools), restored by the stage.
+  const [viewTarget, setViewTarget] = useState<StageViewTarget | null>(null)
+  // Reads the stage's own scene state (camera, legend, annotations, tools) for export.
+  const stageSnapshotRef = useRef<(() => StageSnapshot) | null>(null)
   // Block (volume-chunk explode) settings, applied across every loaded layer and
   // persisted into the bundle/session.
   const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
@@ -1189,6 +1196,7 @@ export function App(): JSX.Element {
     view: BundleViewState
   } {
     const crosshairMm = locationReadout?.mm
+    const snapshot = stageSnapshotRef.current?.()
     const view = buildBundleViewState({
       baseId: base.id,
       overlayIds: Array.from(overlayIds),
@@ -1201,13 +1209,61 @@ export function App(): JSX.Element {
           ? [crosshairMm[0], crosshairMm[1], crosshairMm[2]]
           : null,
       blocks,
-      annotations: JSON.parse(
-        (
-          viewerRef.current as { getAnnotationsJSON?(): string } | null
-        )?.getAnnotationsJSON?.() ?? '[]',
-      ),
+      annotations: snapshot?.annotations,
+      camera: snapshot?.camera ?? undefined,
+      hiddenLabels: snapshot?.hiddenLabels,
+      controls: snapshot?.controls,
+      shading,
+      // The levels still loaded, and only while one of them is shown.
+      stack: subvolumeStack.includes(base.id)
+        ? {
+            levels: subvolumeStack.filter((id) =>
+              items.some((item) => item.id === id),
+            ),
+            blocks: { ...stackBlocks, [base.id]: blocks },
+          }
+        : undefined,
     })
-    return { volumeIds: view.volumes.map((volume) => volume.id), view }
+    if (meshes.length > 0) {
+      view.meshes = meshes.map(({ id, color, opacity, visible }) => ({
+        id,
+        color,
+        opacity,
+        visible,
+      }))
+    }
+    return { volumeIds: bundleViewVolumeIds(view), view }
+  }
+
+  // The live drawing and the meshes, whose bytes only the webview holds,
+  // handed to the host for the next export.
+  async function stageCurrentParts(base: DesktopItem): Promise<BundlePart[]> {
+    const drawing = await stageSnapshotRef.current?.().drawing?.()
+    const parts = await Promise.all([
+      ...(drawing
+        ? [
+            stageBundlePart(
+              {
+                kind: 'drawing',
+                id: `${base.id}_drawing`,
+                name: `${base.id}_drawing.nii`,
+                base: base.id,
+              },
+              drawing,
+            ),
+          ]
+        : []),
+    ])
+    // One at a time: a mesh can be hundreds of MB.
+    for (const mesh of meshes) {
+      parts.push(
+        await stageBundlePart(
+          { kind: 'mesh', id: mesh.id, name: mesh.name },
+          new Uint8Array(await mesh.file.arrayBuffer()),
+        ),
+      )
+    }
+    return parts
   }
 
   async function handleExportBundle(): Promise<void> {
@@ -1227,6 +1283,7 @@ export function App(): JSX.Element {
       const result = await exportDatasetBundle({
         defaultName: selected.label ?? 'neurovue-bundle',
         volumeIds,
+        parts: await stageCurrentParts(selected),
         view,
       })
       if (!result) {
@@ -1285,6 +1342,7 @@ export function App(): JSX.Element {
         target,
         name: shareName,
         volumeIds,
+        parts: await stageCurrentParts(selected),
         view,
         onOffered: (code) =>
           setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
@@ -1337,6 +1395,7 @@ export function App(): JSX.Element {
       const result = await shareViewViaAirDrop({
         name: shareName,
         volumeIds,
+        parts: await stageCurrentParts(selected),
         view,
       })
       setStatus(
@@ -1786,11 +1845,12 @@ export function App(): JSX.Element {
 
     // Map each recorded (original-dataset) id → its freshly-registered id.
     const remap = new Map<string, string>()
-    const newIds = bundleVolumeIds(
-      bundle.manifest.resources.map((resource) => resource.data),
+    const volumes = bundle.manifest.resources.filter(
+      (resource) => resource.kind === 'volume',
     )
+    const newIds = bundleVolumeIds(volumes.map((resource) => resource.data))
     drawingBasesRef.current.clear()
-    for (const volume of bundle.manifest.resources) {
+    for (const volume of volumes) {
       const newId = newIds.get(volume.data) ?? volume.id
       remap.set(volume.id, newId)
       if (volume.sha256) {
@@ -1804,47 +1864,50 @@ export function App(): JSX.Element {
 
     const view = focusedViewState(bundle.view)
     if (view) {
-      const nextSettings: Record<string, LayerSettings> = {}
-      const nextOverlays = new Set<string>()
-      let nextAtlas: string | null = null
-      let nextBase: string | null = null
-
-      for (const docVolume of view.volumes) {
-        const newId = remap.get(docVolume.id) ?? docVolume.id
-        if (!loadedIds.has(newId)) continue
-
-        const settings: LayerSettings = {}
-        if (docVolume.colormap !== undefined)
-          settings.colormap = docVolume.colormap
-        if (docVolume.opacity !== undefined)
-          settings.opacity = docVolume.opacity
-        if (docVolume.hidden !== undefined) settings.hidden = docVolume.hidden
-        if (docVolume.calMin !== undefined && docVolume.calMax !== undefined) {
-          settings.window = { min: docVolume.calMin, max: docVolume.calMax }
-        }
-        if (Object.keys(settings).length > 0) nextSettings[newId] = settings
-
-        if (docVolume.role === 'base') nextBase = newId
-        else if (docVolume.role === 'overlay') nextOverlays.add(newId)
-        else if (docVolume.role === 'atlas') nextAtlas = newId
-      }
-
-      setLayerSettings(nextSettings)
-      setOverlayIds(nextOverlays)
-      setAtlasId(nextAtlas)
+      const applied = applyBundleView(view, (recordedId) => {
+        const id = remap.get(recordedId) ?? recordedId
+        return loadedIds.has(id) ? id : undefined
+      })
+      const drawing = bundle.manifest.resources.find(
+        (resource) =>
+          resource.kind === 'drawing' &&
+          resource.base &&
+          remap.get(resource.base) === applied.baseId,
+      )
+      const drawingFile = drawing
+        ? await readMaskFile(`${bundle.bundlePath}/${drawing.data}`)
+        : null
+      const bundleMeshes = await readBundleMeshes(
+        bundle.bundlePath,
+        bundle.manifest.resources.filter(
+          (resource) => resource.kind === 'mesh',
+        ),
+        view.meshes ?? [],
+      )
+      setMeshes(bundleMeshes)
+      setLayerSettings(applied.layerSettings)
+      setOverlayIds(applied.overlayIds)
+      setAtlasId(applied.atlasId)
       if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
       setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
+      if (view.shading) setShading(view.shading)
+      setSubvolumeStack(applied.stack?.levels ?? [])
+      setStackBlocks(applied.stack?.blocks ?? {})
       applyClipPlanes(view.scene?.clipPlanes ?? [])
-      if (nextBase) setSelectedId(nextBase)
-      setAnnotationsTarget(
-        nextBase && view.annotations?.length
-          ? { baseId: nextBase, json: JSON.stringify(view.annotations) }
-          : null,
-      )
-      const crosshair = view.scene?.crosshairPos
-      if (Array.isArray(crosshair) && crosshair.length >= 3) {
-        setCrosshairTarget({ mm: [crosshair[0], crosshair[1], crosshair[2]] })
-      }
+      if (applied.baseId) setSelectedId(applied.baseId)
+      setViewTarget({
+        drawing: drawingFile,
+        annotations: Object.fromEntries(
+          Object.entries(applied.annotations).map(([id, shapes]) => [
+            id,
+            JSON.stringify(shapes),
+          ]),
+        ),
+        camera: applied.camera,
+        hiddenLabels: applied.hiddenLabels,
+        controls: view.controls ?? null,
+      })
+      if (applied.crosshairPos) setCrosshairTarget({ mm: applied.crosshairPos })
     }
 
     const failures = bundleVerifyFailures(bundle.verification)
@@ -1854,7 +1917,7 @@ export function App(): JSX.Element {
         : ''
     const source = isDocumentPath(path) ? 'document' : 'bundle'
     setStatus(
-      `Imported ${volumeCountLabel(bundle.manifest.resources.length)} from ${source}.${integrity}`,
+      `Imported ${volumeCountLabel(volumes.length)} from ${source}.${integrity}`,
       failures.length > 0 ? 'error' : 'success',
     )
     return true
@@ -2655,7 +2718,8 @@ export function App(): JSX.Element {
                   blocks={blocks}
                   clipPlanes={clipPlanes}
                   crosshairTarget={crosshairTarget}
-                  annotationsTarget={annotationsTarget}
+                  viewTarget={viewTarget}
+                  snapshotRef={stageSnapshotRef}
                   isActive={mouseContext === 'niivue'}
                   item={selected}
                   layers={renderLayers}

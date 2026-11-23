@@ -935,6 +935,73 @@ pub fn register_overlay_volume(
     })
 }
 
+/// A drawing or mesh the frontend staged (`stage_bundle_part`) for a bundle:
+/// its bytes live only in the webview, so they arrive ahead of the export.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePart {
+    pub sha256: String,
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+fn parts_dir() -> PathBuf {
+    cache_root().join("parts")
+}
+
+/// Stage a part's bytes under its SHA-256, which the export then names; Rust
+/// never takes a path for one. Parts older than an hour are dropped here.
+pub fn stage_bundle_part(bytes: &[u8]) -> Result<String, String> {
+    let dir = parts_dir();
+    fs::create_dir_all(&dir).map_err(|error| format!("stage_bundle_part: {error}"))?;
+    for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age.as_secs() > 3600));
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    let sha = format!("{:x}", Sha256::digest(bytes));
+    let dest = dir.join(&sha);
+    if dest.is_file() {
+        return Ok(sha);
+    }
+    // Per call, so two stagings of the same bytes don't share a temp file.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = dir.join(format!("{sha}.{call}.partial"));
+    fs::write(&temp, bytes)
+        .and_then(|()| fs::rename(&temp, &dest))
+        .map_err(|error| format!("stage_bundle_part: {error}"))?;
+    Ok(sha)
+}
+
+/// The staged file behind `part`; refuses kinds a bundle doesn't carry and
+/// anything but a bare SHA-256, so a part can't name a path.
+fn staged_part(part: &BundlePart) -> Result<PathBuf, String> {
+    if !matches!(part.kind.as_str(), "drawing" | "mesh") {
+        return Err(format!("export_bundle: unknown part kind {}", part.kind));
+    }
+    let is_sha = part.sha256.len() == 64
+        && part
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let path = parts_dir().join(&part.sha256);
+    if !is_sha || !path.is_file() {
+        return Err(format!(
+            "export_bundle: {} wasn't staged; try again",
+            part.name
+        ));
+    }
+    Ok(path)
+}
+
 /// Result of writing a portable `.nvbundle` to disk.
 pub struct BundleExportResult {
     pub bundle_path: String,
@@ -955,11 +1022,18 @@ pub struct BundleExportResult {
 pub fn share_cache_key(
     handle: &ServerHandle,
     volume_ids: &[String],
+    parts: &[BundlePart],
     view: &Value,
 ) -> String {
     let volumes = lock_recover(&handle.volumes);
     let mut hasher = DefaultHasher::new();
-    view.get("annotations").map(|a| a.to_string()).hash(&mut hasher);
+    view.get("annotations")
+        .map(|a| a.to_string())
+        .hash(&mut hasher);
+    // Staged parts are new files each time, so their content hash is the key.
+    for part in parts {
+        (&part.id, &part.sha256).hash(&mut hasher);
+    }
     for id in volume_ids {
         id.hash(&mut hasher);
         if let Some(source) = volumes
@@ -1025,6 +1099,7 @@ pub fn export_bundle(
     handle: &ServerHandle,
     dest: &FsPath,
     volume_ids: &[String],
+    parts: &[BundlePart],
     view: &Value,
     created_at: &str,
 ) -> Result<BundleExportResult, String> {
@@ -1052,6 +1127,10 @@ pub fn export_bundle(
     if selected.is_empty() {
         return Err("export_bundle: none of the selected volumes have a source file".to_string());
     }
+    let staged = parts
+        .iter()
+        .map(|part| Ok((part, staged_part(part)?)))
+        .collect::<Result<Vec<_>, String>>()?;
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -1066,7 +1145,7 @@ pub fn export_bundle(
             .map(|name| name.to_string_lossy())
             .unwrap_or_default()
     ));
-    let written = write_bundle_zip(handle, &partial, &selected, view, created_at);
+    let written = write_bundle_zip(handle, &partial, &selected, &staged, view, created_at);
     let total_bytes = match written {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -1096,6 +1175,7 @@ fn write_bundle_zip(
     handle: &ServerHandle,
     dest: &FsPath,
     selected: &[VolumeEntry],
+    parts: &[(&BundlePart, PathBuf)],
     view: &Value,
     created_at: &str,
 ) -> Result<u64, String> {
@@ -1118,14 +1198,20 @@ fn write_bundle_zip(
             .source_path
             .as_ref()
             .expect("source_path presence checked above");
-        let (rel, bytes, sha) =
-            add_source_to_zip(&mut zip, source, options, &mut used_names, "volume.nii")?;
+        let rel = format!(
+            "data/{}",
+            unique_bundle_name(source, &mut used_names, "volume.nii")
+        );
+        let (bytes, sha) = add_source_to_zip(&mut zip, source, &rel, options)?;
         total_bytes += bytes;
 
         let mut sidecars: Vec<Value> = Vec::new();
         for sidecar in &entry.sidecar_paths {
-            let (sc_rel, sc_bytes, sc_sha) =
-                add_source_to_zip(&mut zip, sidecar, options, &mut used_names, "sidecar.json")?;
+            let sc_rel = format!(
+                "data/{}",
+                unique_bundle_name(sidecar, &mut used_names, "sidecar.json")
+            );
+            let (sc_bytes, sc_sha) = add_source_to_zip(&mut zip, sidecar, &sc_rel, options)?;
             total_bytes += sc_bytes;
             sidecars.push(json!({
                 "name": file_name_or(sidecar, "sidecar.json"),
@@ -1149,6 +1235,31 @@ fn write_bundle_zip(
             "derivedFrom": entry.derived_from,
             "derivation": entry.derivation,
             "sidecars": sidecars,
+        }));
+    }
+
+    // Out of data/, which an import opens as a dataset: a drawing there would
+    // list as a volume.
+    for (part, source) in parts {
+        let dir = if part.kind == "mesh" {
+            "meshes"
+        } else {
+            "drawings"
+        };
+        let rel = format!(
+            "{dir}/{}",
+            unique_bundle_name(FsPath::new(&part.name), &mut used_names, &part.kind)
+        );
+        let (bytes, sha) = add_source_to_zip(&mut zip, source, &rel, options)?;
+        total_bytes += bytes;
+        manifest_volumes.push(json!({
+            "id": part.id,
+            "kind": part.kind,
+            "label": part.name,
+            "base": part.base,
+            "data": rel,
+            "sha256": sha,
+            "bytes": bytes,
         }));
     }
 
@@ -1605,13 +1716,10 @@ fn invert_3x3(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
 fn add_source_to_zip(
     zip: &mut ZipWriter<File>,
     source: &FsPath,
+    entry: &str,
     options: SimpleFileOptions,
-    used_names: &mut HashSet<String>,
-    fallback: &str,
-) -> Result<(String, u64, String), String> {
-    let name = unique_bundle_name(source, used_names, fallback);
-    let entry = format!("data/{name}");
-    zip.start_file(&entry, options)
+) -> Result<(u64, String), String> {
+    zip.start_file(entry, options)
         .map_err(|error| format!("export_bundle: zip {entry}: {error}"))?;
 
     let mut file = File::open(source)
@@ -1631,7 +1739,7 @@ fn add_source_to_zip(
             .map_err(|error| format!("export_bundle: write {entry}: {error}"))?;
         total += read as u64;
     }
-    Ok((entry, total, format!("{:x}", hasher.finalize())))
+    Ok((total, format!("{:x}", hasher.finalize())))
 }
 
 /// Stream a file through SHA-256 without holding it in memory (volumes are big).
@@ -5415,6 +5523,63 @@ mod tests {
         assert!(check(required).contains("org.lab.warp"));
         assert!(check_manifest(&json!({ "nvbundle": "nvd" })).is_err());
         assert!(check_manifest(&json!({ "nvbundle": "2", "x-later": true })).is_ok());
+    }
+
+    #[test]
+    fn staged_parts_travel_in_the_bundle_and_key_its_cache() {
+        let dir = scratch_dir("bundle-parts");
+        write_nifti(&dir.join("t1.nii.gz"), [4, 4, 4], 7);
+        let handle = open_offline(&json!({ "volumes": [dir.join("t1.nii.gz")] })).unwrap();
+        let ids: Vec<String> = lock_recover(&handle.volumes)
+            .iter()
+            .map(|v| v.id.clone())
+            .collect();
+        let part = |kind: &str, id: &str, name: &str, bytes: &[u8]| BundlePart {
+            sha256: stage_bundle_part(bytes).unwrap(),
+            kind: kind.to_string(),
+            id: id.to_string(),
+            name: name.to_string(),
+            base: (kind == "drawing").then(|| ids[0].clone()),
+        };
+        let parts = [
+            part("drawing", "t1_drawing", "t1_drawing.nii", b"labels"),
+            part("mesh", "mesh-1", "lh.pial", b"surface"),
+            // The same file added twice.
+            part("mesh", "mesh-2", "lh.pial", b"surface"),
+        ];
+        let view = json!({ "version": 1 });
+        let zip_path = dir.join("parts.nvbundle");
+        export_bundle(
+            &handle,
+            &zip_path,
+            &ids,
+            &parts,
+            &view,
+            "2026-11-23T00:00:00Z",
+        )
+        .unwrap();
+        let read = read_bundle(&zip_path).unwrap();
+        assert_eq!(read["allVerified"], true);
+        let resources = read["manifest"]["resources"].as_array().unwrap();
+        let by_id = |id: &str| resources.iter().find(|r| r["id"] == id).unwrap();
+        assert_eq!(by_id("t1_drawing")["data"], "drawings/t1_drawing.nii");
+        assert_eq!(by_id("t1_drawing")["base"], ids[0].as_str());
+        assert_eq!(by_id("mesh-1")["data"], "meshes/lh.pial");
+        assert_eq!(by_id("mesh-2")["data"], "meshes/1-lh.pial");
+        let root = FsPath::new(read["bundlePath"].as_str().unwrap());
+        assert_eq!(fs::read(root.join("meshes/1-lh.pial")).unwrap(), b"surface");
+
+        let key = share_cache_key(&handle, &ids, &parts, &view);
+        let redrawn = [
+            part("drawing", "t1_drawing", "t1_drawing.nii", b"more"),
+            parts[1].clone(),
+            parts[2].clone(),
+        ];
+        assert_ne!(key, share_cache_key(&handle, &ids, &redrawn, &view));
+
+        let mut forged = parts[1].clone();
+        forged.sha256 = "../../etc/passwd".to_string();
+        assert!(export_bundle(&handle, &zip_path, &ids, &[forged], &view, "").is_err());
     }
 
     #[test]

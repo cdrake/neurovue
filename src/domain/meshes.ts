@@ -129,3 +129,32 @@ export function meshColorFromHex(hex: string): [number, number, number] {
     (value & 255) / 255,
   ]
 }
+
+/** A bundle's meshes, in its saved draw order and with their saved look. */
+export async function readBundleMeshes(
+  bundlePath: string,
+  resources: ReadonlyArray<{ id: string; data: string; label?: string }>,
+  display: ReadonlyArray<
+    Pick<MeshLayer, 'id' | 'color' | 'opacity' | 'visible'>
+  >,
+): Promise<MeshLayer[]> {
+  const ordered = display.flatMap((look) => {
+    const resource = resources.find((candidate) => candidate.id === look.id)
+    return resource ? [{ resource, look }] : []
+  })
+  return Promise.all(
+    ordered.map(async ({ resource, look }, index) => {
+      const mesh = await readMeshLayer(`${bundlePath}/${resource.data}`, index)
+      const name = resource.label ?? mesh.name
+      const { color, opacity, visible } = look
+      return {
+        ...mesh,
+        name,
+        file: new File([mesh.file], name),
+        color,
+        opacity,
+        visible,
+      }
+    }),
+  )
+}

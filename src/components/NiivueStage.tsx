@@ -6,6 +6,7 @@ import {
   subVolumeBox,
   type UIKitOverlayRenderer,
 } from '@niivue/niivue'
+import type { ControlValue } from '@niivue/nv-mcp/browser'
 import {
   UIKitDrawingSlices,
   type UIKitDrawingSource,
@@ -33,6 +34,7 @@ import {
 import type { BlockSettings } from '../domain/blocks'
 import { blocksAreTiled } from '../domain/blocks'
 import { BoxEditor, type BoxEditorHost } from '../domain/boxEditor'
+import type { BundleCamera } from '../domain/bundle'
 import type {
   Backend,
   ClipPlane,
@@ -52,6 +54,10 @@ import {
   type RenderShading,
   SHADING_PRESETS,
 } from '../domain/shading'
+import {
+  replayStageControls,
+  stageControlHint,
+} from '../domain/stageControlSurface'
 import {
   StageControls,
   type StageControlsActions,
@@ -77,6 +83,73 @@ export interface ResolvedWindow {
   robustMax?: number
 }
 
+/** A saved view's scene state, restored once its volumes have loaded. */
+export interface StageViewTarget {
+  /** getAnnotationsJSON per base volume id. */
+  annotations: Record<string, string>
+  camera: BundleCamera | null
+  hiddenLabels: Record<string, number[]>
+  controls: Record<string, ControlValue> | null
+  /** The live drawing over the primary base. */
+  drawing: File | null
+}
+
+/** The scene state a saved view keeps that React doesn't hold. */
+export interface StageSnapshot {
+  annotations: Record<string, unknown[]>
+  camera: BundleCamera | null
+  hiddenLabels: Record<string, number[]>
+  controls: Record<string, ControlValue>
+  /** The live drawing's NIfTI bytes, when there is one. */
+  drawing: (() => Promise<Uint8Array | null>) | null
+}
+
+function cameraOf(nv: NiiVueLike): BundleCamera | null {
+  const { azimuth, elevation, scaleMultiplier, pan2Dxyzmm } = nv
+  if (
+    azimuth === undefined ||
+    elevation === undefined ||
+    scaleMultiplier === undefined ||
+    pan2Dxyzmm?.length !== 4
+  ) {
+    return null
+  }
+  const [x, y, z, zoom] = Array.from(pan2Dxyzmm)
+  return { azimuth, elevation, scaleMultiplier, pan2Dxyzmm: [x, y, z, zoom] }
+}
+
+function applyViewTarget(
+  nv: NiiVueLike,
+  target: StageViewTarget,
+  layerIds: readonly string[],
+  controls: () => {
+    state: StageControlsState
+    actions: StageControlsActions
+  } | null,
+  onDrawingLoaded: () => void,
+): void {
+  const { camera } = target
+  if (camera) {
+    nv.azimuth = camera.azimuth
+    nv.elevation = camera.elevation
+    nv.scaleMultiplier = camera.scaleMultiplier
+    nv.pan2Dxyzmm = Float32Array.from(camera.pan2Dxyzmm)
+  }
+  for (const [id, hiddenLabels] of Object.entries(target.hiddenLabels)) {
+    const index = layerIds.indexOf(id)
+    if (index >= 0) {
+      void nv.setVolume?.(index, { hiddenLabels }).then(() => nv.drawScene())
+    }
+  }
+  if (target.controls) replayStageControls(controls, target.controls)
+  if (target.drawing) {
+    void nv.loadDrawing?.(target.drawing).then((loaded) => {
+      if (loaded) onDrawingLoaded()
+    })
+  }
+  nv.drawScene()
+}
+
 interface NiivueStageProps {
   item: DesktopItem | null
   layers: NiivueRenderLayer[]
@@ -100,9 +173,10 @@ interface NiivueStageProps {
   // A fresh object identity re-triggers the move (so going to the same
   // coordinate twice still fires).
   crosshairTarget?: { mm: [number, number, number] } | null
-  // Annotations (NiiVue's getAnnotationsJSON) restored from a bundle, applied
-  // whenever its base volume loads.
-  annotationsTarget?: { baseId: string; json: string } | null
+  // A saved view to restore once its volumes load; a fresh object re-applies.
+  viewTarget?: StageViewTarget | null
+  // Filled with a reader of the scene state a saved view keeps.
+  snapshotRef?: { current: (() => StageSnapshot) | null }
   onClipPlaneDepthChange: (planeId: string, depth: number) => void
   // Make a clip plane the active (on-screen depth-slider / wheel) target.
   onClipPlaneActivate?: (planeId: string) => void
@@ -191,6 +265,8 @@ interface NiiVueLike {
     // NiiVue's tiling plan (from chunkVolumeGrid). Absent ⇒ single-texture path.
     // Opaque here — NeuroVue only sets/clears it, never inspects it.
     chunkPlan?: ChunkPlan | undefined
+    // Label values the legend toggled off.
+    hiddenLabels?: number[]
     // Draw-time per-brick spacing for the tiled 3D render.
     chunkExplode?: NiiVueChunkExplode
     // Row-major voxel (RAS grid) to world-mm matrix.
@@ -239,6 +315,7 @@ interface NiiVueLike {
       // cal_min/cal_max are the NIfTI header fields and are ignored here.
       calMin?: number
       calMax?: number
+      hiddenLabels?: number[]
     },
   ): Promise<unknown>
   moveCrosshairInVox?(di: number, dj: number, dk: number): void
@@ -323,6 +400,9 @@ interface NiiVueLike {
   loadDrawing?(source: File): Promise<boolean>
   azimuth?: number
   elevation?: number
+  scaleMultiplier?: number
+  // 2D pan (x, y, z mm) and zoom (w).
+  pan2Dxyzmm?: ArrayLike<number>
   volumeIllumination?: number
   volumeGradientOpacity?: number
   volumeSilhouette?: number
@@ -648,7 +728,8 @@ export function NiivueStage({
   onShadingChange,
   meshes,
   crosshairTarget,
-  annotationsTarget,
+  viewTarget,
+  snapshotRef,
   onClipPlaneDepthChange,
   onClipPlaneActivate,
   onClipPlaneCycle,
@@ -731,6 +812,8 @@ export function NiivueStage({
     null,
   )
   const isAttachingRef = useRef(false)
+  // A saved view that arrived while its volumes were loading.
+  const pendingViewRef = useRef<StageViewTarget | null>(null)
   // Current crosshair location (mirrored from NiiVue) — drives the touch slice
   // slider so it stays in sync with clicks/paging from any source.
   const [location, setLocation] = useState<NiiVueLocation | null>(null)
@@ -1049,6 +1132,17 @@ export function NiivueStage({
         const crosshair = pendingCrosshairRef.current
         pendingCrosshairRef.current = null
         if (crosshair) nv.setCrosshairPos?.(crosshair.mm)
+        const view = pendingViewRef.current
+        pendingViewRef.current = null
+        if (view) {
+          applyViewTarget(
+            nv,
+            view,
+            loadedLayerIdsRef.current,
+            () => stageControlsInputRef.current,
+            () => setHasDrawing(true),
+          )
+        }
         // Volumes (and their robust-range stats) are now loaded; re-run the
         // in-place display effect so threshold/window defaults can read them.
         if (!cancelled) setLoadedVersion((version) => version + 1)
@@ -1525,19 +1619,31 @@ export function NiivueStage({
   }, [crosshairTarget])
 
   // An opened bundle's annotations replace what this session drew. Runs after
-  // the attach effect, so a reload it causes loads these. A bundle opened over
-  // volumes already shown reloads nothing, so apply them here too.
+  // the attach effect, so a reload it causes loads these and applies the rest
+  // of the view once loaded. A bundle opened over volumes already shown
+  // reloads nothing, so apply it here.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only a new target applies; a load applies it in attach.
   useEffect(() => {
-    if (!annotationsTarget) return
-    annotationsByBaseRef.current = new Map([
-      [annotationsTarget.baseId, annotationsTarget.json],
-    ])
+    if (!viewTarget) return
+    annotationsByBaseRef.current = new Map(
+      Object.entries(viewTarget.annotations),
+    )
     const nv = nvRef.current
-    if (!nv?.volumes?.length) return
-    if (annotationsTarget.baseId !== primaryItem?.id) return
-    nv.loadAnnotationsJSON?.(annotationsTarget.json)
-  }, [annotationsTarget])
+    if (!nv?.volumes?.length || isAttachingRef.current) {
+      pendingViewRef.current = viewTarget
+      return
+    }
+    if (primaryItem) {
+      nv.loadAnnotationsJSON?.(viewTarget.annotations[primaryItem.id] ?? '[]')
+    }
+    applyViewTarget(
+      nv,
+      viewTarget,
+      loadedLayerIdsRef.current,
+      () => stageControlsInputRef.current,
+      () => setHasDrawing(true),
+    )
+  }, [viewTarget])
 
   // Block tiling: (re)build or clear each loaded volume's chunk plan. Keyed on
   // the grid and on loadedVersion — the attach effect rebuilds the instance on a
@@ -2204,6 +2310,35 @@ export function NiivueStage({
   stageControlsInputRef.current = {
     state: stageControlsState,
     actions: stageControlsActions,
+  }
+  if (snapshotRef) {
+    snapshotRef.current = () => {
+      const nv = nvRef.current
+      const annotations = new Map(annotationsByBaseRef.current)
+      if (nv?.volumes?.length && primaryItem && !isAttachingRef.current) {
+        annotations.set(primaryItem.id, nv.getAnnotationsJSON?.() ?? '[]')
+      }
+      const hiddenLabels: Record<string, number[]> = {}
+      loadedLayerIdsRef.current.forEach((id, index) => {
+        const labels = nv?.volumes?.[index]?.hiddenLabels
+        if (labels?.length) hiddenLabels[id] = [...labels]
+      })
+      return {
+        annotations: Object.fromEntries(
+          [...annotations].map(([id, json]) => [id, JSON.parse(json)]),
+        ),
+        camera: nv ? cameraOf(nv) : null,
+        hiddenLabels,
+        controls: stageControlHint(stageControlsState),
+        drawing:
+          nv && hasDrawing
+            ? async () => {
+                const bytes = await nv.saveDrawing?.('')
+                return bytes instanceof Uint8Array ? bytes : null
+              }
+            : null,
+      }
+    }
   }
   // Turning Magnify off hides a lens still showing under the pointer.
   useEffect(() => {
