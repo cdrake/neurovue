@@ -2,6 +2,7 @@ import type { RunStructured } from '@medview/neuroflow-react'
 import type { NiiVueLocation } from '@niivue/niivue'
 import { isTauri } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { ask } from '@tauri-apps/plugin-dialog'
 import {
   AlertTriangle,
   Boxes,
@@ -106,7 +107,7 @@ import {
   buildBundleViewState,
   bundleVerifyFailures,
   bundleVolumeIds,
-  confirmationCode,
+  clearStoredData,
   type DrawingBase,
   type ExportBundleResult,
   enableReceiving,
@@ -992,6 +993,27 @@ export function App(): JSX.Element {
     }
   }
 
+  async function clearStoredFiles(): Promise<void> {
+    const confirmed = await ask(
+      'Delete the copies NeuroVue keeps of opened, received and bundled files, its cache, and saved drawings and derivatives? Your own folders are not touched.',
+      { title: 'Clear stored data', kind: 'warning', okLabel: 'Delete' },
+    )
+    if (!confirmed) return
+    try {
+      const cleared = await clearStoredData()
+      // Windows paths come back with backslashes.
+      const slashed = (path: string) => path.replace(/\\/g, '/')
+      const dirs = cleared.map((dir) => `${slashed(dir)}/`)
+      for (const path of recentDatasets) {
+        if (dirs.some((dir) => slashed(path).startsWith(dir)))
+          removeRecent(path)
+      }
+      setStatus('Stored data cleared.', 'success')
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), 'error')
+    }
+  }
+
   function toggleOverlayLayer(itemId: string): void {
     setOverlayIds((current) => {
       const next = new Set(current)
@@ -1258,15 +1280,13 @@ export function App(): JSX.Element {
       `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
         `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
     )
-    const code = confirmationCode()
     try {
       const result = await sendViewToDevice({
         target,
         name: shareName,
         volumeIds,
         view,
-        code,
-        onOffered: () =>
+        onOffered: (code) =>
           setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
       })
       setStatus(
@@ -1690,9 +1710,18 @@ export function App(): JSX.Element {
   // Each volume that arrived in a bundle → its entry there, which a drawing
   // made on it names so the Mac that sent it can find the original.
   const drawingBasesRef = useRef(new Map<string, DrawingBase>())
-  const drawingBase = selected
-    ? drawingBasesRef.current.get(selected.id)
-    : undefined
+  // A block cut from one of them counts too: the Mac pads the drawing back out.
+  let drawingBase: DrawingBase | undefined
+  for (
+    let item = selected ?? undefined;
+    item && !drawingBase;
+    item =
+      item.derivation?.operation === 'block'
+        ? items.find((candidate) => candidate.id === item?.derivedFrom)
+        : undefined
+  ) {
+    drawingBase = drawingBasesRef.current.get(item.id)
+  }
 
   // Files that arrive once the page is up. Until startup has looked, they wait
   // for the effect above, which takes them first.
@@ -1880,11 +1909,16 @@ export function App(): JSX.Element {
         )
         return
       }
-      const code = confirmationCode()
-      setStatus(
-        `Waiting for ${target.name} to accept the drawing (code ${code})…`,
-      )
-      await sendDrawingToDevice({ target, base: drawingBase, drawing, code })
+      setStatus(`Sending the drawing to ${target.name}…`)
+      await sendDrawingToDevice({
+        target,
+        base: drawingBase,
+        drawing,
+        onOffered: (code) =>
+          setStatus(
+            `Waiting for ${target.name} to accept the drawing (code ${code})…`,
+          ),
+      })
       setStatus(`Sent the drawing to ${target.name}.`, 'success')
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error), 'error')
@@ -2050,6 +2084,22 @@ export function App(): JSX.Element {
                   )}
                   <span className="nv-recent-item-name">Open bundle…</span>
                 </button>
+                {showWelcome ? null : (
+                  <button
+                    className="nv-recent-item nv-recent-open"
+                    disabled={isBusyOpening}
+                    onClick={() => {
+                      setIsRecentMenuOpen(false)
+                      void clearAll()
+                    }}
+                    title="Close the dataset, overlays and meshes and return to the Welcome screen"
+                    type="button"
+                    role="menuitem"
+                  >
+                    <X size={14} />
+                    <span className="nv-recent-item-name">Close dataset</span>
+                  </button>
+                )}
                 {samplePath ? (
                   <button
                     className="nv-recent-item nv-recent-open"
@@ -2198,7 +2248,6 @@ export function App(): JSX.Element {
                     <div className="nv-recent-item nv-share-looking">
                       <span className="nv-recent-item-path">
                         No device found. On an iPad, choose Receive from a Mac.
-                        Sends are unencrypted: trusted networks only.
                       </span>
                     </div>
                   ) : (
@@ -2347,6 +2396,9 @@ export function App(): JSX.Element {
           onOpenSample={samplePath ? () => void openSampleDataset() : null}
           onRemoveRecent={removeRecent}
           onReopenLastChange={setReopenLast}
+          onClearStoredData={
+            isTauri() ? () => void clearStoredFiles() : undefined
+          }
           onReceive={
             canTurnOnReceiving
               ? () => {
@@ -2889,17 +2941,10 @@ export function App(): JSX.Element {
             wants to send <strong>{sendOffer.offer.name}</strong> (
             {formatBundleBytes(sendOffer.offer.size)}).
           </p>
-          {sendOffer.offer.code ? (
-            <p>
-              Accept only if the sender shows code{' '}
-              <strong>{sendOffer.offer.code}</strong>.
-            </p>
-          ) : (
-            <p>
-              No confirmation code: accept only if you just sent this from your
-              own Mac.
-            </p>
-          )}
+          <p>
+            Accept only if the sender shows code{' '}
+            <strong>{sendOffer.offer.code}</strong>.
+          </p>
           <div className="nv-send-offer-actions">
             <button
               className="nv-tool-button"

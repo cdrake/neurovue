@@ -119,8 +119,9 @@ and send, receive and bundle export run as background tasks.
 
 Receiving from a Mac is opt-in: nothing listens, and there is no Local Network
 prompt, until you choose Receive from a Mac on Welcome or open Share. A
-`receive-enabled` marker in the data root remembers it. Each send shows the same
-4-digit code on both ends. Transfers are unencrypted, so use trusted networks only.
+`receive-enabled` marker in the data root remembers it. Transfers are encrypted
+(TLS 1.3), and each send shows the same 6-digit code on both ends: accept only
+when they match. Sending needs macOS and iOS for now.
 
 App Store blockers: privacy policy and support URLs (#80); a Mac App Store build
 (#93: sandbox, security-scoped bookmarks, helpers) is unresolved. macOS ships as

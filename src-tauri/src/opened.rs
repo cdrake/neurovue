@@ -63,6 +63,10 @@ pub(crate) fn take_opened_files(state: tauri::State<'_, OpenedFiles>) -> Vec<Str
 /// Where `keep` moves arrivals. Set only on iOS, so `keep` does nothing elsewhere.
 static RECEIVED_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+pub(crate) fn received_dir() -> Option<&'static PathBuf> {
+    RECEIVED_DIR.get()
+}
+
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 pub(crate) fn init_received_dir(dir: PathBuf) {
     let _ = RECEIVED_DIR.set(dir);

@@ -24,8 +24,8 @@ a working copy in its own app storage, which is removed with the app.
 Send to iPad moves a file from a Mac to an iPhone or iPad on the same local
 network. It happens only when you start it. The receiving device must turn on
 receiving and accept each transfer, and both screens show the same code. The
-transfer goes directly between the two devices and never through a server. It is
-not encrypted, so use it only on networks you trust.
+transfer goes directly between the two devices and never through a server, and
+is encrypted with TLS 1.3. Matching codes mean no one sits in between.
 
 ## AI agents (desktop)
 

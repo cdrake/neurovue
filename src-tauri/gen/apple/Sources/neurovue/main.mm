@@ -42,6 +42,11 @@ static void willConnect(id self, SEL _cmd, UIScene *scene, UISceneSession *sessi
 }
 
 static void setDelegateClass(id self, SEL _cmd, Class delegateClass) {
+	// tao 0.35.3 returns this configuration after releasing it (Retained::as_ptr
+	// on a dropped Retained), so UIKit gets a dead object on a device. Keep it
+	// alive until the run loop drains. shortcut: drop once tao returns it +0
+	// autoreleased.
+	CFAutorelease(CFRetain((__bridge CFTypeRef)self));
 	((void (*)(id, SEL, Class))originalSetDelegateClass)(self, _cmd, delegateClass);
 	if (!originalWillConnect && delegateClass) {
 		Method method = class_getInstanceMethod(delegateClass,

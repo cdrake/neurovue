@@ -11,7 +11,7 @@ use std::ffi::{c_char, c_void, CString};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const SERVICE_TYPE: &str = "_neurovue._tcp";
+const SERVICE_TYPE: &str = "_neurovue-tls._tcp";
 
 #[repr(C)]
 struct DnsServiceOpaque {

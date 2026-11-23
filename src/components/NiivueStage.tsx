@@ -6,12 +6,18 @@ import {
   subVolumeBox,
   type UIKitOverlayRenderer,
 } from '@niivue/niivue'
-import { UIKitMagnifierOverlay } from '@niivue/uikit'
+import {
+  UIKitDrawingSlices,
+  type UIKitDrawingSource,
+  UIKitMagnifierOverlay,
+} from '@niivue/uikit'
 import {
   type JSX,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
   useEffect,
+  useMemo,
+  useReducer,
   useRef,
   useState,
 } from 'react'
@@ -37,6 +43,7 @@ import type {
 import { fetchVolumeMetadata, rawVolumeUrl } from '../domain/desktop'
 import { interpolateMaskSlices } from '../domain/maskInterpolation'
 import type { MeshLayer } from '../domain/meshes'
+import { markPaintedSlices, sliceRuns } from '../domain/paintedSlices'
 import { listenToPencil, pencilFeedback } from '../domain/pencil'
 import { attachPointLabels } from '../domain/pointLabels'
 import { gzip, pickNifti, saveFile } from '../domain/saveFile'
@@ -188,6 +195,11 @@ interface NiiVueLike {
     chunkExplode?: NiiVueChunkExplode
     // Row-major voxel (RAS grid) to world-mm matrix.
     matRAS?: ArrayLike<number>
+    // Native voxels and the map from a RAS voxel to their index.
+    img?: ArrayLike<number> | null
+    permRAS?: number[]
+    img2RASstart?: number[]
+    img2RASstep?: number[]
   }>
   // Exploded-brick picking and focus (see domain/blockPick).
   pickExplodedBlock?(clientX: number, clientY: number): ExplodedBlockPick | null
@@ -754,6 +766,12 @@ export function NiivueStage({
   const [brushSize, setBrushSize] = useState<number>(DRAW_SIZES[1].size)
   // Whether the current viewer holds a drawing, for Undo/Clear/Send.
   const [hasDrawing, setHasDrawing] = useState(false)
+  // Which slices hold the live drawing; bumps drawingRevision on each edit.
+  const drawingSlicesRef = useRef<UIKitDrawingSlices | null>(null)
+  const [drawingRevision, bumpDrawingRevision] = useReducer(
+    (revision: number) => revision + 1,
+    0,
+  )
   const maskErrorTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const primaryItem = layers[0]?.item ?? item
   // Meshes with no volume still need a viewer; with volumes, adding a mesh
@@ -813,6 +831,7 @@ export function NiivueStage({
     let shadingListener:
       | ((event: CustomEvent<{ property: string; value: unknown }>) => void)
       | null = null
+    let drawingSlices: UIKitDrawingSlices | null = null
     let annotationLayer: AnnotationLayer | null = null
     let unregisterAnnotationLayer: (() => void) | null = null
     let detachPointLabels: (() => void) | null = null
@@ -984,6 +1003,11 @@ export function NiivueStage({
             })
           }
           nv.addEventListener('change', shadingListener)
+          drawingSlices = new UIKitDrawingSlices(
+            nv as unknown as UIKitDrawingSource,
+            bumpDrawingRevision,
+          )
+          drawingSlicesRef.current = drawingSlices
         }
         attachAnnotationLayer(nv)
         const attachedCanvas = activeCanvasFor(nv, canvas)
@@ -1075,6 +1099,10 @@ export function NiivueStage({
         }
         if (shadingListener) {
           localNv.removeEventListener?.('change', shadingListener)
+        }
+        drawingSlices?.destroy()
+        if (drawingSlicesRef.current === drawingSlices) {
+          drawingSlicesRef.current = null
         }
         localNv.destroy?.()
       }
@@ -1315,25 +1343,27 @@ export function NiivueStage({
 
   // A double-tap or squeeze of the pencil does what the person chose for it
   // in Settings: the eraser switch toggles pen and eraser, and a palette
-  // steps to the next pen color, since there's no palette here to show.
+  // shows or hides the tools.
   useEffect(() => {
-    if (!isDrawActive) return
+    if (!isDrawActive && !isShapesActive) return
     return listenToPencil((action, at) => {
-      if (action === 'switchEraser' || action === 'switchPrevious') {
+      if (
+        isDrawActive &&
+        (action === 'switchEraser' || action === 'switchPrevious')
+      ) {
         setDrawTool((current) => (current === 'eraser' ? 'pen' : 'eraser'))
       } else if (
         action === 'showColorPalette' ||
         action === 'showInkAttributes' ||
         action === 'showContextualPalette'
       ) {
-        setDrawTool('pen')
-        setPenValue((current) => (current % DRAW_COLORS.length) + 1)
+        stageControlsRef.current?.toggleTools()
       } else {
         return
       }
       pencilFeedback('alignment', at)
     })
-  }, [isDrawActive])
+  }, [isDrawActive, isShapesActive])
 
   // From the 3D render, drawing or shaping starts on one big axial slice; a
   // box can be picked in either.
@@ -1358,6 +1388,8 @@ export function NiivueStage({
     nv.drawAddUndoBitmap?.()
     img.fill(0)
     nv.refreshDrawing?.()
+    drawingSlicesRef.current?.update()
+    bumpDrawingRevision()
   }
 
   async function sendDrawing(): Promise<void> {
@@ -1435,6 +1467,8 @@ export function NiivueStage({
     nv.drawAddUndoBitmap?.()
     img.set(bitmap)
     nv.refreshDrawing?.()
+    drawingSlicesRef.current?.update()
+    bumpDrawingRevision()
   }
 
   // The painted mask, as a uint8 NIfTI on the base volume's grid.
@@ -1933,6 +1967,59 @@ export function NiivueStage({
   const showSliceSlider =
     sliceAxis !== undefined && !!primaryItem && sliceMax > 0
 
+  // Which slices hold a loaded drawing layer, rescanned only on a load.
+  const [layerSliceFlags, setLayerSliceFlags] = useState<Uint8Array | null>(
+    null,
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rescan on a load, not on every display change that rebuilds `layers`.
+  useEffect(() => {
+    const nv = nvRef.current
+    const dimsRAS = nv?.volumes?.[0]?.dimsRAS
+    if (!nv || sliceAxis === undefined || !dimsRAS) {
+      setLayerSliceFlags(null)
+      return
+    }
+    const dims = [dimsRAS[1], dimsRAS[2], dimsRAS[3]] as const
+    const flags = new Uint8Array(dims[sliceAxis])
+    loadedLayerIdsRef.current.forEach((id, index) => {
+      const layer = layers.find((candidate) => candidate.item.id === id)
+      const volume = nv.volumes?.[index]
+      if (layer?.item.derivation?.operation !== 'drawing' || !volume?.img)
+        return
+      // shortcut: only drawings on the base's RAS grid (the Mac pads them to it); resample others if needed.
+      if (volume.dimsRAS?.join() !== dimsRAS.join()) return
+      const { permRAS, img2RASstart, img2RASstep } = volume
+      const isRAS = !permRAS || permRAS.join() === '1,2,3'
+      if (isRAS || !img2RASstart || !img2RASstep) {
+        markPaintedSlices(flags, volume.img, dims, sliceAxis)
+      } else {
+        markPaintedSlices(
+          flags,
+          volume.img,
+          dims,
+          sliceAxis,
+          img2RASstart[0] + img2RASstart[1] + img2RASstart[2],
+          [img2RASstep[0], img2RASstep[1], img2RASstep[2]],
+        )
+      }
+    })
+    setLayerSliceFlags(flags)
+  }, [sliceAxis, loadedVersion])
+
+  // Loaded drawing layers plus the live drawing, so a drawing made on
+  // another slice (or another device) can be found on the slider.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: drawingRevision and hasDrawing refresh after an edit.
+  const sliceMarks = useMemo(() => {
+    if (sliceAxis === undefined || !layerSliceFlags) return []
+    const flags = layerSliceFlags.slice()
+    for (const [first, last] of drawingSlicesRef.current?.runs(
+      sliceAxis as 0 | 1 | 2,
+    ) ?? []) {
+      flags.fill(1, first, last + 1)
+    }
+    return sliceRuns(flags)
+  }, [sliceAxis, layerSliceFlags, drawingRevision, hasDrawing])
+
   function pageToSlice(target: number): void {
     const nv = nvRef.current
     if (sliceAxis === undefined || !nv?.moveCrosshairInVox) return
@@ -2039,6 +2126,7 @@ export function NiivueStage({
           label: currentViewLabel.replace(/ slice$/, ''),
           value: sliceValue,
           max: sliceMax,
+          marks: sliceMarks,
         }
       : null,
     clip: showClipControl

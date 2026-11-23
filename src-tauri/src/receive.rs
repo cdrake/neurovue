@@ -2,18 +2,21 @@
 // or declines it here, and only then is it uploaded and opened. Unlike the
 // volume server (127.0.0.1 only) this listens on the network, so nothing is
 // written until the person has said yes, and only file types the page opens
-// are offered at all.
+// are offered at all. Connections arrive over TLS (tls.rs), each with the
+// code both ends show.
 //
 // POST /offer {name, from, size} waits for the answer (up to OFFER_TIMEOUT)
 // and returns a one-time upload token; PUT /upload/:token streams the file
 // into the inbox and hands it to opened.rs like any other received file.
+// Only macOS and iOS receive for now: their TLS is the OS's.
+#![cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
 
 use axum::{
     body::Body,
-    extract::{ConnectInfo, Path, State},
+    extract::{Path, State},
     http::StatusCode,
     routing::{post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -41,9 +44,13 @@ struct OfferRequest {
     name: String,
     from: String,
     size: u64,
-    /// Shown on the sender too, so the person can tell their send from a
-    /// look-alike on the same network.
-    #[serde(default)]
+}
+
+/// What the TLS layer knows about the connection a request came on.
+#[derive(Clone)]
+struct Session {
+    peer: String,
+    /// Shown on the sender too: a match means no one sits in between.
     code: String,
 }
 
@@ -74,8 +81,9 @@ pub(crate) struct Receiver {
     pending: Mutex<Option<Pending>>,
     /// Accepted offers, by upload token, until their upload starts.
     uploads: Mutex<HashMap<String, Upload>>,
-    /// The port listening now, and what stops it when `start` replaces it.
-    listening: Mutex<Option<(u16, tokio::sync::oneshot::Sender<()>)>>,
+    /// Listening now; replacing it stops the one before.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    listening: Mutex<Option<crate::tls::Listener>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -85,68 +93,75 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Starts listening on the network and returns the port, for advertising.
-/// Called again, it replaces the server listening before (see `live_port`).
+/// Called again, it replaces the listener before (see `live_port`).
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub(crate) fn start(app: &tauri::AppHandle) -> std::io::Result<u16> {
-    let listener = std::net::TcpListener::bind(("0.0.0.0", 0))?;
-    listener.set_nonblocking(true)?;
-    let port = listener.local_addr()?.port();
-    let receiver = match app.try_state::<Arc<Receiver>>() {
-        Some(receiver) => receiver.inner().clone(),
-        None => {
-            let receiver = Arc::new(Receiver {
-                app: app.clone(),
-                inbox: crate::volumetric_server::data_root().join("received"),
-                pending: Mutex::new(None),
-                uploads: Mutex::new(HashMap::new()),
-                listening: Mutex::new(None),
-            });
-            app.manage(receiver.clone());
-            receiver
-        }
-    };
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    if let Some((_, previous)) = lock(&receiver.listening).replace((port, stop)) {
-        let _ = previous.send(());
-    }
-
+    let existing = app
+        .try_state::<Arc<Receiver>>()
+        .map(|state| state.inner().clone());
+    let receiver = existing.clone().unwrap_or_else(|| {
+        Arc::new(Receiver {
+            app: app.clone(),
+            inbox: crate::volumetric_server::data_root().join("received"),
+            pending: Mutex::new(None),
+            uploads: Mutex::new(HashMap::new()),
+            listening: Mutex::new(None),
+        })
+    });
     let router = Router::new()
         .route("/offer", post(offer))
         .route("/upload/:token", put(upload))
-        .with_state(receiver);
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .thread_name("neurovue-receive")
-            .build()
-            .expect("build NeuroVue receive runtime");
-        runtime.block_on(async move {
-            let listener = tokio::net::TcpListener::from_std(listener)
-                .expect("adopt NeuroVue receive listener");
-            let serve = axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(async {
-                let _ = stopped.await;
-            });
-            if let Err(error) = serve.await {
-                eprintln!("NeuroVue receive server stopped: {error}");
-            }
-        });
-    });
+        .with_state(receiver.clone());
+    let listener = crate::tls::listen(move |accepted| {
+        tauri::async_runtime::spawn(serve(router.clone(), accepted));
+    })?;
+    let port = listener.port;
+    lock(&receiver.listening).replace(listener);
+    // Managed only once listening: lib.rs reads that as running.
+    if existing.is_none() {
+        app.manage(receiver);
+    }
     Ok(port)
 }
 
-/// The port this device receives on, if it still answers: iOS can take a
-/// suspended app's listening socket.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) fn start(_app: &tauri::AppHandle) -> std::io::Result<u16> {
+    Err(std::io::Error::other("Send to iPad needs macOS or iOS"))
+}
+
+/// Serves one TLS connection's requests.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+async fn serve(router: Router, accepted: crate::tls::Accepted) {
+    let stream = std::os::unix::net::UnixStream::from(accepted.stream);
+    let Ok(stream) = stream
+        .set_nonblocking(true)
+        .and_then(|()| tokio::net::UnixStream::from_std(stream))
+    else {
+        return;
+    };
+    let session = Session {
+        peer: accepted.peer,
+        code: accepted.code,
+    };
+    let service = hyper_util::service::TowerToHyperService::new(router.layer(Extension(session)));
+    if let Err(error) = hyper::server::conn::http1::Builder::new()
+        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+        .await
+    {
+        eprintln!("NeuroVue receive: {error}");
+    }
+}
+
+/// The port this device receives on, if it still listens: iOS can take a
+/// suspended app's listener.
 #[cfg(target_os = "ios")]
 pub(crate) fn live_port(app: &tauri::AppHandle) -> Option<u16> {
     let receiver = app.try_state::<Arc<Receiver>>()?;
-    let port = lock(&receiver.listening).as_ref()?.0;
-    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
-    std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500))
-        .ok()
-        .map(|_| port)
+    let listening = lock(&receiver.listening);
+    listening
+        .as_ref()
+        .filter(|listener| listener.alive())
+        .map(|listener| listener.port)
 }
 
 /// The page's answer to the offer it was shown.
@@ -187,7 +202,7 @@ impl Drop for OfferGuard<'_> {
 
 async fn offer(
     State(receiver): State<Arc<Receiver>>,
-    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    Extension(session): Extension<Session>,
     Json(request): Json<OfferRequest>,
 ) -> Result<Json<Value>, StatusCode> {
     let name = offered_name(&request.name).ok_or(StatusCode::UNSUPPORTED_MEDIA_TYPE)?;
@@ -217,13 +232,8 @@ async fn offer(
                 name: name.clone(),
                 from: request.from.chars().take(80).collect(),
                 size: request.size,
-                code: request
-                    .code
-                    .chars()
-                    .filter(char::is_ascii_digit)
-                    .take(8)
-                    .collect(),
-                address: peer.ip().to_canonical().to_string(),
+                code: session.code,
+                address: session.peer,
             },
         )
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
@@ -363,6 +373,30 @@ fn random_token() -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[test]
+    fn requests_over_tls_see_the_session_code() {
+        use std::io::{Read, Write};
+        let router = Router::new().route(
+            "/offer",
+            post(|Extension(session): Extension<Session>| async move { session.code }),
+        );
+        let listener = crate::tls::listen(move |accepted| {
+            tauri::async_runtime::spawn(serve(router.clone(), accepted));
+        })
+        .unwrap();
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], listener.port));
+        let mut sender = crate::tls::connect(address, None, Duration::from_secs(5)).unwrap();
+        sender
+            .stream
+            .write_all(b"POST /offer HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        sender.stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with(&sender.code), "{response}");
+    }
 
     #[test]
     fn offered_names_keep_only_openable_files() {
