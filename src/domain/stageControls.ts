@@ -250,6 +250,10 @@ export class StageControls implements UIKitOverlayRenderer {
   private layoutSignature = ''
   // The tools fold away to show the image (a phone's pane is mostly tools).
   private toolsHidden = false
+  // A short pane can't fit both the tool palette and the tool row it covers
+  // (Draw, Send, Save mask): there Hide folds only the palette.
+  private paletteCrowds = false
+  private paletteFolded = false
   private host: UIKitHost | null = null
 
   constructor(font: UIKitFont) {
@@ -313,7 +317,14 @@ export class StageControls implements UIKitOverlayRenderer {
 
   /** Fold the tools away to show the image, or bring them back. */
   toggleTools(): void {
-    this.toolsHidden = !this.toolsHidden
+    if (this.paletteFolded) this.paletteFolded = false
+    else this.toolsHidden = !this.toolsHidden
+    this.layoutSignature = ''
+    this.controls.requestRedraw()
+  }
+
+  private foldPalette(): void {
+    this.paletteFolded = true
     this.layoutSignature = ''
     this.controls.requestRedraw()
   }
@@ -492,7 +503,7 @@ export class StageControls implements UIKitOverlayRenderer {
     if (!shown) row.length = 0
     row.unshift(
       this.toolButton('tools', 'Tools', true, {
-        on: shown,
+        on: shown && !this.paletteFolded,
         click: () => this.toggleTools(),
       }),
     )
@@ -527,7 +538,8 @@ export class StageControls implements UIKitOverlayRenderer {
     // The pen's colors and brush sizes (or the wand's settings), under that.
     // Drawing gets the tool palette, bottom centre; shapes keep these rows.
     const drawing = shown && draw?.active ? draw : null
-    const toolPalette = drawing ? state.palette : null
+    if (!drawing) this.paletteFolded = false
+    const toolPalette = drawing && !this.paletteFolded ? state.palette : null
     const palette = shown && !drawing ? state.palette : null
     if (toolPalette && drawing) {
       const spec = {
@@ -561,11 +573,25 @@ export class StageControls implements UIKitOverlayRenderer {
           label: size.name,
         })),
         width: String(toolPalette.brushSize),
-        onTool: (id: string) => this.actions?.drawTool(id),
-        onColor: (id: string) => this.actions?.pen(Number(id)),
-        onWidth: (id: string) => this.actions?.brush(Number(id)),
-        onAction: (id: string) =>
-          id === 'hide' ? this.toggleTools() : this.actions?.undo(),
+        // A pick leaves focus on the palette, which would keep the arrow keys.
+        onTool: (id: string) => {
+          this.palette.blur()
+          this.actions?.drawTool(id)
+        },
+        onColor: (id: string) => {
+          this.palette.blur()
+          this.actions?.pen(Number(id))
+        },
+        onWidth: (id: string) => {
+          this.palette.blur()
+          this.actions?.brush(Number(id))
+        },
+        onAction: (id: string) => {
+          this.palette.blur()
+          if (id !== 'hide') this.actions?.undo()
+          else if (this.paletteCrowds) this.foldPalette()
+          else this.toggleTools()
+        },
       }
       if (this.palette.isShown) this.palette.update(spec)
       else this.palette.show(spec)
@@ -863,6 +889,8 @@ export class StageControls implements UIKitOverlayRenderer {
         y: floor - size.height,
       })
     }
+    this.paletteCrowds =
+      size !== null && stackBottom + ROW_GAP + size.reach > floor - size.height
     if (clip) {
       const total = Math.max(
         160,

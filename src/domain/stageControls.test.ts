@@ -205,3 +205,91 @@ test('the tools fold away, and the slice slider gives way to them', () => {
   expect(buttons.ids).toEqual(['tools'])
   expect(sliders.ids).toEqual(['slice'])
 })
+
+type Palette = {
+  isShown: boolean
+  getLayout(): {
+    y: number
+    height: number
+    items: {
+      kind: string
+      id: string
+      x: number
+      y: number
+      width: number
+      height: number
+    }[]
+  } | null
+  pointerDown(x: number, y: number): boolean
+  pointerUp(x: number, y: number): boolean
+  keyDown(e: { key: string }): boolean
+}
+// Drawing on a phone, with uikit's real tool palette.
+function drawingStage(picked: string[] = []) {
+  const buttons = new FakeButtons((spec) => spec.width ?? 60)
+  const controls = new StageControls({
+    metrics: { glyphs: new Map() },
+  } as never)
+  Object.assign(controls, {
+    buttons,
+    segmenteds: new FakeSegmenteds((spec) => 60 * (spec.segments?.length ?? 0)),
+    sliders: new FakeSliders((spec) => spec.width ?? 0),
+    controls: { requestRedraw() {}, drawOverlay() {} },
+  })
+  controls.update(phone, { drawTool: (id: string) => picked.push(id) } as never)
+  const palette = (controls as unknown as { palette: Palette }).palette
+  const tap = (kind: string, id: string) => {
+    const item = palette
+      .getLayout()
+      ?.items.find((it) => it.kind === kind && it.id === id)
+    expect(item).toBeDefined()
+    const x = (item?.x ?? 0) + (item?.width ?? 0) / 2
+    const y = (item?.y ?? 0) + (item?.height ?? 0) / 2
+    palette.pointerDown(x, y)
+    palette.pointerUp(x, y)
+  }
+  return { controls, buttons, palette, tap }
+}
+
+test("a short pane's Hide folds only the palette, leaving the tool row", () => {
+  const { controls, buttons, palette, tap } = drawingStage()
+  // A landscape phone's short pane: the palette covers the tool row.
+  const frame = { bounds: { width: 375, height: 300 }, dpr: 1 }
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  const tray = palette.getLayout()
+  expect((tray?.y ?? 0) + (tray?.height ?? 0)).toBeLessThanOrEqual(300)
+  tap('action', 'hide')
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  expect(palette.isShown).toBe(false)
+  expect(buttons.ids).toEqual(
+    expect.arrayContaining(['draw', 'save-mask', 'send']),
+  )
+  // Tools brings the palette back.
+  const toggle = buttons.specs.get('tools') as unknown as { onClick(): void }
+  toggle.onClick()
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  expect(palette.isShown).toBe(true)
+  expect(buttons.ids).toContain('draw')
+})
+
+test('a tall pane keeps Hide folding everything', () => {
+  const { controls, buttons, palette, tap } = drawingStage()
+  const frame = { bounds: { width: 375, height: 700 }, dpr: 1 }
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  tap('action', 'hide')
+  controls.drawOverlay(frame as UIKitOverlayFrame)
+  expect(palette.isShown).toBe(false)
+  expect(buttons.ids).toEqual(['tools'])
+})
+
+test('a palette pick lets go of the arrow keys', () => {
+  const picked: string[] = []
+  const { controls, palette, tap } = drawingStage(picked)
+  controls.drawOverlay({
+    bounds: { width: 375, height: 700 },
+    dpr: 1,
+  } as UIKitOverlayFrame)
+  tap('tool', 'wand')
+  expect(picked).toEqual(['wand'])
+  expect(palette.keyDown({ key: 'ArrowRight' })).toBe(false)
+})
