@@ -948,6 +948,31 @@ pub struct BundlePart {
     pub base: Option<String>,
 }
 
+/// One saved view (a deck step) to export: its document, and the staged PNG
+/// (`stage_bundle_part`) shown for it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleView {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    pub document: Value,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+}
+
+impl BundleView {
+    pub fn single(document: Value) -> Self {
+        Self {
+            title: String::new(),
+            notes: String::new(),
+            document,
+            thumbnail: None,
+        }
+    }
+}
+
 fn parts_dir() -> PathBuf {
     cache_root().join("parts")
 }
@@ -969,6 +994,11 @@ pub fn stage_bundle_part(bytes: &[u8]) -> Result<String, String> {
     let sha = format!("{:x}", Sha256::digest(bytes));
     let dest = dir.join(&sha);
     if dest.is_file() {
+        // Restaged: keep it past the next prune.
+        let _ = fs::File::options()
+            .write(true)
+            .open(&dest)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
         return Ok(sha);
     }
     // Per call, so two stagings of the same bytes don't share a temp file.
@@ -987,17 +1017,17 @@ fn staged_part(part: &BundlePart) -> Result<PathBuf, String> {
     if !matches!(part.kind.as_str(), "drawing" | "mesh") {
         return Err(format!("export_bundle: unknown part kind {}", part.kind));
     }
-    let is_sha = part.sha256.len() == 64
-        && part
-            .sha256
+    staged_file(&part.sha256, &part.name)
+}
+
+fn staged_file(sha256: &str, name: &str) -> Result<PathBuf, String> {
+    let is_sha = sha256.len() == 64
+        && sha256
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    let path = parts_dir().join(&part.sha256);
+    let path = parts_dir().join(sha256);
     if !is_sha || !path.is_file() {
-        return Err(format!(
-            "export_bundle: {} wasn't staged; try again",
-            part.name
-        ));
+        return Err(format!("export_bundle: {name} wasn't staged; try again"));
     }
     Ok(path)
 }
@@ -1014,7 +1044,7 @@ pub struct BundleExportResult {
 /// skip re-staging when the data is unchanged, so re-sharing the same dataset
 /// reuses the already-zipped file even after the user has clicked around.
 ///
-/// The view (crosshair, colormaps, …) is deliberately excluded — it changes on
+/// A single view (crosshair, colormaps, …) is deliberately excluded — it changes on
 /// every interaction and would defeat the cache, and for a dataset hand-off the
 /// embedded view is only a default the recipient can change. So a cached bundle
 /// may carry a slightly stale view; the data (the expensive part) is exact.
@@ -1023,13 +1053,22 @@ pub fn share_cache_key(
     handle: &ServerHandle,
     volume_ids: &[String],
     parts: &[BundlePart],
-    view: &Value,
+    views: &[BundleView],
 ) -> String {
     let volumes = lock_recover(&handle.volumes);
     let mut hasher = DefaultHasher::new();
-    view.get("annotations")
-        .map(|a| a.to_string())
-        .hash(&mut hasher);
+    if let [view] = views {
+        view.document
+            .get("annotations")
+            .map(|a| a.to_string())
+            .hash(&mut hasher);
+    } else {
+        // A deck's steps are saved snapshots, not the live view: all content.
+        for view in views {
+            (&view.title, &view.notes, &view.thumbnail).hash(&mut hasher);
+            view.document.to_string().hash(&mut hasher);
+        }
+    }
     // Staged parts are new files each time, so their content hash is the key.
     for part in parts {
         (&part.id, &part.sha256).hash(&mut hasher);
@@ -1100,9 +1139,12 @@ pub fn export_bundle(
     dest: &FsPath,
     volume_ids: &[String],
     parts: &[BundlePart],
-    view: &Value,
+    views: &[BundleView],
     created_at: &str,
 ) -> Result<BundleExportResult, String> {
+    if views.is_empty() {
+        return Err("export_bundle: no view to save".to_string());
+    }
     if volume_ids.is_empty() {
         return Err("export_bundle: no volumes selected for export".to_string());
     }
@@ -1131,6 +1173,15 @@ pub fn export_bundle(
         .iter()
         .map(|part| Ok((part, staged_part(part)?)))
         .collect::<Result<Vec<_>, String>>()?;
+    let thumbnails = views
+        .iter()
+        .map(|view| {
+            view.thumbnail
+                .as_deref()
+                .map(|sha| staged_file(sha, "A thumbnail"))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -1145,7 +1196,15 @@ pub fn export_bundle(
             .map(|name| name.to_string_lossy())
             .unwrap_or_default()
     ));
-    let written = write_bundle_zip(handle, &partial, &selected, &staged, view, created_at);
+    let written = write_bundle_zip(
+        handle,
+        &partial,
+        &selected,
+        &staged,
+        views,
+        &thumbnails,
+        created_at,
+    );
     let total_bytes = match written {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -1176,7 +1235,8 @@ fn write_bundle_zip(
     dest: &FsPath,
     selected: &[VolumeEntry],
     parts: &[(&BundlePart, PathBuf)],
-    view: &Value,
+    views: &[BundleView],
+    thumbnails: &[Option<PathBuf>],
     created_at: &str,
 ) -> Result<u64, String> {
     let zip_file = File::create(dest)
@@ -1189,6 +1249,39 @@ fn write_bundle_zip(
         .large_file(true);
 
     write_bundle_mimetype(&mut zip)?;
+    // Thumbnails and views go first, without zip64 extras, the start view's
+    // thumbnail first: Quick Look reads it from the head of the file.
+    let small = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let mut manifest_views: Vec<Value> = Vec::with_capacity(views.len());
+    for (index, (view, thumbnail)) in views.iter().zip(thumbnails).enumerate() {
+        let id = format!("v{}", index + 1);
+        let thumb = match thumbnail {
+            Some(source) => {
+                let rel = format!("thumbs/{id}.png");
+                add_source_to_zip(&mut zip, source, &rel, small)?;
+                Some(rel)
+            }
+            None => None,
+        };
+        manifest_views.push(json!({
+            "id": id,
+            "title": view.title,
+            "notes": view.notes,
+            "thumbnail": thumb,
+        }));
+    }
+    for (entry, view) in manifest_views.iter_mut().zip(views) {
+        let text = serde_json::to_vec_pretty(&single_pane_view(view.document.clone()))
+            .map_err(|error| format!("export_bundle: serialize view: {error}"))?;
+        let rel = format!("views/{}.json", entry["id"].as_str().unwrap_or_default());
+        zip.start_file(&rel, small)
+            .and_then(|()| zip.write_all(&text).map_err(Into::into))
+            .map_err(|error| format!("export_bundle: zip {rel}: {error}"))?;
+        entry["sha256"] = json!(format!("{:x}", Sha256::digest(&text)));
+        entry["bytes"] = json!(text.len());
+        entry["data"] = json!(rel);
+    }
+
     let mut used_names: HashSet<String> = HashSet::new();
     let mut total_bytes: u64 = 0;
     let mut manifest_volumes: Vec<Value> = Vec::with_capacity(selected.len());
@@ -1240,18 +1333,28 @@ fn write_bundle_zip(
 
     // Out of data/, which an import opens as a dataset: a drawing there would
     // list as a volume.
+    // Steps sharing a mesh (or an unchanged drawing) share its one copy.
+    let mut written: HashMap<&str, (String, u64)> = HashMap::new();
     for (part, source) in parts {
-        let dir = if part.kind == "mesh" {
-            "meshes"
-        } else {
-            "drawings"
+        let (rel, bytes) = match written.get(part.sha256.as_str()) {
+            Some(copy) => copy.clone(),
+            None => {
+                let dir = if part.kind == "mesh" {
+                    "meshes"
+                } else {
+                    "drawings"
+                };
+                let rel = format!(
+                    "{dir}/{}",
+                    unique_bundle_name(FsPath::new(&part.name), &mut used_names, &part.kind)
+                );
+                let (bytes, _) = add_source_to_zip(&mut zip, source, &rel, options)?;
+                total_bytes += bytes;
+                written.insert(&part.sha256, (rel.clone(), bytes));
+                (rel, bytes)
+            }
         };
-        let rel = format!(
-            "{dir}/{}",
-            unique_bundle_name(FsPath::new(&part.name), &mut used_names, &part.kind)
-        );
-        let (bytes, sha) = add_source_to_zip(&mut zip, source, &rel, options)?;
-        total_bytes += bytes;
+        let sha = &part.sha256;
         manifest_volumes.push(json!({
             "id": part.id,
             "kind": part.kind,
@@ -1262,13 +1365,6 @@ fn write_bundle_zip(
             "bytes": bytes,
         }));
     }
-
-    let view_text = serde_json::to_vec_pretty(&single_pane_view(view.clone()))
-        .map_err(|error| format!("export_bundle: serialize view: {error}"))?;
-    let view_data = format!("views/{MAIN_VIEW}.json");
-    zip.start_file(&view_data, options)
-        .and_then(|()| zip.write_all(&view_text).map_err(Into::into))
-        .map_err(|error| format!("export_bundle: zip {view_data}: {error}"))?;
 
     let bids = bids_dataset_info(handle);
     let manifest = json!({
@@ -1281,13 +1377,8 @@ fn write_bundle_zip(
             "datasetDoi": bids.as_ref().and_then(|info| info.dataset_doi.clone()),
         },
         "resources": manifest_volumes,
-        "views": [{
-            "id": MAIN_VIEW,
-            "data": view_data,
-            "sha256": format!("{:x}", Sha256::digest(&view_text)),
-            "bytes": view_text.len(),
-        }],
-        "start": MAIN_VIEW,
+        "views": manifest_views,
+        "start": "v1",
     });
 
     let manifest_text = serde_json::to_string_pretty(&manifest)
@@ -1925,19 +2016,38 @@ pub fn read_bundle(path: &FsPath) -> Result<Value, String> {
     for view in manifest["views"].as_array().into_iter().flatten() {
         verify_bundle_entry(&root, view, &mut verification, &mut all_verified);
     }
-    let start_view = (|| {
-        let start = manifest["start"].as_str()?;
-        let entry = manifest["views"]
-            .as_array()?
-            .iter()
-            .find(|v| v["id"] == start)?;
-        let file = bundle_entry_path(&root, entry["data"].as_str()?)?;
-        serde_json::from_slice::<Value>(&fs::read(file).ok()?).ok()
-    })();
+    let read_entry = |entry: &Value| -> Option<Vec<u8>> {
+        fs::read(bundle_entry_path(&root, entry.as_str()?)?).ok()
+    };
+    // Every step, with its thumbnail inline (a deck panel shows them all).
+    let views: Vec<Value> = manifest["views"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            use base64::Engine;
+            json!({
+                "id": entry["id"],
+                "title": entry["title"],
+                "notes": entry["notes"],
+                "thumbnail": read_entry(&entry["thumbnail"]).map(|png| format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(png)
+                )),
+                "view": read_entry(&entry["data"])
+                    .and_then(|text| serde_json::from_slice::<Value>(&text).ok()),
+            })
+        })
+        .collect();
+    let start_view = views
+        .iter()
+        .find(|view| view["id"] == manifest["start"])
+        .map(|view| view["view"].clone());
 
     Ok(json!({
         "manifest": manifest,
         "view": start_view,
+        "views": views,
         "bundlePath": root.display().to_string(),
         "dataDir": root.join("data").display().to_string(),
         "verification": verification,
@@ -5487,7 +5597,7 @@ mod tests {
         assert_eq!(read["allVerified"], true);
         assert_eq!(read["manifest"]["nvbundle"], "2");
         assert_eq!(read["manifest"]["resources"][0]["kind"], "volume");
-        assert_eq!(read["manifest"]["views"][0]["data"], "views/main.json");
+        assert_eq!(read["manifest"]["views"][0]["data"], "views/v1.json");
         assert_eq!(
             read["view"]["panes"]["main"]["document"]["volumes"][0]["id"],
             patch["asset"]["id"]
@@ -5496,7 +5606,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["data"] == "views/main.json"));
+            .any(|e| e["data"] == "views/v1.json"));
         let provenance = fs::read_to_string(session.join("provenance.jsonl")).unwrap();
         let line: Value = serde_json::from_str(provenance.lines().last().unwrap()).unwrap();
         assert_eq!(line["action"], "review.headless");
@@ -5526,8 +5636,8 @@ mod tests {
     }
 
     #[test]
-    fn staged_parts_travel_in_the_bundle_and_key_its_cache() {
-        let dir = scratch_dir("bundle-parts");
+    fn deck_steps_travel_with_their_parts_and_thumbnails() {
+        let dir = scratch_dir("bundle-deck");
         write_nifti(&dir.join("t1.nii.gz"), [4, 4, 4], 7);
         let handle = open_offline(&json!({ "volumes": [dir.join("t1.nii.gz")] })).unwrap();
         let ids: Vec<String> = lock_recover(&handle.volumes)
@@ -5542,44 +5652,75 @@ mod tests {
             base: (kind == "drawing").then(|| ids[0].clone()),
         };
         let parts = [
-            part("drawing", "t1_drawing", "t1_drawing.nii", b"labels"),
+            part("drawing", "s1_drawing", "t1_drawing.nii", b"labels"),
             part("mesh", "mesh-1", "lh.pial", b"surface"),
-            // The same file added twice.
+            // Step 2 shows the same mesh and an unchanged drawing.
             part("mesh", "mesh-2", "lh.pial", b"surface"),
+            part("drawing", "s2_drawing", "t1_drawing.nii", b"labels"),
+            part("mesh", "mesh-3", "lh.pial", b"other surface"),
         ];
-        let view = json!({ "version": 1 });
-        let zip_path = dir.join("parts.nvbundle");
-        export_bundle(
-            &handle,
-            &zip_path,
-            &ids,
-            &parts,
-            &view,
-            "2026-11-23T00:00:00Z",
-        )
-        .unwrap();
+        let png = b"\x89PNG\r\n\x1a\nstart";
+        let step = |title: &str, thumb: &[u8]| BundleView {
+            title: title.to_string(),
+            notes: format!("{title} notes"),
+            document: json!({ "version": 1, "drawing": format!("{title}_drawing") }),
+            thumbnail: Some(stage_bundle_part(thumb).unwrap()),
+        };
+        let views = [step("s1", png), step("s2", b"\x89PNG\r\n\x1a\nnext")];
+        let zip_path = dir.join("deck.nvbundle");
+        let export = |parts: &[BundlePart], views: &[BundleView]| {
+            export_bundle(&handle, &zip_path, &ids, parts, views, "2026-11-23T00:00:00Z")
+        };
+        export(&parts, &views).unwrap();
+
+        // Quick Look's walker: the start thumbnail is entry 2, at a fixed offset.
+        let bytes = fs::read(&zip_path).unwrap();
+        let second = 30 + 8 + BUNDLE_MIME.len();
+        let name_len = u16::from_le_bytes([bytes[second + 26], bytes[second + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[second + 28], bytes[second + 29]]) as usize;
+        assert_eq!(&bytes[second + 30..second + 30 + name_len], b"thumbs/v1.png");
+        let data = second + 30 + name_len + extra_len;
+        assert_eq!(&bytes[data..data + png.len()], png);
+
         let read = read_bundle(&zip_path).unwrap();
         assert_eq!(read["allVerified"], true);
+        let steps = read["views"].as_array().unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1]["title"], "s2");
+        assert_eq!(steps[1]["notes"], "s2 notes");
+        assert_eq!(steps[1]["view"]["panes"]["main"]["document"]["drawing"], "s2_drawing");
+        assert!(steps[0]["thumbnail"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        assert_eq!(read["view"], steps[0]["view"]);
         let resources = read["manifest"]["resources"].as_array().unwrap();
         let by_id = |id: &str| resources.iter().find(|r| r["id"] == id).unwrap();
-        assert_eq!(by_id("t1_drawing")["data"], "drawings/t1_drawing.nii");
-        assert_eq!(by_id("t1_drawing")["base"], ids[0].as_str());
+        assert_eq!(by_id("s1_drawing")["data"], "drawings/t1_drawing.nii");
+        assert_eq!(by_id("s2_drawing")["data"], "drawings/t1_drawing.nii");
+        assert_eq!(by_id("s1_drawing")["base"], ids[0].as_str());
         assert_eq!(by_id("mesh-1")["data"], "meshes/lh.pial");
-        assert_eq!(by_id("mesh-2")["data"], "meshes/1-lh.pial");
+        assert_eq!(by_id("mesh-2")["data"], "meshes/lh.pial");
+        assert_eq!(by_id("mesh-3")["data"], "meshes/1-lh.pial");
         let root = FsPath::new(read["bundlePath"].as_str().unwrap());
-        assert_eq!(fs::read(root.join("meshes/1-lh.pial")).unwrap(), b"surface");
+        assert_eq!(fs::read(root.join("meshes/1-lh.pial")).unwrap(), b"other surface");
 
-        let key = share_cache_key(&handle, &ids, &parts, &view);
-        let redrawn = [
-            part("drawing", "t1_drawing", "t1_drawing.nii", b"more"),
-            parts[1].clone(),
-            parts[2].clone(),
-        ];
-        assert_ne!(key, share_cache_key(&handle, &ids, &redrawn, &view));
+        let key = share_cache_key(&handle, &ids, &parts, &views);
+        let mut redrawn = parts.clone();
+        redrawn[0] = part("drawing", "s1_drawing", "t1_drawing.nii", b"more");
+        assert_ne!(key, share_cache_key(&handle, &ids, &redrawn, &views));
+        let mut renoted = views.clone();
+        renoted[1].notes = "edited".to_string();
+        assert_ne!(key, share_cache_key(&handle, &ids, &parts, &renoted));
+        let reordered = [views[1].clone(), views[0].clone()];
+        assert_ne!(key, share_cache_key(&handle, &ids, &parts, &reordered));
 
         let mut forged = parts[1].clone();
         forged.sha256 = "../../etc/passwd".to_string();
-        assert!(export_bundle(&handle, &zip_path, &ids, &[forged], &view, "").is_err());
+        assert!(export(&[forged], &views).is_err());
+        let mut forged_thumb = views.clone();
+        forged_thumb[0].thumbnail = Some("../../etc/passwd".to_string());
+        assert!(export(&parts, &forged_thumb).is_err());
     }
 
     #[test]

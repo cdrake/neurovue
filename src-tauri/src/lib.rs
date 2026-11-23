@@ -203,7 +203,7 @@ async fn export_dataset_bundle(
     dest_path: String,
     volume_ids: Vec<String>,
     parts: Vec<volumetric_server::BundlePart>,
-    view: serde_json::Value,
+    views: Vec<volumetric_server::BundleView>,
     created_at: String,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
@@ -214,7 +214,7 @@ async fn export_dataset_bundle(
             Path::new(&normalize_local_path(&dest_path)),
             &volume_ids,
             &parts,
-            &view,
+            &views,
             &created_at,
         )?;
         Ok(ExportBundleResult {
@@ -235,7 +235,7 @@ fn stage_share_bundle(
     server: &volumetric_server::ServerHandle,
     volume_ids: &[String],
     parts: &[volumetric_server::BundlePart],
-    view: &serde_json::Value,
+    views: &[volumetric_server::BundleView],
     created_at: &str,
     name: &str,
 ) -> Result<(volumetric_server::BundleExportResult, std::path::PathBuf), String> {
@@ -243,7 +243,7 @@ fn stage_share_bundle(
     let name = sanitize_share_name(name);
     let dest = shares_dir.join(format!("{name}.nvbundle"));
     let sig_path = shares_dir.join(format!("{name}.nvbundle.sig"));
-    let key = volumetric_server::share_cache_key(server, volume_ids, parts, view);
+    let key = volumetric_server::share_cache_key(server, volume_ids, parts, views);
 
     if dest.is_file() && std::fs::read_to_string(&sig_path).is_ok_and(|sig| sig == key) {
         let total_bytes = std::fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
@@ -259,7 +259,7 @@ fn stage_share_bundle(
 
     volumetric_server::prune_share_cache(&shares_dir, 4);
     let result =
-        volumetric_server::export_bundle(server, &dest, volume_ids, parts, view, created_at)?;
+        volumetric_server::export_bundle(server, &dest, volume_ids, parts, views, created_at)?;
     let _ = std::fs::write(&sig_path, &key); // export_bundle created shares_dir
     Ok((result, dest))
 }
@@ -375,7 +375,7 @@ async fn send_view_to_device(
     target: send::SendTarget,
     volume_ids: Vec<String>,
     parts: Vec<volumetric_server::BundlePart>,
-    view: serde_json::Value,
+    views: Vec<volumetric_server::BundleView>,
     created_at: String,
     name: String,
     on_offered: tauri::ipc::Channel<String>,
@@ -383,7 +383,7 @@ async fn send_view_to_device(
     let server = state.server(window.label());
     tauri::async_runtime::spawn_blocking(move || {
         let (result, dest) =
-            stage_share_bundle(&server, &volume_ids, &parts, &view, &created_at, &name)?;
+            stage_share_bundle(&server, &volume_ids, &parts, &views, &created_at, &name)?;
         let addresses = target.addresses();
         if addresses.is_empty() {
             return Err(format!("Couldn't find {} on the network.", target.name));
@@ -523,13 +523,13 @@ async fn share_view_via_airdrop(
     state: tauri::State<'_, NeuroVueState>,
     volume_ids: Vec<String>,
     parts: Vec<volumetric_server::BundlePart>,
-    view: serde_json::Value,
+    views: Vec<volumetric_server::BundleView>,
     created_at: String,
     name: String,
 ) -> Result<ExportBundleResult, String> {
     let server = state.server(window.label());
     let (result, dest) = tauri::async_runtime::spawn_blocking(move || {
-        stage_share_bundle(&server, &volume_ids, &parts, &view, &created_at, &name)
+        stage_share_bundle(&server, &volume_ids, &parts, &views, &created_at, &name)
     })
     .await
     .map_err(|error| format!("share_view_via_airdrop: join error: {error}"))??;

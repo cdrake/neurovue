@@ -90,7 +90,7 @@ export interface StageViewTarget {
   camera: BundleCamera | null
   hiddenLabels: Record<string, number[]>
   controls: Record<string, ControlValue> | null
-  /** The live drawing over the primary base. */
+  /** The live drawing over the primary base; null closes the current one. */
   drawing: File | null
 }
 
@@ -102,6 +102,24 @@ export interface StageSnapshot {
   controls: Record<string, ControlValue>
   /** The live drawing's NIfTI bytes, when there is one. */
   drawing: (() => Promise<Uint8Array | null>) | null
+  /** The canvas as a PNG about 512 px wide, tool palette included. */
+  thumbnail: () => Promise<Blob | null>
+}
+
+const THUMBNAIL_WIDTH = 512
+
+async function canvasThumbnail(nv: NiiVueLike | null): Promise<Blob | null> {
+  const image = nv?.getCanvasImage?.()
+  if (!image) return null
+  const full = new OffscreenCanvas(image.width, image.height)
+  full.getContext('2d')?.putImageData(image, 0, 0)
+  const scale = Math.min(1, THUMBNAIL_WIDTH / image.width)
+  const thumb = new OffscreenCanvas(
+    Math.round(image.width * scale),
+    Math.round(image.height * scale),
+  )
+  thumb.getContext('2d')?.drawImage(full, 0, 0, thumb.width, thumb.height)
+  return thumb.convertToBlob({ type: 'image/png' })
 }
 
 function cameraOf(nv: NiiVueLike): BundleCamera | null {
@@ -126,7 +144,7 @@ function applyViewTarget(
     state: StageControlsState
     actions: StageControlsActions
   } | null,
-  onDrawingLoaded: () => void,
+  onHasDrawing: (hasDrawing: boolean) => void,
 ): void {
   const { camera } = target
   if (camera) {
@@ -144,8 +162,11 @@ function applyViewTarget(
   if (target.controls) replayStageControls(controls, target.controls)
   if (target.drawing) {
     void nv.loadDrawing?.(target.drawing).then((loaded) => {
-      if (loaded) onDrawingLoaded()
+      if (loaded) onHasDrawing(true)
     })
+  } else if (nv.drawingVolume) {
+    nv.closeDrawing?.()
+    onHasDrawing(false)
   }
   nv.drawScene()
 }
@@ -398,6 +419,8 @@ interface NiiVueLike {
   // An empty filename returns the NIfTI bytes instead of downloading them.
   saveDrawing?(filename: string): Promise<boolean | Uint8Array<ArrayBuffer>>
   loadDrawing?(source: File): Promise<boolean>
+  closeDrawing?(): void
+  getCanvasImage?(): ImageData | null
   azimuth?: number
   elevation?: number
   scaleMultiplier?: number
@@ -748,6 +771,11 @@ export function NiivueStage({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const nvRef = useRef<NiiVueLike | null>(null)
+  // niivue's destroy() during attachToCanvas is a no-op, and the attach then
+  // wires its resize observer onto the shared canvas anyway: the dead viewer
+  // draws over the live one on the next resize. So each viewer's attach and
+  // destroy settle before the next viewer starts.
+  const viewerSettledRef = useRef<Promise<void>>(Promise.resolve())
   const isApplyingShadingRef = useRef(false)
   // `chunkVolumeGrid` from the active backend module, captured at attach so the
   // block effect can (re)tile volumes without a second dynamic import.
@@ -1022,6 +1050,8 @@ export function NiivueStage({
         isMeshOnly ? 'Loading meshes.' : `Loading ${layerStackLabel(layers)}.`,
       )
       try {
+        await viewerSettledRef.current
+        if (cancelled) return
         const loaded = await loadNiiVue(backend)
         if (cancelled) return
         chunkVolumeGridRef.current = loaded.chunkVolumeGrid
@@ -1051,7 +1081,12 @@ export function NiivueStage({
         })
         localNv = nv
         nvRef.current = nv
-        await nv.attachToCanvas(canvas)
+        const attaching = nv.attachToCanvas(canvas)
+        viewerSettledRef.current = attaching.then(
+          () => {},
+          () => {},
+        )
+        await attaching
         if (cancelled) return
         if (nv.addEventListener) {
           locationListener = (event) => {
@@ -1140,7 +1175,7 @@ export function NiivueStage({
             view,
             loadedLayerIdsRef.current,
             () => stageControlsInputRef.current,
-            () => setHasDrawing(true),
+            setHasDrawing,
           )
         }
         // Volumes (and their robust-range stats) are now loaded; re-run the
@@ -1198,7 +1233,10 @@ export function NiivueStage({
         if (drawingSlicesRef.current === drawingSlices) {
           drawingSlicesRef.current = null
         }
-        localNv.destroy?.()
+        const nv = localNv
+        viewerSettledRef.current = viewerSettledRef.current.then(() =>
+          nv.destroy?.(),
+        )
       }
       if (localNv && nvRef.current === localNv) {
         unannouncedViewerRef.current = null
@@ -1641,7 +1679,7 @@ export function NiivueStage({
       viewTarget,
       loadedLayerIdsRef.current,
       () => stageControlsInputRef.current,
-      () => setHasDrawing(true),
+      setHasDrawing,
     )
   }, [viewTarget])
 
@@ -2337,6 +2375,7 @@ export function NiivueStage({
                 return bytes instanceof Uint8Array ? bytes : null
               }
             : null,
+        thumbnail: () => canvasThumbnail(nv),
       }
     }
   }

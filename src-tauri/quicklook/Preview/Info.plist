@@ -38,6 +38,7 @@
         <string>org.gnu.gnu-zip-archive</string>
         <string>org.freesurfer.mgz</string>
         <string>org.freesurfer.mgh</string>
+        <string>org.neurovue.nvbundle</string>
       </array>
       <key>QLSupportsSearchableItems</key>
       <false/>

@@ -108,6 +108,8 @@ export interface BundleViewState {
   controls?: Record<string, ControlValue>
   /** Mesh display state by resource id, in draw order. */
   meshes?: BundleMesh[]
+  /** The resource id of the view's drawing. */
+  drawing?: string
 }
 
 export interface BundleMesh {
@@ -126,13 +128,18 @@ export interface BundlePart {
   base?: string
 }
 
-/** Hands a drawing's or mesh's bytes to the host ahead of an export; the
- *  export then names them by the returned SHA-256. */
-export async function stageBundlePart(
-  part: Omit<BundlePart, 'sha256'>,
-  bytes: Uint8Array,
-): Promise<BundlePart> {
-  return { ...part, sha256: await invoke<string>('stage_bundle_part', bytes) }
+/** What the export commands take for one step (Rust `BundleView`). */
+export interface BundleExportView {
+  title: string
+  notes: string
+  document: BundleViewState
+  thumbnail?: string
+}
+
+/** Hands a drawing's, mesh's or thumbnail's bytes to the host ahead of an
+ *  export; the export then names them by the returned SHA-256. */
+export function stageBundleBytes(bytes: Uint8Array): Promise<string> {
+  return invoke<string>('stage_bundle_part', bytes)
 }
 
 /**
@@ -313,14 +320,14 @@ export async function exportDatasetBundle(params: {
   defaultName: string
   volumeIds: string[]
   parts: BundlePart[]
-  view: BundleViewState
+  views: BundleExportView[]
 }): Promise<ExportBundleResult | null> {
   if (!(await resolveRuntimeCapabilities()).fileDialogsAvailable) {
     return shareViewViaAirDrop({
       name: params.defaultName,
       volumeIds: params.volumeIds,
       parts: params.parts,
-      view: params.view,
+      views: params.views,
     })
   }
   const destPath = await save({
@@ -333,7 +340,7 @@ export async function exportDatasetBundle(params: {
     destPath,
     volumeIds: params.volumeIds,
     parts: params.parts,
-    view: params.view,
+    views: params.views,
     // Timestamp stays on the JS side (matches the savePatch convention and
     // avoids a time-format crate on the Rust side).
     createdAt: new Date().toISOString(),
@@ -349,12 +356,12 @@ export async function shareViewViaAirDrop(params: {
   name: string
   volumeIds: string[]
   parts: BundlePart[]
-  view: BundleViewState
+  views: BundleExportView[]
 }): Promise<ExportBundleResult> {
   return invoke<ExportBundleResult>('share_view_via_airdrop', {
     volumeIds: params.volumeIds,
     parts: params.parts,
-    view: params.view,
+    views: params.views,
     createdAt: new Date().toISOString(),
     name: params.name,
   })
@@ -402,7 +409,7 @@ export async function sendViewToDevice(params: {
   name: string
   volumeIds: string[]
   parts: BundlePart[]
-  view: BundleViewState
+  views: BundleExportView[]
   onOffered: (code: string) => void
 }): Promise<ExportBundleResult> {
   const onOffered = new Channel<string>()
@@ -411,7 +418,7 @@ export async function sendViewToDevice(params: {
     target: params.target,
     volumeIds: params.volumeIds,
     parts: params.parts,
-    view: params.view,
+    views: params.views,
     createdAt: new Date().toISOString(),
     name: params.name,
     onOffered,
@@ -517,6 +524,19 @@ export interface BundleViewEntry {
   id: string
   data?: string
   sha256?: string
+  title?: string
+  notes?: string
+  thumbnail?: string | null
+}
+
+/** A deck step as `read_bundle` returns it, thumbnail inline. */
+export interface BundleReadView {
+  id: string
+  title?: string | null
+  notes?: string | null
+  /** A PNG data URL. */
+  thumbnail: string | null
+  view: BundleView | null
 }
 
 /** One viewer in a saved view. */
@@ -558,6 +578,8 @@ export interface BundleReadResult {
   manifest: BundleManifest
   /** The start view, already read from the bundle; null when it has none. */
   view: BundleView | null
+  /** Every step, in deck order; absent for a NiiVue document. */
+  views?: BundleReadView[]
   bundlePath: string
   dataDir: string
   verification: BundleVerifyEntry[]
