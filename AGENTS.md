@@ -50,6 +50,21 @@ choices that keep that path open. Concretely:
 When a proposed change would trade away mobile portability, call it out and
 prefer the portable option.
 
+## UI changes: check Mac, iPad and iPhone
+
+Every UI change (DOM or canvas/UIKit overlay) must lay out on all three before
+it is done:
+
+- **iPhone:** portrait (~375–430 pt wide) and landscape; safe-area insets
+  (notch, home indicator); coarse pointer, 44 pt targets.
+- **iPad:** full screen, Split View/Stage Manager widths (down to iPhone size),
+  both orientations; Pencil and finger.
+- **Mac:** a small window as well as a large one; mouse and trackpad.
+
+Canvas overlays wrap or shrink to the stage width (pass `maxWidth`, place with
+`measure()`) instead of assuming one row fits. Say in the PR which of the three
+were checked and how (device, simulator, or narrowed window).
+
 ## iOS notes
 
 iPhone and iPad both ship (`TARGETED_DEVICE_FAMILY` 1,2). Gotchas:
