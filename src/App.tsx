@@ -1563,7 +1563,7 @@ export function App(): JSX.Element {
         if (!target) {
           throw new Error(
             targets.length === 0
-              ? 'No device is on the network; ask the person to open NeuroVue on it.'
+              ? 'No device is on the network; ask the person to open NeuroVue on it, and check Local Network is allowed for NeuroVue in Settings → Privacy & Security.'
               : device
                 ? `No device ${device} on the network; these are: ${names}.`
                 : `Several devices are on the network; pass device, one of: ${names}.`,
@@ -1904,7 +1904,7 @@ export function App(): JSX.Element {
         targets[0]
       if (!target) {
         setStatus(
-          "Couldn't find a Mac running NeuroVue on this network.",
+          "Couldn't find a Mac running NeuroVue on this network. If it's running, allow Local Network for NeuroVue in Settings → Privacy & Security.",
           'error',
         )
         return
@@ -2248,6 +2248,8 @@ export function App(): JSX.Element {
                     <div className="nv-recent-item nv-share-looking">
                       <span className="nv-recent-item-path">
                         No device found. On an iPad, choose Receive from a Mac.
+                        Allow Local Network for NeuroVue in Settings → Privacy &
+                        Security.
                       </span>
                     </div>
                   ) : (
