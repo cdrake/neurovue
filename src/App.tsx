@@ -77,6 +77,7 @@ import {
   MIN_DESKTOP_ZOOM,
   zoomBy,
 } from './components/DatasetDesktop'
+import { DeckPanel, PresentBar } from './components/DeckPanel'
 import { NiimathOperationsPanel } from './components/NiimathOperationsPanel'
 import {
   DEFAULT_VIEW_MODE,
@@ -105,12 +106,10 @@ import {
 import {
   applyBundleView,
   attachDrawing,
-  type BundlePart,
   type BundleReadResult,
   type BundleViewState,
   buildBundleViewState,
   bundleVerifyFailures,
-  bundleViewVolumeIds,
   bundleVolumeIds,
   clearStoredData,
   type DrawingBase,
@@ -129,8 +128,14 @@ import {
   sendDrawingToDevice,
   sendViewToDevice,
   shareViewViaAirDrop,
-  stageBundlePart,
 } from './domain/bundle'
+import {
+  type DeckStep,
+  gzip,
+  once,
+  remapBundleView,
+  stageDeck,
+} from './domain/deck'
 import type {
   Backend,
   ClipPlane,
@@ -528,6 +533,13 @@ export function App(): JSX.Element {
   const [viewTarget, setViewTarget] = useState<StageViewTarget | null>(null)
   // Reads the stage's own scene state (camera, legend, annotations, tools) for export.
   const stageSnapshotRef = useRef<(() => StageSnapshot) | null>(null)
+  // The deck belongs to the dataset it was made on; another one hides it.
+  const [deck, setDeck] = useState<{
+    root: string | null
+    steps: DeckStep[]
+  }>({ root: null, steps: [] })
+  const [deckStep, setDeckStep] = useState(-1)
+  const [isPresenting, setIsPresenting] = useState(false)
   // Block (volume-chunk explode) settings, applied across every loaded layer and
   // persisted into the bundle/session.
   const [blocks, setBlocks] = useState<BlockSettings>(DEFAULT_BLOCK_SETTINGS)
@@ -1188,13 +1200,9 @@ export function App(): JSX.Element {
     setMeshes((current) => current.filter((mesh) => mesh.id !== id))
   }
 
-  // Compose the current view + its ordered volume ids for export/share. Order
-  // is base → overlays → atlas; the copied volumes derive from the same list so
-  // files and view stay in lockstep, and the importer replays it in that order.
-  function composeCurrentBundle(base: DesktopItem): {
-    volumeIds: string[]
-    view: BundleViewState
-  } {
+  // Compose the current view for a deck step or an export. Volume order is
+  // base → overlays → atlas, which the importer replays.
+  function composeCurrentView(base: DesktopItem): BundleViewState {
     const crosshairMm = locationReadout?.mm
     const snapshot = stageSnapshotRef.current?.()
     const view = buildBundleViewState({
@@ -1232,38 +1240,130 @@ export function App(): JSX.Element {
         visible,
       }))
     }
-    return { volumeIds: bundleViewVolumeIds(view), view }
+    return view
   }
 
-  // The live drawing and the meshes, whose bytes only the webview holds,
-  // handed to the host for the next export.
-  async function stageCurrentParts(base: DesktopItem): Promise<BundlePart[]> {
-    const drawing = await stageSnapshotRef.current?.().drawing?.()
-    const parts = await Promise.all([
-      ...(drawing
-        ? [
-            stageBundlePart(
-              {
-                kind: 'drawing',
-                id: `${base.id}_drawing`,
-                name: `${base.id}_drawing.nii`,
-                base: base.id,
-              },
-              drawing,
-            ),
-          ]
-        : []),
+  // What's on screen as a deck step. The drawing, meshes and picture are
+  // taken now, since the screen moves on.
+  async function captureStep(base: DesktopItem): Promise<DeckStep> {
+    const snapshot = stageSnapshotRef.current?.()
+    const view = composeCurrentView(base)
+    const [drawing, png] = await Promise.all([
+      snapshot?.drawing?.(),
+      snapshot?.thumbnail(),
     ])
-    // One at a time: a mesh can be hundreds of MB.
-    for (const mesh of meshes) {
-      parts.push(
-        await stageBundlePart(
-          { kind: 'mesh', id: mesh.id, name: mesh.name },
-          new Uint8Array(await mesh.file.arrayBuffer()),
-        ),
-      )
+    const gzipped = drawing ? await gzip(drawing) : null
+    const captured = meshes.map((mesh) => ({ ...mesh }))
+    return {
+      key: crypto.randomUUID(),
+      title: '',
+      notes: '',
+      view,
+      thumbnail: png ? URL.createObjectURL(png) : null,
+      drawing: async () => gzipped,
+      meshes: async () => captured,
     }
-    return parts
+  }
+
+  const deckSteps = deck.root === datasetRoot ? deck.steps : []
+
+  // The deck, or else what's on screen, handed to the host for an export.
+  // `wholeDataset` carries every volume, not only the ones the views show.
+  async function stageExport(base: DesktopItem, wholeDataset = false) {
+    const live = deckSteps.length > 0 ? null : await captureStep(base)
+    try {
+      const staged = await stageDeck(live ? [live] : deckSteps)
+      const loaded = items.map((item) => item.id)
+      return {
+        ...staged,
+        volumeIds: wholeDataset
+          ? loaded
+          : staged.volumeIds.filter((id) => loaded.includes(id)),
+      }
+    } finally {
+      if (live?.thumbnail) URL.revokeObjectURL(live.thumbnail)
+    }
+  }
+
+  async function addDeckStep(): Promise<void> {
+    if (!selected) return
+    const step = await captureStep(selected)
+    const at = Math.min(deckStep + 1, deckSteps.length)
+    setDeck({
+      root: datasetRoot ?? null,
+      steps: [...deckSteps.slice(0, at), step, ...deckSteps.slice(at)],
+    })
+    setDeckStep(at)
+  }
+
+  function removeDeckStep(key: string): void {
+    const step = deckSteps.find((candidate) => candidate.key === key)
+    if (step?.thumbnail?.startsWith('blob:')) {
+      URL.revokeObjectURL(step.thumbnail)
+    }
+    const steps = deckSteps.filter((candidate) => candidate !== step)
+    setDeck((current) => ({ ...current, steps }))
+    setDeckStep((index) => Math.min(index, steps.length - 1))
+    if (steps.length === 0) setIsPresenting(false)
+  }
+
+  function moveDeckStep(index: number, by: -1 | 1): void {
+    const steps = [...deckSteps]
+    const [step] = steps.splice(index, 1)
+    steps.splice(index + by, 0, step)
+    setDeck((current) => ({ ...current, steps }))
+    if (deckStep === index) setDeckStep(index + by)
+    else if (deckStep === index + by) setDeckStep(index)
+  }
+
+  // Shows a step; unsaved changes on screen are replaced, like opening a bundle.
+  async function showDeckStep(index: number): Promise<void> {
+    const step = deckSteps[index]
+    if (!step) return
+    setDeckStep(index)
+    const loaded = new Set(items.map((item) => item.id))
+    await showStep(step, loaded)
+  }
+
+  async function showStep(
+    step: DeckStep,
+    loadedIds: ReadonlySet<string>,
+  ): Promise<void> {
+    const view = step.view
+    const applied = applyBundleView(view, (id) =>
+      loadedIds.has(id) ? id : undefined,
+    )
+    const [drawing, stepMeshes] = await Promise.all([
+      step.drawing(),
+      step.meshes(),
+    ])
+    setMeshes(stepMeshes)
+    setLayerSettings(applied.layerSettings)
+    setOverlayIds(applied.overlayIds)
+    setAtlasId(applied.atlasId)
+    if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
+    setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
+    if (view.shading) setShading(view.shading)
+    setSubvolumeStack(applied.stack?.levels ?? [])
+    setStackBlocks(applied.stack?.blocks ?? {})
+    applyClipPlanes(view.scene?.clipPlanes ?? [])
+    if (applied.baseId) setSelectedId(applied.baseId)
+    setViewTarget({
+      drawing:
+        drawing instanceof File || !drawing
+          ? drawing
+          : new File([drawing], 'drawing.nii.gz'),
+      annotations: Object.fromEntries(
+        Object.entries(applied.annotations).map(([id, shapes]) => [
+          id,
+          JSON.stringify(shapes),
+        ]),
+      ),
+      camera: applied.camera,
+      hiddenLabels: applied.hiddenLabels,
+      controls: view.controls ?? null,
+    })
+    if (applied.crosshairPos) setCrosshairTarget({ mm: applied.crosshairPos })
   }
 
   async function handleExportBundle(): Promise<void> {
@@ -1273,18 +1373,18 @@ export function App(): JSX.Element {
       return
     }
 
-    const { volumeIds, view } = composeCurrentBundle(selected)
-
     setIsExportingBundle(true)
-    setStatus(
-      `Exporting bundle (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
-    )
+    setStatus('Preparing bundle…')
     try {
+      const { volumeIds, parts, views } = await stageExport(selected)
+      setStatus(
+        `Exporting bundle (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+      )
       const result = await exportDatasetBundle({
         defaultName: selected.label ?? 'neurovue-bundle',
         volumeIds,
-        parts: await stageCurrentParts(selected),
-        view,
+        parts,
+        views,
       })
       if (!result) {
         setStatus('Bundle export cancelled.')
@@ -1302,18 +1402,15 @@ export function App(): JSX.Element {
     }
   }
 
-  // Share the *whole* dataset — every volume — so the recipient can browse and
-  // pick any of them. The current view is still embedded, so it opens to a
-  // sensible default; the rest show up in the recipient's dataset list.
-  function sharedDataset(selected: DesktopItem) {
-    const { view } = composeCurrentBundle(selected)
-    const volumeIds = items.map((item) => item.id)
-    const shareName =
+  // A whole-dataset share carries every volume, so the recipient can browse
+  // and pick any of them; the views still open to a sensible default.
+  function datasetShareName(selected: DesktopItem): string {
+    return (
       bidsName ||
       datasetRoot?.split('/').pop() ||
       selected.label ||
       'neurovue-dataset'
-    return { view, volumeIds, shareName }
+    )
   }
 
   // Sends what's on screen (the selected volume and the layers over it) or,
@@ -1329,21 +1426,25 @@ export function App(): JSX.Element {
       throw new Error('Open a dataset before sending.')
     }
     // Named after what it holds, so it doesn't evict the other's staged copy.
-    const { view, volumeIds, shareName } = wholeDataset
-      ? sharedDataset(selected)
-      : { ...composeCurrentBundle(selected), shareName: selected.label }
+    const shareName = wholeDataset ? datasetShareName(selected) : selected.label
     setIsSharingBundle(true)
     setStatus(
-      `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name} ` +
-        `(${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
+      `Preparing ${wholeDataset ? 'dataset' : selected.label} for ${target.name}…`,
     )
     try {
+      const { volumeIds, parts, views } = await stageExport(
+        selected,
+        wholeDataset,
+      )
+      setStatus(
+        `Sending ${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'} to ${target.name}…`,
+      )
       const result = await sendViewToDevice({
         target,
         name: shareName,
         volumeIds,
-        parts: await stageCurrentParts(selected),
-        view,
+        parts,
+        views,
         onOffered: (code) =>
           setStatus(`Waiting for ${target.name} to accept (code ${code})…`),
       })
@@ -1386,17 +1487,15 @@ export function App(): JSX.Element {
       return
     }
 
-    const { view, volumeIds, shareName } = sharedDataset(selected)
     setIsSharingBundle(true)
-    setStatus(
-      `Preparing dataset for AirDrop (${volumeIds.length} volume${volumeIds.length === 1 ? '' : 's'})…`,
-    )
+    setStatus('Preparing dataset for AirDrop…')
     try {
+      const { volumeIds, parts, views } = await stageExport(selected, true)
       const result = await shareViewViaAirDrop({
-        name: shareName,
+        name: datasetShareName(selected),
         volumeIds,
-        parts: await stageCurrentParts(selected),
-        view,
+        parts,
+        views,
       })
       setStatus(
         `AirDrop sheet opened — ${result.volumeCount} volume${result.volumeCount === 1 ? '' : 's'} ` +
@@ -1862,53 +1961,51 @@ export function App(): JSX.Element {
       }
     }
 
-    const view = focusedViewState(bundle.view)
-    if (view) {
-      const applied = applyBundleView(view, (recordedId) => {
-        const id = remap.get(recordedId) ?? recordedId
-        return loadedIds.has(id) ? id : undefined
-      })
+    const idFor = (recordedId: string) => {
+      const id = remap.get(recordedId) ?? recordedId
+      return loadedIds.has(id) ? id : undefined
+    }
+    const meshResources = bundle.manifest.resources.filter(
+      (resource) => resource.kind === 'mesh',
+    )
+    // Each step reads its drawing and meshes when first shown.
+    const steps = (
+      bundle.views ?? [
+        { id: '', title: '', notes: '', thumbnail: null, view: bundle.view },
+      ]
+    ).flatMap((read): DeckStep[] => {
+      const recorded = focusedViewState(read.view)
+      if (!recorded) return []
       const drawing = bundle.manifest.resources.find(
         (resource) =>
-          resource.kind === 'drawing' &&
-          resource.base &&
-          remap.get(resource.base) === applied.baseId,
+          resource.kind === 'drawing' && resource.id === recorded.drawing,
       )
-      const drawingFile = drawing
-        ? await readMaskFile(`${bundle.bundlePath}/${drawing.data}`)
-        : null
-      const bundleMeshes = await readBundleMeshes(
-        bundle.bundlePath,
-        bundle.manifest.resources.filter(
-          (resource) => resource.kind === 'mesh',
-        ),
-        view.meshes ?? [],
-      )
-      setMeshes(bundleMeshes)
-      setLayerSettings(applied.layerSettings)
-      setOverlayIds(applied.overlayIds)
-      setAtlasId(applied.atlasId)
-      if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
-      setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
-      if (view.shading) setShading(view.shading)
-      setSubvolumeStack(applied.stack?.levels ?? [])
-      setStackBlocks(applied.stack?.blocks ?? {})
-      applyClipPlanes(view.scene?.clipPlanes ?? [])
-      if (applied.baseId) setSelectedId(applied.baseId)
-      setViewTarget({
-        drawing: drawingFile,
-        annotations: Object.fromEntries(
-          Object.entries(applied.annotations).map(([id, shapes]) => [
-            id,
-            JSON.stringify(shapes),
-          ]),
-        ),
-        camera: applied.camera,
-        hiddenLabels: applied.hiddenLabels,
-        controls: view.controls ?? null,
-      })
-      if (applied.crosshairPos) setCrosshairTarget({ mm: applied.crosshairPos })
-    }
+      return [
+        {
+          key: crypto.randomUUID(),
+          title: read.title ?? '',
+          notes: read.notes ?? '',
+          thumbnail: read.thumbnail,
+          view: remapBundleView(recorded, idFor),
+          drawing: once(async () =>
+            drawing
+              ? readMaskFile(`${bundle.bundlePath}/${drawing.data}`)
+              : null,
+          ),
+          meshes: once(() =>
+            readBundleMeshes(
+              bundle.bundlePath,
+              meshResources,
+              recorded.meshes ?? [],
+            ),
+          ),
+        },
+      ]
+    })
+    if (steps[0]) await showStep(steps[0], loadedIds)
+    // One view is just what's on screen; more are a deck.
+    setDeck({ root: bundle.dataDir, steps: steps.length > 1 ? steps : [] })
+    setDeckStep(steps.length > 1 ? 0 : -1)
 
     const failures = bundleVerifyFailures(bundle.verification)
     const integrity =
@@ -2029,7 +2126,7 @@ export function App(): JSX.Element {
 
   return (
     <main
-      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''} ${isExpress ? 'is-express' : ''}`}
+      className={`nv-app ${isTerminalDockOpen ? 'has-terminal' : ''} ${isExpress ? 'is-express' : ''} ${isPresenting ? 'is-presenting' : ''}`}
       style={{ '--terminal-height': `${terminalHeight}px` } as CSSProperties}
     >
       <header className="nv-topbar">
@@ -2654,7 +2751,7 @@ export function App(): JSX.Element {
               </button>
 
               <section
-                className={`nv-niivue-pane ${mouseContext === 'niivue' ? 'is-context-active' : ''} ${isRenderMaximized ? 'is-maximized' : ''}`}
+                className={`nv-niivue-pane ${mouseContext === 'niivue' ? 'is-context-active' : ''} ${isRenderMaximized || isPresenting ? 'is-maximized' : ''}`}
                 aria-label="NiiVue render window"
                 onPointerEnter={() => setMouseContext('niivue')}
                 onPointerLeave={() => setMouseContext(null)}
@@ -2702,6 +2799,14 @@ export function App(): JSX.Element {
                     <Maximize2 size={16} />
                   )}
                 </button>
+                {isPresenting ? (
+                  <PresentBar
+                    current={deckStep}
+                    steps={deckSteps}
+                    onExit={() => setIsPresenting(false)}
+                    onShow={(index) => void showDeckStep(index)}
+                  />
+                ) : null}
                 {viewMode === 'render' && selected ? (
                   <WheelBadge
                     planeLabel={
@@ -2848,6 +2953,28 @@ export function App(): JSX.Element {
                       onUpdate={updateMesh}
                     />
 
+                    <DeckPanel
+                      canAdd={Boolean(selected)}
+                      current={deckStep}
+                      steps={deckSteps}
+                      onAdd={() => void addDeckStep()}
+                      onEdit={(key, patch) =>
+                        setDeck((current) => ({
+                          ...current,
+                          steps: current.steps.map((step) =>
+                            step.key === key ? { ...step, ...patch } : step,
+                          ),
+                        }))
+                      }
+                      onMove={moveDeckStep}
+                      onPresent={() => {
+                        setIsPresenting(true)
+                        void showDeckStep(Math.max(deckStep, 0))
+                      }}
+                      onRemove={removeDeckStep}
+                      onShow={(index) => void showDeckStep(index)}
+                    />
+
                     {viewMode === 'render' ? (
                       <>
                         <WheelModeRow
@@ -2883,9 +3010,7 @@ export function App(): JSX.Element {
                                 selected,
                                 clipPlanes,
                                 backend,
-                                selected
-                                  ? composeCurrentBundle(selected).view
-                                  : null,
+                                selected ? composeCurrentView(selected) : null,
                               )
                               setStatus(
                                 `Clip-plane correction saved for ${selected?.label ?? 'volume'}.`,

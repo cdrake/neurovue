@@ -7,7 +7,7 @@
 //! to the step's output dir, with one `review.headless` provenance line.
 
 use crate::volumetric_server::{
-    append_provenance, export_bundle, iso8601_utc_now, neuroflow_context_at, open_offline,
+    append_provenance, export_bundle, BundleView, iso8601_utc_now, neuroflow_context_at, open_offline,
     review_state_of, volume_ids, ServerHandle,
 };
 use serde_json::{json, Value};
@@ -80,7 +80,7 @@ pub fn review(session_dir: PathBuf) -> Result<Value, String> {
             &ctx.output_dir.join("review.nvbundle"),
             &ids,
             &[],
-            &view,
+            &[BundleView::single(view.clone())],
             &iso8601_utc_now(),
         )?;
         outputs["review.nvbundle"] = json!("review.nvbundle");

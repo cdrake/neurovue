@@ -49,12 +49,12 @@ travel as data with `derivation`, never as commands).
 
 ```
 mimetype
+thumbs/<id>.png  per view; doubles as the Quick Look / share preview
+views/<id>.json  one saved view: panes, layout, sync, controls
 data/            volumes and sidecars (opened as the dataset)
 drawings/        live drawings, each over a `base` volume
 meshes/          surfaces and tracts
 slides/<id>.zarr whole-slide images, OME-Zarr
-views/<id>.json  one saved view: panes, layout, sync, controls
-thumbs/<id>.png  per view; doubles as the Quick Look / share preview
 prov/            provenance.md's PROV-JSON + hash-chained log
 manifest.json
 ```
@@ -173,6 +173,8 @@ manifest.json
 6. **Slides:** OME-Zarr whole-slide resources and NVDocument `slidePlane` in panes.
 7. **Interop (later):** RO-Crate export of the manifest + PROV.
 
-Decided: the `controls` hint applies on every open, not only in present mode. Open question: do deck
-steps share panes by id (one layer stack, many camera states) or stay full snapshots? Snapshots are
-simpler and robust to reordering; data is deduplicated by resource id anyway.
+Decided: the `controls` hint applies on every open, not only in present mode. Deck steps are full
+snapshots, not panes shared by id: simpler and robust to reordering, and parts are deduplicated by
+hash. Each step's drawing and meshes are its own parts (`v2_drawing`, `v2_<mesh>`); identical bytes
+are stored once. Entries are written in the order above, `thumbs/v1.png` right after `mimetype`: Quick Look
+reads the start view's thumbnail from the head of the file. `manifest.json` goes last.
