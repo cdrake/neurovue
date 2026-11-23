@@ -4,7 +4,7 @@ Guidance for agents (and humans) working in this repo.
 
 ## What this is
 
-NeuroVue is a [Tauri v2](https://tauri.app) desktop app for viewing NIfTI brain
+NeuroVue is a [Tauri v2](https://tauri.app) desktop and iOS app for viewing NIfTI brain
 volumes. Frontend is React + TypeScript (`src/`) rendering with
 [`@niivue/niivue`](https://github.com/niivue/niivue); the Rust backend
 (`src-tauri/src/`) embeds a local axum HTTP server that serves volumes, IIIF
@@ -13,15 +13,33 @@ image previews, and a multi-resolution pyramid, and exposes Tauri commands.
 ## Commands
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run typecheck   # app + mcp-server
 bun run lint        # Biome
 bun test
+(cd src-tauri && cargo test)
+(cd src-tauri/web && cargo test --locked)
 bun run tauri:dev   # desktop app
 bun tauri ios build # iOS (see iOS notes)
 ```
 
-Run typecheck, lint and test before calling a change done.
+CI runs all the tests above: run them before calling a change done. Installs,
+cargo fetches and the iOS build need network and write outside the repo
+(Xcode's DerivedData), so a sandboxed agent (Codex's default) must run them
+with network and full access.
+
+Commits use conventional commits (`feat:`, `fix:`, `docs:`, ...); Biome is the
+only linter and formatter.
+
+## Driving the app (MCP)
+
+With View → Allow AI Agents on, the app serves MCP at
+`http://127.0.0.1:4242/mcp` (4243 for `tauri:dev`). Connect Claude Code with
+`claude mcp add --transport http neurovue http://127.0.0.1:4242/mcp`, or Codex
+with an `[mcp_servers.neurovue]` entry in `~/.codex/config.toml` (see
+`demo/codex`). NeuroVue's own tools are NeuroFlow documents in
+`mcp-server/tools/`: a new or changed one must pass neuroflow-spec's validator,
+which CI doesn't run yet (`docs/mcp.md`).
 
 ## Mobile portability is a hard constraint
 
