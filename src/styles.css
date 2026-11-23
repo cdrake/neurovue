@@ -105,7 +105,7 @@ button {
 
 .nv-app {
   display: grid;
-  grid-template-rows: 64px minmax(0, 1fr) 34px;
+  grid-template-rows: 64px minmax(0, 1fr) minmax(34px, auto);
   grid-template-columns: minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
@@ -117,7 +117,10 @@ button {
 }
 
 .nv-app.has-terminal {
-  grid-template-rows: 64px minmax(0, 1fr) var(--terminal-height, 280px) 34px;
+  grid-template-rows: 64px minmax(0, 1fr) var(--terminal-height, 280px) minmax(
+      34px,
+      auto
+    );
 }
 
 .nv-topbar,
@@ -142,7 +145,7 @@ button {
   border-bottom: 0;
   color: var(--muted);
   font-size: 0.75rem;
-  gap: 14px;
+  column-gap: 14px;
   justify-content: flex-start;
   padding: 0 14px;
   box-shadow: none;
@@ -209,12 +212,18 @@ button {
 }
 
 /* Errors stay put until the next action, so make them read as errors. */
+.nv-status.has-error {
+  flex-wrap: wrap;
+}
+
 .nv-status .nv-status-message.is-error {
   color: var(--danger);
   font-weight: 600;
-  /* Two lines fit the 34px bar; an error is the one note worth reading whole. */
-  max-height: 2.4em;
-  line-height: 1.2;
+  /* An error is the one note worth reading whole: it wraps, and takes its own
+     row above the disclaimer when they don't fit side by side (iPhone). */
+  flex: 1 1 16rem;
+  padding: 6px 0;
+  line-height: 1.25;
   white-space: normal;
 }
 

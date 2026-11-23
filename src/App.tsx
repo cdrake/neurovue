@@ -2966,7 +2966,9 @@ export function App(): JSX.Element {
         </section>
       ) : null}
 
-      <footer className="nv-status">
+      <footer
+        className={`nv-status${statusTone === 'error' ? ' has-error' : ''}`}
+      >
         {/* One stable live region: swapping roles on the fly is announced
             unreliably, so errors stay "status" and say "Error:" instead. */}
         <span
