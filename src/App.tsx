@@ -2408,7 +2408,7 @@ export function App(): JSX.Element {
                   enableReceiving().then(
                     () =>
                       setStatus(
-                        'Macs on this network running NeuroVue can now send here.',
+                        'Macs on this network running NeuroVue can now send here. If a Mac can’t find this device, allow Local Network for NeuroVue in Settings → Privacy & Security.',
                         'success',
                       ),
                     (error) => {
