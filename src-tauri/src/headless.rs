@@ -7,8 +7,8 @@
 //! to the step's output dir, with one `review.headless` provenance line.
 
 use crate::volumetric_server::{
-    append_provenance, export_bundle, BundleView, iso8601_utc_now, neuroflow_context_at, open_offline,
-    review_state_of, volume_ids, ServerHandle,
+    append_provenance, export_bundle, iso8601_utc_now, layers_pane, neuroflow_context_at,
+    open_offline, review_state_of, volume_ids, BundleView, ServerHandle,
 };
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf};
@@ -92,23 +92,14 @@ pub fn review(session_dir: PathBuf) -> Result<Value, String> {
 /// The view a window opens with: the first volume as the base, the rest as
 /// overlays, and the given clip planes.
 fn default_view(ids: &[String], clip_planes: &Value) -> Value {
-    let volumes: Vec<Value> = ids
-        .iter()
-        .enumerate()
-        .map(|(index, id)| json!({ "id": id, "role": if index == 0 { "base" } else { "overlay" } }))
-        .collect();
-    json!({
-        "version": 1,
-        "scene": { "crosshairPos": null, "clipPlanes": enabled_planes(clip_planes) },
-        "volumes": volumes,
-        "viewMode": "multiplanar",
-    })
+    let volumes = ids.iter().map(|id| json!({ "url": id })).collect();
+    layers_pane(volumes, enabled_planes(clip_planes), "multiplanar")
 }
 
 /// The window's Save payload (App.tsx `savePatch`), for the view's base volume.
 fn correction_patch(handle: &ServerHandle, view: &Value) -> Value {
     let ids = volume_ids(handle);
-    let base = view["volumes"][0]["id"]
+    let base = view["app"]["layers"]["base"]
         .as_str()
         .filter(|id| ids.iter().any(|known| known == id))
         .unwrap_or(&ids[0]);
@@ -117,7 +108,7 @@ fn correction_patch(handle: &ServerHandle, view: &Value) -> Value {
         "neurovue": "0.1.0",
         "asset": { "id": base, "type": "VolumeDesktop", "manifest": source },
         "backend": "headless",
-        "clipPlanes": enabled_planes(&view["scene"]["clipPlanes"]),
+        "clipPlanes": enabled_planes(&view["app"]["clipPlanes"]),
         "savedAt": iso8601_utc_now(),
     })
 }

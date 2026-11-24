@@ -3,6 +3,7 @@ import {
   type ColorMap,
   type NiiVueLocation,
   type NVImage,
+  type SerializeOptions,
   subVolumeBox,
   type UIKitOverlayRenderer,
 } from '@niivue/niivue'
@@ -34,7 +35,11 @@ import {
 import type { BlockSettings } from '../domain/blocks'
 import { blocksAreTiled } from '../domain/blocks'
 import { BoxEditor, type BoxEditorHost } from '../domain/boxEditor'
-import type { BundleCamera } from '../domain/bundle'
+import {
+  BUNDLE_CAMERA_KEYS,
+  type BundleCamera,
+  type BundleDocument,
+} from '../domain/bundle'
 import type {
   Backend,
   ClipPlane,
@@ -97,8 +102,8 @@ export interface StageViewTarget {
 /** The scene state a saved view keeps that React doesn't hold. */
 export interface StageSnapshot {
   annotations: Record<string, unknown[]>
-  camera: BundleCamera | null
-  hiddenLabels: Record<string, number[]>
+  /** The viewer as a NiiVue document, linked by layer and mesh id. */
+  document: BundleDocument | null
   controls: Record<string, ControlValue>
   /** The live drawing's NIfTI bytes, when there is one. */
   drawing: (() => Promise<Uint8Array | null>) | null
@@ -122,18 +127,37 @@ async function canvasThumbnail(nv: NiiVueLike | null): Promise<Blob | null> {
   return thumb.convertToBlob({ type: 'image/png' })
 }
 
-function cameraOf(nv: NiiVueLike): BundleCamera | null {
-  const { azimuth, elevation, scaleMultiplier, pan2Dxyzmm } = nv
-  if (
-    azimuth === undefined ||
-    elevation === undefined ||
-    scaleMultiplier === undefined ||
-    pan2Dxyzmm?.length !== 4
-  ) {
-    return null
+// The viewer as a linked NiiVue document: each volume's and mesh's url maps to
+// its NeuroVue id. A url can recur (every prefetched base level is named
+// after its file), so ids queue in load order, which is serialize's order.
+function documentOf(
+  nv: NiiVueLike,
+  layerIds: readonly string[],
+  meshIds: readonly string[],
+): BundleDocument | null {
+  if (!nv.serializeDocument) return null
+  const queues = new Map<string, string[]>()
+  const enqueue = (key: string, id: string | undefined) => {
+    if (id) queues.set(key, [...(queues.get(key) ?? []), id])
   }
-  const [x, y, z, zoom] = Array.from(pan2Dxyzmm)
-  return { azimuth, elevation, scaleMultiplier, pan2Dxyzmm: [x, y, z, zoom] }
+  nv.volumes?.forEach((volume, index) => {
+    enqueue(`volume:${volume.url}`, layerIds[index])
+  })
+  nv.meshes?.forEach((mesh, index) => {
+    enqueue(`mesh:${mesh.url}`, meshIds[index])
+  })
+  const bytes = nv.serializeDocument({
+    format: 'json',
+    linkData: true,
+    // null embeds: a volume NeuroVue didn't load (none today) keeps its data.
+    linkUrl: (url, kind) => queues.get(`${kind}:${url}`)?.shift() ?? null,
+    settings: { alwaysSave: BUNDLE_CAMERA_KEYS },
+  })
+  const document: BundleDocument = JSON.parse(new TextDecoder().decode(bytes))
+  // The drawing travels as its own part.
+  delete document.drawingBitmapRLE
+  delete document.drawingBitmapLength
+  return document
 }
 
 function applyViewTarget(
@@ -275,6 +299,7 @@ interface NiiVueLike {
   // extentsMin/Max are the volume's world-space (mm) bounding box, used to flag
   // overlays that land in a different space than the base.
   volumes?: Array<{
+    url?: string
     robustMin?: number
     robustMax?: number
     globalMax?: number
@@ -395,6 +420,7 @@ interface NiiVueLike {
   annotationUndo?(): void
   annotationRedo?(): void
   getAnnotationsJSON?(): string
+  serializeDocument?(options: SerializeOptions): Uint8Array
   loadAnnotationsJSON?(json: string): void
   annotationsToSVG?(sliceType: number, slicePositionMm: number): string | null
   // Returns the unregister function.
@@ -438,7 +464,7 @@ interface NiiVueLike {
   }
   setClipPlanes?(planes: number[][]): void
   setClipPlane?(plane: number[]): void
-  meshes?: unknown[]
+  meshes?: Array<{ url?: string }>
   addMesh?(mesh: NiiVueMeshOptions): Promise<unknown>
   removeAllMeshes?(): Promise<void>
   setMesh?(meshIndex: number, options: NiiVueMeshDisplay): Promise<void>
@@ -2356,17 +2382,18 @@ export function NiivueStage({
       if (nv?.volumes?.length && primaryItem && !isAttachingRef.current) {
         annotations.set(primaryItem.id, nv.getAnnotationsJSON?.() ?? '[]')
       }
-      const hiddenLabels: Record<string, number[]> = {}
-      loadedLayerIdsRef.current.forEach((id, index) => {
-        const labels = nv?.volumes?.[index]?.hiddenLabels
-        if (labels?.length) hiddenLabels[id] = [...labels]
-      })
       return {
         annotations: Object.fromEntries(
           [...annotations].map(([id, json]) => [id, JSON.parse(json)]),
         ),
-        camera: nv ? cameraOf(nv) : null,
-        hiddenLabels,
+        document:
+          nv && !isAttachingRef.current
+            ? documentOf(
+                nv,
+                loadedLayerIdsRef.current,
+                loadedMeshIdsRef.current,
+              )
+            : null,
         controls: stageControlHint(stageControlsState),
         drawing:
           nv && hasDrawing

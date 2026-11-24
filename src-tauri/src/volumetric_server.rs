@@ -948,8 +948,9 @@ pub struct BundlePart {
     pub base: Option<String>,
 }
 
-/// One saved view (a deck step) to export: its document, and the staged PNG
-/// (`stage_bundle_part`) shown for it.
+/// One saved view (a deck step) to export: its pane (`{document, app,
+/// controls}`, bundle.ts `BundlePane`), and the staged PNG (`stage_bundle_part`)
+/// shown for it.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleView {
@@ -957,17 +958,17 @@ pub struct BundleView {
     pub title: String,
     #[serde(default)]
     pub notes: String,
-    pub document: Value,
+    pub pane: Value,
     #[serde(default)]
     pub thumbnail: Option<String>,
 }
 
 impl BundleView {
-    pub fn single(document: Value) -> Self {
+    pub fn single(pane: Value) -> Self {
         Self {
             title: String::new(),
             notes: String::new(),
-            document,
+            pane,
             thumbnail: None,
         }
     }
@@ -1058,7 +1059,7 @@ pub fn share_cache_key(
     let volumes = lock_recover(&handle.volumes);
     let mut hasher = DefaultHasher::new();
     if let [view] = views {
-        view.document
+        view.pane["app"]
             .get("annotations")
             .map(|a| a.to_string())
             .hash(&mut hasher);
@@ -1066,7 +1067,7 @@ pub fn share_cache_key(
         // A deck's steps are saved snapshots, not the live view: all content.
         for view in views {
             (&view.title, &view.notes, &view.thumbnail).hash(&mut hasher);
-            view.document.to_string().hash(&mut hasher);
+            view.pane.to_string().hash(&mut hasher);
         }
     }
     // Staged parts are new files each time, so their content hash is the key.
@@ -1271,7 +1272,7 @@ fn write_bundle_zip(
         }));
     }
     for (entry, view) in manifest_views.iter_mut().zip(views) {
-        let text = serde_json::to_vec_pretty(&single_pane_view(view.document.clone()))
+        let text = serde_json::to_vec_pretty(&single_pane_view(view.pane.clone()))
             .map_err(|error| format!("export_bundle: serialize view: {error}"))?;
         let rel = format!("views/{}.json", entry["id"].as_str().unwrap_or_default());
         zip.start_file(&rel, small)
@@ -1407,13 +1408,35 @@ fn write_bundle_mimetype(zip: &mut ZipWriter<File>) -> Result<(), String> {
         .map_err(|error| format!("bundle: zip mimetype: {error}"))
 }
 
-/// A saved view of one viewer, holding today's `BundleViewState`; more panes,
-/// a layout and sync come with multiple viewers (docs/nvbundle-v2.md).
-fn single_pane_view(document: Value) -> Value {
+/// A saved view of one viewer; more panes, a layout and sync come with
+/// multiple viewers (docs/nvbundle-v2.md).
+fn single_pane_view(pane: Value) -> Value {
+    json!({ "panes": { MAIN_VIEW: pane }, "focus": MAIN_VIEW })
+}
+
+/// A pane over `volumes` (NVDocument volumes, `url` = volume id): the first is
+/// the base and the rest overlays, with no camera or crosshair.
+pub(crate) fn layers_pane(volumes: Vec<Value>, clip_planes: Vec<Value>, view_mode: &str) -> Value {
+    let ids: Vec<&Value> = volumes.iter().map(|volume| &volume["url"]).collect();
     json!({
-        "panes": { MAIN_VIEW: { "documentKind": "neurovue-view-1", "document": document } },
-        "focus": MAIN_VIEW,
+        "document": { "volumes": volumes },
+        "app": {
+            "layers": { "base": ids.first(), "overlays": ids.get(1..), "atlas": null },
+            "viewMode": view_mode,
+            "clipPlanes": clip_planes,
+            "crosshairMm": null,
+        },
     })
+}
+
+/// A pane's layer ids: base, overlays, atlas (bundle.ts `bundleViewVolumeIds`).
+pub(crate) fn pane_layer_ids(pane: &Value) -> Vec<&str> {
+    let layers = &pane["app"]["layers"];
+    std::iter::once(&layers["base"])
+        .chain(layers["overlays"].as_array().into_iter().flatten())
+        .chain(std::iter::once(&layers["atlas"]))
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 /// Refuse a manifest this build would misread: another format version (v1 bundles predate any
@@ -2187,7 +2210,7 @@ pub fn read_document(path: &FsPath) -> Result<Value, String> {
             "label": name,
             "data": format!("data/{file_name}"),
         }));
-        let mut view = json!({ "id": id, "role": role });
+        let mut view = json!({ "url": id });
         for key in ["colormap", "opacity", "calMin", "calMax"] {
             // A number NiiVue couldn't write as JSON (NaN) comes as an object; skip it.
             if let Some(value) = volume.get(key).filter(|v| v.is_string() || v.is_number()) {
@@ -2217,14 +2240,9 @@ pub fn read_document(path: &FsPath) -> Result<Value, String> {
             "views": [{ "id": MAIN_VIEW }],
             "start": MAIN_VIEW,
         },
-        "view": single_pane_view(json!({
-            "version": 1,
-            // The document's crosshair is a fraction of NiiVue's resliced
-            // volume, which doesn't map back to millimetres here.
-            "scene": { "crosshairPos": null, "clipPlanes": [] },
-            "volumes": view_volumes,
-            "viewMode": "",
-        })),
+        // The document's crosshair is a fraction of NiiVue's resliced volume,
+        // which doesn't map back to millimetres here.
+        "view": single_pane_view(layers_pane(view_volumes, Vec::new(), "")),
         "bundlePath": out_root.display().to_string(),
         "dataDir": data_dir.display().to_string(),
         "verification": [],
@@ -3065,12 +3083,7 @@ fn persist_correction_patch(state: &AppState, payload: &Value) -> Option<String>
 
     let mut outputs = json!({ "correction.patch.json": "correction.patch.json" });
     if let Some(view) = payload.get("view") {
-        let in_view: HashSet<&str> = view["volumes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|volume| volume["id"].as_str())
-            .collect();
+        let in_view: HashSet<&str> = pane_layer_ids(view).into_iter().collect();
         let volumes: Vec<VolumeEntry> = lock_recover(&state.volumes)
             .iter()
             .filter(|volume| in_view.contains(volume.id.as_str()))
@@ -5589,7 +5602,7 @@ mod tests {
             serde_json::from_slice(&fs::read(out.join("review.state.json")).unwrap()).unwrap();
         assert_eq!(state["dataset"]["name"], "Tiny");
         assert_eq!(state["volumes"].as_array().unwrap().len(), 1);
-        assert_eq!(state["view"]["volumes"][0]["id"], patch["asset"]["id"]);
+        assert_eq!(state["view"]["app"]["layers"]["base"], patch["asset"]["id"]);
         let bundle = fs::read(out.join("review.nvbundle")).unwrap();
         assert_eq!(&bundle[30..38], b"mimetype");
         assert_eq!(&bundle[38..38 + BUNDLE_MIME.len()], BUNDLE_MIME.as_bytes());
@@ -5599,7 +5612,7 @@ mod tests {
         assert_eq!(read["manifest"]["resources"][0]["kind"], "volume");
         assert_eq!(read["manifest"]["views"][0]["data"], "views/v1.json");
         assert_eq!(
-            read["view"]["panes"]["main"]["document"]["volumes"][0]["id"],
+            read["view"]["panes"]["main"]["document"]["volumes"][0]["url"],
             patch["asset"]["id"]
         );
         assert!(read["verification"]
@@ -5663,13 +5676,20 @@ mod tests {
         let step = |title: &str, thumb: &[u8]| BundleView {
             title: title.to_string(),
             notes: format!("{title} notes"),
-            document: json!({ "version": 1, "drawing": format!("{title}_drawing") }),
+            pane: json!({ "app": { "drawing": format!("{title}_drawing") } }),
             thumbnail: Some(stage_bundle_part(thumb).unwrap()),
         };
         let views = [step("s1", png), step("s2", b"\x89PNG\r\n\x1a\nnext")];
         let zip_path = dir.join("deck.nvbundle");
         let export = |parts: &[BundlePart], views: &[BundleView]| {
-            export_bundle(&handle, &zip_path, &ids, parts, views, "2026-11-23T00:00:00Z")
+            export_bundle(
+                &handle,
+                &zip_path,
+                &ids,
+                parts,
+                views,
+                "2026-11-23T00:00:00Z",
+            )
         };
         export(&parts, &views).unwrap();
 
@@ -5678,7 +5698,10 @@ mod tests {
         let second = 30 + 8 + BUNDLE_MIME.len();
         let name_len = u16::from_le_bytes([bytes[second + 26], bytes[second + 27]]) as usize;
         let extra_len = u16::from_le_bytes([bytes[second + 28], bytes[second + 29]]) as usize;
-        assert_eq!(&bytes[second + 30..second + 30 + name_len], b"thumbs/v1.png");
+        assert_eq!(
+            &bytes[second + 30..second + 30 + name_len],
+            b"thumbs/v1.png"
+        );
         let data = second + 30 + name_len + extra_len;
         assert_eq!(&bytes[data..data + png.len()], png);
 
@@ -5688,7 +5711,10 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[1]["title"], "s2");
         assert_eq!(steps[1]["notes"], "s2 notes");
-        assert_eq!(steps[1]["view"]["panes"]["main"]["document"]["drawing"], "s2_drawing");
+        assert_eq!(
+            steps[1]["view"]["panes"]["main"]["app"]["drawing"],
+            "s2_drawing"
+        );
         assert!(steps[0]["thumbnail"]
             .as_str()
             .unwrap()
@@ -5703,7 +5729,10 @@ mod tests {
         assert_eq!(by_id("mesh-2")["data"], "meshes/lh.pial");
         assert_eq!(by_id("mesh-3")["data"], "meshes/1-lh.pial");
         let root = FsPath::new(read["bundlePath"].as_str().unwrap());
-        assert_eq!(fs::read(root.join("meshes/1-lh.pial")).unwrap(), b"other surface");
+        assert_eq!(
+            fs::read(root.join("meshes/1-lh.pial")).unwrap(),
+            b"other surface"
+        );
 
         let key = share_cache_key(&handle, &ids, &parts, &views);
         let mut redrawn = parts.clone();

@@ -1,18 +1,21 @@
 import { describe, expect, test } from 'bun:test'
-import type { BundleViewState } from './bundle'
+import type { BundlePane } from './bundle'
 import { type DeckStep, remapBundleView, stageDeck } from './deck'
 import type { MeshLayer } from './meshes'
 
-const view = (base: string): BundleViewState => ({
-  version: 1,
-  scene: { crosshairPos: null, clipPlanes: [] },
-  volumes: [
-    { id: base, role: 'base' },
-    { id: 'gone', role: 'overlay' },
-  ],
-  viewMode: 'axial',
-  annotations: { [base]: [{}], gone: [{}] },
-  stack: { levels: [base, 'gone', 'lo'], blocks: { lo: {} as never } },
+const view = (base: string): BundlePane => ({
+  document: {
+    volumes: [{ url: base }, { url: 'gone' }],
+    meshes: [{ url: 'mesh-1', color: [1, 0, 0, 1], opacity: 0.5 }],
+  },
+  app: {
+    layers: { base, overlays: ['gone'], atlas: null },
+    viewMode: 'axial',
+    clipPlanes: [],
+    crosshairMm: null,
+    annotations: { [base]: [{}], gone: [{}] },
+    stack: { levels: [base, 'gone', 'lo'], blocks: { lo: {} as never } },
+  },
 })
 
 const mesh: MeshLayer = {
@@ -54,13 +57,12 @@ describe('stageDeck', () => {
       ['v1_mesh-1', 'sha2'],
       ['v2_mesh-1', 'sha2'],
     ])
-    expect(views[0].document.drawing).toBe('v1_drawing')
-    expect(views[1].document.drawing).toBeUndefined()
-    expect(views[1].document.meshes?.[0]).toEqual({
-      id: 'v2_mesh-1',
-      color: [1, 0, 0],
+    expect(views[0].pane.app.drawing).toBe('v1_drawing')
+    expect(views[1].pane.app.drawing).toBeUndefined()
+    expect(views[1].pane.document.meshes?.[0]).toEqual({
+      url: 'v2_mesh-1',
+      color: [1, 0, 0, 1],
       opacity: 0.5,
-      visible: true,
     })
     expect(volumeIds).toEqual(['t1', 'gone', 'lo', 't2'])
   })
@@ -70,9 +72,10 @@ describe('remapBundleView', () => {
   test('maps volume ids and drops the ones that did not load', () => {
     const ids: Record<string, string> = { t1: 'a', lo: 'b' }
     const mapped = remapBundleView(view('t1'), (id) => ids[id])
-    expect(mapped.volumes.map((volume) => volume.id)).toEqual(['a'])
-    expect(Object.keys(mapped.annotations ?? {})).toEqual(['a'])
-    expect(mapped.stack?.levels).toEqual(['a', 'b'])
-    expect(Object.keys(mapped.stack?.blocks ?? {})).toEqual(['b'])
+    expect(mapped.document.volumes?.map((volume) => volume.url)).toEqual(['a'])
+    expect(mapped.app.layers).toEqual({ base: 'a', overlays: [], atlas: null })
+    expect(Object.keys(mapped.app.annotations ?? {})).toEqual(['a'])
+    expect(mapped.app.stack?.levels).toEqual(['a', 'b'])
+    expect(Object.keys(mapped.app.stack?.blocks ?? {})).toEqual(['b'])
   })
 })

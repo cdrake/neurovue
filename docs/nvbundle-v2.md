@@ -1,6 +1,6 @@
 # nvbundle v2: documents that save everything
 
-Status: PR 1 (container, manifest) implemented; the rest is proposal. Extends `.nvbundle` v1 (`src/domain/bundle.ts`, `export_bundle`/`read_bundle` in
+Status: PRs 1-4 (container, round trip, deck, NVDocument panes) implemented; the rest is proposal. Extends `.nvbundle` v1 (`src/domain/bundle.ts`, `export_bundle`/`read_bundle` in
 `src-tauri/src/volumetric_server.rs`) and the `nvbundle: "2"` already planned in
 [provenance.md](provenance.md). No new format.
 
@@ -97,9 +97,10 @@ manifest.json
                       volume/mesh urls are resource ids resolved via resolveUrl */ },
       "app": {    // NeuroVue state NVDocument has no slot for
         "layers": { "base": "t1", "overlays": [], "atlas": null },
-        "blocks": {}, "blockPath": [],          // drill-down
-        "shading": {}, "legendHidden": [],
-        "annotationsBase": "t1"
+        "hidden": { "t1": 0.8 },                // hidden layer → opacity it returns to
+        "viewMode": "multiplanar", "clipPlanes": [], "crosshairMm": [0, 0, 0],
+        "blocks": {}, "stack": { "levels": [], "blocks": {} },  // drill-down
+        "shading": {}, "annotations": { "t1": [] }, "drawing": "v1_drawing"
       },
       "controls": { "version": 1, "values": { "shapes": true, "shape-tool": "arrow", "pen": "1" } }
     },
@@ -112,13 +113,13 @@ manifest.json
 ```
 
 - **Panes** are NVDocuments so mono owns scene serialization and migration; NeuroVue adds only
-  `app`. Until panes switch to mono's linked JSON documents (`serializeDocument({ linkData: true,
-  format: 'json' })` and `loadDocument`'s `resolveUrl`; mesh linking and a save-side URL hook are
-  still to come), `document` is the v1 `BundleViewState` shape (`"documentKind":
-  "neurovue-view-1"`). Until then that document also carries `scene` camera (azimuth, elevation,
-  zoom, 2D pan), `hiddenLabels` per volume, `shading`, `stack` (drill-down levels and their
-  blocks), `annotations` per volume, `meshes` (look by resource id) and `controls`; they move to
-  `app`/`controls` with PR 4.
+  `app`. The document is `serializeDocument({ linkData: true, format: 'json', linkUrl })` minus
+  its drawing bitmap (the drawing is its own part); `linkUrl` maps each volume to its volume id
+  and each mesh to its part id, and camera keys are always saved. It holds colormaps, windows,
+  opacities, legend toggles (`hiddenLabels`), camera and mesh looks. NeuroVue still loads the
+  volumes itself (its pyramid and voxel ceiling), reading those back rather than calling
+  `loadDocument`. The crosshair stays in `app` in mm (the document's is a fraction). Tracts embed
+  their data (mono doesn't link them yet).
 - **Layout** is a logical tree with weights, never pixels. A compact width (iPhone, Slide Over) may
   show it as tabs or one pane at a time; the author's layout is a request, not a requirement.
 - **Sync** mirrors NiiVue's `broadcastTo`/`SyncOpts` (crosshair, zoom/pan, camera, 2D/3D) as named

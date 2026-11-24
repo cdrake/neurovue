@@ -106,9 +106,9 @@ import {
 import {
   applyBundleView,
   attachDrawing,
+  type BundlePane,
   type BundleReadResult,
-  type BundleViewState,
-  buildBundleViewState,
+  buildBundlePane,
   bundleVerifyFailures,
   bundleVolumeIds,
   clearStoredData,
@@ -116,7 +116,7 @@ import {
   type ExportBundleResult,
   enableReceiving,
   exportDatasetBundle,
-  focusedViewState,
+  focusedPane,
   formatBundleBytes,
   isBundlePath,
   isDocumentPath,
@@ -1202,24 +1202,23 @@ export function App(): JSX.Element {
 
   // Compose the current view for a deck step or an export. Volume order is
   // base → overlays → atlas, which the importer replays.
-  function composeCurrentView(base: DesktopItem): BundleViewState {
+  function composeCurrentView(base: DesktopItem): BundlePane {
     const crosshairMm = locationReadout?.mm
     const snapshot = stageSnapshotRef.current?.()
-    const view = buildBundleViewState({
+    return buildBundlePane({
+      document: snapshot?.document ?? null,
       baseId: base.id,
       overlayIds: Array.from(overlayIds),
       atlasId,
       layerSettings,
       viewMode,
       clipPlanes,
-      crosshairPos:
+      crosshairMm:
         Array.isArray(crosshairMm) && crosshairMm.length >= 3
           ? [crosshairMm[0], crosshairMm[1], crosshairMm[2]]
           : null,
       blocks,
       annotations: snapshot?.annotations,
-      camera: snapshot?.camera ?? undefined,
-      hiddenLabels: snapshot?.hiddenLabels,
       controls: snapshot?.controls,
       shading,
       // The levels still loaded, and only while one of them is shown.
@@ -1232,15 +1231,6 @@ export function App(): JSX.Element {
           }
         : undefined,
     })
-    if (meshes.length > 0) {
-      view.meshes = meshes.map(({ id, color, opacity, visible }) => ({
-        id,
-        color,
-        opacity,
-        visible,
-      }))
-    }
-    return view
   }
 
   // What's on screen as a deck step. The drawing, meshes and picture are
@@ -1329,8 +1319,8 @@ export function App(): JSX.Element {
     step: DeckStep,
     loadedIds: ReadonlySet<string>,
   ): Promise<void> {
-    const view = step.view
-    const applied = applyBundleView(view, (id) =>
+    const { app, controls } = step.view
+    const applied = applyBundleView(step.view, (id) =>
       loadedIds.has(id) ? id : undefined,
     )
     const [drawing, stepMeshes] = await Promise.all([
@@ -1341,12 +1331,12 @@ export function App(): JSX.Element {
     setLayerSettings(applied.layerSettings)
     setOverlayIds(applied.overlayIds)
     setAtlasId(applied.atlasId)
-    if (view.viewMode) setViewMode(view.viewMode as ViewModeId)
-    setBlocks(view.blocks ?? DEFAULT_BLOCK_SETTINGS)
-    if (view.shading) setShading(view.shading)
+    if (app.viewMode) setViewMode(app.viewMode as ViewModeId)
+    setBlocks(app.blocks ?? DEFAULT_BLOCK_SETTINGS)
+    if (app.shading) setShading(app.shading)
     setSubvolumeStack(applied.stack?.levels ?? [])
     setStackBlocks(applied.stack?.blocks ?? {})
-    applyClipPlanes(view.scene?.clipPlanes ?? [])
+    applyClipPlanes(app.clipPlanes ?? [])
     if (applied.baseId) setSelectedId(applied.baseId)
     setViewTarget({
       drawing:
@@ -1361,7 +1351,7 @@ export function App(): JSX.Element {
       ),
       camera: applied.camera,
       hiddenLabels: applied.hiddenLabels,
-      controls: view.controls ?? null,
+      controls: controls?.values ?? null,
     })
     if (applied.crosshairPos) setCrosshairTarget({ mm: applied.crosshairPos })
   }
@@ -1974,11 +1964,11 @@ export function App(): JSX.Element {
         { id: '', title: '', notes: '', thumbnail: null, view: bundle.view },
       ]
     ).flatMap((read): DeckStep[] => {
-      const recorded = focusedViewState(read.view)
+      const recorded = focusedPane(read.view)
       if (!recorded) return []
       const drawing = bundle.manifest.resources.find(
         (resource) =>
-          resource.kind === 'drawing' && resource.id === recorded.drawing,
+          resource.kind === 'drawing' && resource.id === recorded.app.drawing,
       )
       return [
         {
@@ -1996,7 +1986,22 @@ export function App(): JSX.Element {
             readBundleMeshes(
               bundle.bundlePath,
               meshResources,
-              recorded.meshes ?? [],
+              (recorded.document.meshes ?? []).flatMap((mesh) =>
+                mesh.url
+                  ? [
+                      {
+                        id: mesh.url,
+                        color: [
+                          mesh.color?.[0] ?? 1,
+                          mesh.color?.[1] ?? 1,
+                          mesh.color?.[2] ?? 1,
+                        ] as [number, number, number],
+                        opacity: mesh.opacity ?? 1,
+                        visible: mesh.visible !== false,
+                      },
+                    ]
+                  : [],
+              ),
             ),
           ),
         },
@@ -5147,7 +5152,7 @@ async function savePatch(
   item: DesktopItem | null,
   clipPlanes: ClipPlane[],
   backend: Backend,
-  view: BundleViewState | null,
+  view: BundlePane | null,
 ): Promise<void> {
   if (!serverUrl || !item) {
     throw new Error('Select a volume before saving a clip-plane correction.')
