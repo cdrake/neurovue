@@ -126,6 +126,10 @@
 				<array>
 					<string>nvb</string>
 				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.neurovue.bundle+zip</string>
+				</array>
 			</dict>
 		</dict>
 	</array>
