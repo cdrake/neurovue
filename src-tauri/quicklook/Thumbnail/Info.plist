@@ -36,7 +36,7 @@
         <string>org.gnu.gnu-zip-archive</string>
         <string>org.freesurfer.mgz</string>
         <string>org.freesurfer.mgh</string>
-        <string>org.neurovue.nvbundle</string>
+        <string>org.neurovue.nvb</string>
       </array>
       <key>QLThumbnailMinimumDimension</key>
       <integer>0</integer>

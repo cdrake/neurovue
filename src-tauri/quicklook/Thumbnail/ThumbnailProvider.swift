@@ -12,7 +12,7 @@ final class ThumbnailProvider: QLThumbnailProvider {
         for request: QLFileThumbnailRequest, _ handler: @escaping (QLThumbnailReply?, Error?) -> Void
     ) {
         let url = request.fileURL
-        if url.pathExtension == "nvbundle" {
+        if url.pathExtension == "nvb" {
             return handler(bundleReply(url, request), nil)
         }
         do {

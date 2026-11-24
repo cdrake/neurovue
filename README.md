@@ -168,7 +168,7 @@ NiiVue repo maintains, plus NeuroVue's own:
 
 | Tool | Does |
 | --- | --- |
-| `open_path` | Opens a dataset folder, NIfTI volume or `.nvbundle` |
+| `open_path` | Opens a dataset folder, NIfTI volume or `.nvb` |
 | `add_overlay_path` | Lays a NIfTI volume over the open dataset |
 | `load_surfaces`, `load_tracts` | Add surface meshes or tracts (`.trk`, `.tck`, `.trx`) |
 | `dataset`, `select_volume` | List the dataset's volumes and switch between them |

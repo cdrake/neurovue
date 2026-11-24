@@ -241,8 +241,8 @@ fn stage_share_bundle(
 ) -> Result<(volumetric_server::BundleExportResult, std::path::PathBuf), String> {
     let shares_dir = volumetric_server::cache_root().join("shares");
     let name = sanitize_share_name(name);
-    let dest = shares_dir.join(format!("{name}.nvbundle"));
-    let sig_path = shares_dir.join(format!("{name}.nvbundle.sig"));
+    let dest = shares_dir.join(format!("{name}.nvb"));
+    let sig_path = shares_dir.join(format!("{name}.nvb.sig"));
     let key = volumetric_server::share_cache_key(server, volume_ids, parts, views);
 
     if dest.is_file() && std::fs::read_to_string(&sig_path).is_ok_and(|sig| sig == key) {
@@ -452,7 +452,7 @@ async fn send_drawing_to_device(
             .collect();
         let dest = volumetric_server::cache_root()
             .join("drawings")
-            .join(format!("{name}.nvbundle"));
+            .join(format!("{name}.nvb"));
         volumetric_server::export_drawing_bundle(&dest, &drawing, &base, &created_at)?;
         let addresses = target.addresses();
         if addresses.is_empty() {

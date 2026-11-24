@@ -645,7 +645,7 @@ pub fn init_data_root(path: PathBuf) {
 }
 
 /// User work that must survive OS temp purges: niimath derivatives and
-/// extracted `.nvbundle` imports. Falls back to `cache_root()` only when
+/// extracted `.nvb` imports. Falls back to `cache_root()` only when
 /// `init_data_root` was never called (unit tests).
 pub fn data_root() -> PathBuf {
     DATA_ROOT.get().cloned().unwrap_or_else(cache_root)
@@ -1033,7 +1033,7 @@ fn staged_file(sha256: &str, name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Result of writing a portable `.nvbundle` to disk.
+/// Result of writing a portable `.nvb` to disk.
 pub struct BundleExportResult {
     pub bundle_path: String,
     pub volume_count: usize,
@@ -1105,7 +1105,7 @@ pub fn prune_share_cache(dir: &FsPath, keep: usize) {
     let mut bundles: Vec<(std::time::SystemTime, PathBuf)> = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "nvbundle"))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "nvb"))
         .filter_map(|path| {
             fs::metadata(&path)
                 .and_then(|meta| meta.modified())
@@ -1119,12 +1119,12 @@ pub fn prune_share_cache(dir: &FsPath, keep: usize) {
     bundles.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
     for (_, path) in bundles.into_iter().skip(keep) {
         let _ = fs::remove_file(&path);
-        let _ = fs::remove_file(path.with_extension("nvbundle.sig"));
+        let _ = fs::remove_file(path.with_extension("nvb.sig"));
     }
 }
 
 /// Export the given volumes (and their JSON sidecars) into a self-describing
-/// single-file `.nvbundle` (a zip) at `dest`, containing `manifest.json` +
+/// single-file `.nvb` (a zip) at `dest`, containing `manifest.json` +
 /// `data/*`. Each data file gets a cryptographic (SHA-256) content hash recorded
 /// in the manifest so a later import can verify integrity. `view` is an opaque
 /// view-state blob supplied by the frontend (layers, colormaps, windows, clip
@@ -1923,7 +1923,7 @@ fn copy_within_budget<R: Read, W: Write>(
     Ok(())
 }
 
-/// Extract a single-file `.nvbundle` (zip) into a fresh cache directory,
+/// Extract a single-file `.nvb` (zip) into a fresh cache directory,
 /// returning the extraction root (which holds `manifest.json` + `data/`).
 /// `enclosed_name` drops any entry that would escape the directory (path
 /// traversal), so a hostile archive can't write outside the cache.
@@ -1982,7 +1982,7 @@ fn extract_bundle_zip(zip_path: &FsPath) -> Result<PathBuf, String> {
 }
 
 /// Extraction dir name for a bundle: its sanitized file stem plus an FNV-1a of
-/// the full (canonical) path, so a stem like `..` (from `...nvbundle`) can't
+/// the full (canonical) path, so a stem like `..` (from `...nvb`) can't
 /// escape `imports/`, and two same-named bundles from different folders don't
 /// overwrite each other's extraction.
 fn bundle_import_dir_name(zip_path: &FsPath) -> String {
@@ -2013,7 +2013,7 @@ fn bundle_import_dir_name(zip_path: &FsPath) -> String {
 pub fn read_bundle(path: &FsPath) -> Result<Value, String> {
     let canonical = fs::canonicalize(path)
         .map_err(|error| format!("read_bundle: {}: {error}", path.display()))?;
-    // A single-file `.nvbundle` is a zip: extract it to a cache dir and read from
+    // A single-file `.nvb` is a zip: extract it to a cache dir and read from
     // there (so the frontend loads the volumes via the normal open-dataset seam).
     // A legacy directory bundle is read in place.
     let root = if canonical.is_file() {
@@ -3567,7 +3567,7 @@ fn discover_volumes_in_root(root: &FsPath, max_volumes: usize) -> RootDiscovery 
 
 /// Make discovered ids unique. `volume_id()` maps `x.nii` beside `x.nii.gz`, or
 /// `a__b.nii` beside `a/b.nii`, to the same id. Ids are persisted in
-/// `.nvbundle`s, so only colliding entries change: in relative-path order the
+/// `.nvb`s, so only colliding entries change: in relative-path order the
 /// first keeps the plain id and each later one gets `~` plus an FNV-1a hash of
 /// its relative path (with extension). Mirrored by `bundleVolumeIds()` in
 /// src/domain/bundle.ts; keep the two in sync.
@@ -5603,10 +5603,10 @@ mod tests {
         assert_eq!(state["dataset"]["name"], "Tiny");
         assert_eq!(state["volumes"].as_array().unwrap().len(), 1);
         assert_eq!(state["view"]["app"]["layers"]["base"], patch["asset"]["id"]);
-        let bundle = fs::read(out.join("review.nvbundle")).unwrap();
+        let bundle = fs::read(out.join("review.nvb")).unwrap();
         assert_eq!(&bundle[30..38], b"mimetype");
         assert_eq!(&bundle[38..38 + BUNDLE_MIME.len()], BUNDLE_MIME.as_bytes());
-        let read = read_unzipped(&out.join("review.nvbundle"), &dir.join("unzipped"));
+        let read = read_unzipped(&out.join("review.nvb"), &dir.join("unzipped"));
         assert_eq!(read["allVerified"], true);
         assert_eq!(read["manifest"]["nvbundle"], "2");
         assert_eq!(read["manifest"]["resources"][0]["kind"], "volume");
@@ -5680,7 +5680,7 @@ mod tests {
             thumbnail: Some(stage_bundle_part(thumb).unwrap()),
         };
         let views = [step("s1", png), step("s2", b"\x89PNG\r\n\x1a\nnext")];
-        let zip_path = dir.join("deck.nvbundle");
+        let zip_path = dir.join("deck.nvb");
         let export = |parts: &[BundlePart], views: &[BundleView]| {
             export_bundle(
                 &handle,
@@ -5756,7 +5756,7 @@ mod tests {
     fn drawing_bundles_read_back_with_their_base() {
         let dir = scratch_dir("bundle-drawing");
         let base = json!({ "id": "t1", "sha256": "abc", "label": "T1" });
-        let zip_path = dir.join("drawing.nvbundle");
+        let zip_path = dir.join("drawing.nvb");
         export_drawing_bundle(&zip_path, b"labels", &base, "2026-11-23T00:00:00Z").unwrap();
         let read = read_unzipped(&zip_path, &dir.join("unzipped"));
         assert_eq!(read["allVerified"], true);
@@ -6077,11 +6077,11 @@ mod tests {
     fn bundle_import_dir_stays_inside_imports() {
         let imports = PathBuf::from("/data/imports");
         for name in [
-            "...nvbundle",
-            "..nvbundle",
-            ".nvbundle",
-            "a/../..nvbundle",
-            "x.nvbundle",
+            "...nvb",
+            "..nvb",
+            ".nvb",
+            "a/../..nvb",
+            "x.nvb",
         ] {
             let dir = bundle_import_dir_name(&FsPath::new("/inbox").join(name));
             let out_root = imports.join(&dir);
@@ -6094,10 +6094,10 @@ mod tests {
         }
         // Same file name in different folders: distinct extraction dirs.
         assert_ne!(
-            bundle_import_dir_name(FsPath::new("/a/scan.nvbundle")),
-            bundle_import_dir_name(FsPath::new("/b/scan.nvbundle"))
+            bundle_import_dir_name(FsPath::new("/a/scan.nvb")),
+            bundle_import_dir_name(FsPath::new("/b/scan.nvb"))
         );
-        assert!(bundle_import_dir_name(FsPath::new("/a/scan.nvbundle")).starts_with("scan-"));
+        assert!(bundle_import_dir_name(FsPath::new("/a/scan.nvb")).starts_with("scan-"));
     }
 
     fn test_state() -> AppState {

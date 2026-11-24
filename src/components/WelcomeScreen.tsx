@@ -107,7 +107,7 @@ export function WelcomeScreen({
               />
               <WelcomeAction
                 disabled={busy}
-                hint="A .nvbundle, with the view it was saved with"
+                hint="A .nvb, with the view it was saved with"
                 icon={<PackageOpen aria-hidden="true" size={16} />}
                 label="Open bundle…"
                 onClick={onOpenBundle}

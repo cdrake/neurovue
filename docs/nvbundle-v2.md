@@ -1,6 +1,6 @@
 # nvbundle v2: documents that save everything
 
-Status: PRs 1-4 (container, round trip, deck, NVDocument panes) implemented; the rest is proposal. Extends `.nvbundle` v1 (`src/domain/bundle.ts`, `export_bundle`/`read_bundle` in
+Status: PRs 1-4 (container, round trip, deck, NVDocument panes) implemented; the rest is proposal. Extends `.nvb` v1 (`src/domain/bundle.ts`, `export_bundle`/`read_bundle` in
 `src-tauri/src/volumetric_server.rs`) and the `nvbundle: "2"` already planned in
 [provenance.md](provenance.md). No new format.
 

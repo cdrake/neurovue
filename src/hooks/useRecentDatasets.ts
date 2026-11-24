@@ -32,7 +32,7 @@ const normalizeSeparators = (path: string): string =>
 
 /**
  * Bundle import once recorded the bundle's extracted `<cacheRoot>/imports/<stem>/
- * data` dir instead of the `.nvbundle`. Those entries are dead: the dir sits under
+ * data` dir instead of the `.nvb`. Those entries are dead: the dir sits under
  * the OS temp dir and is deleted on every re-import — and since the label is the
  * last path segment, each one displayed as a bare "data". Matching against the
  * server's real `cacheRoot` (rather than sniffing for temp-looking paths) keeps a

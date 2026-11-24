@@ -1,6 +1,6 @@
 import Foundation
 
-/// A `.nvbundle` (a Stored zip): its start view's PNG thumbnail, which the
+/// A `.nvb` (a Stored zip): its start view's PNG thumbnail, which the
 /// writer puts right after `mimetype` without zip64 extras (`write_bundle_zip`).
 /// Reads only those two local headers, never the volumes behind them.
 enum NVBundleThumbnail {
