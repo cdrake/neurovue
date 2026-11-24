@@ -1081,6 +1081,7 @@ pub fn run() {
         read_mask_file,
         export_dataset_bundle,
         write_file,
+        stage_bundle_part,
         read_bundle_manifest,
         read_document_manifest,
         share_view_via_airdrop,
