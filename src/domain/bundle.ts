@@ -313,6 +313,7 @@ export async function exportDatasetBundle(params: {
   const destPath = await save({
     title: 'Export NeuroVue bundle',
     defaultPath: `${sanitizeBundleName(params.defaultName)}.nvbundle`,
+    filters: [{ name: 'NeuroVue bundle', extensions: ['nvbundle'] }],
   })
   if (!destPath) return null
 
