@@ -11,7 +11,7 @@ private let log = Logger(subsystem: "org.neurovue.app.quicklook", category: "pre
 final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     func providePreview(for request: QLFilePreviewRequest) async throws -> QLPreviewReply {
         let url = request.fileURL
-        if url.pathExtension == "nvbundle" { return try bundleReply(url) }
+        if url.pathExtension == "nvb" { return try bundleReply(url) }
         let image: NIfTIImage
         do {
             image = try NIfTIReader.read(url: url)

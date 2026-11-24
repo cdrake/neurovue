@@ -7,7 +7,7 @@ import { type ClipPlane, resolveRuntimeCapabilities } from './desktop'
 import { keepPickedFile } from './openedFiles'
 import type { RenderShading } from './shading'
 
-// A NeuroVue bundle (`.nvbundle`) is a self-describing, transport-agnostic
+// A NeuroVue bundle (`.nvb`) is a self-describing, transport-agnostic
 // hand-off of one or more volumes plus the views set up over them. See the Rust
 // `export_bundle` for the on-disk layout (manifest.json + data/ + views/) and
 // docs/nvbundle-v2.md.
@@ -312,8 +312,8 @@ export async function exportDatasetBundle(params: {
   }
   const destPath = await save({
     title: 'Export NeuroVue bundle',
-    defaultPath: `${sanitizeBundleName(params.defaultName)}.nvbundle`,
-    filters: [{ name: 'NeuroVue bundle', extensions: ['nvbundle'] }],
+    defaultPath: `${sanitizeBundleName(params.defaultName)}.nvb`,
+    filters: [{ name: 'NeuroVue bundle', extensions: ['nvb'] }],
   })
   if (!destPath) return null
 
@@ -561,7 +561,7 @@ export interface BundleReadResult {
   allVerified: boolean
 }
 
-const BUNDLE_EXTENSION = 'nvbundle'
+const BUNDLE_EXTENSION = 'nvb'
 
 /** Whether `path` names a bundle, so it opens via import rather than as a dir. */
 export function isBundlePath(path: string): boolean {

@@ -45,7 +45,7 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>org.neurovue.nvbundle</string>
+      <string>org.neurovue.nvb</string>
       <key>UTTypeDescription</key>
       <string>NeuroVue Bundle</string>
       <key>UTTypeConformsTo</key>
@@ -57,7 +57,7 @@
       <dict>
         <key>public.filename-extension</key>
         <array>
-          <string>nvbundle</string>
+          <string>nvb</string>
         </array>
         <key>public.mime-type</key>
         <array>

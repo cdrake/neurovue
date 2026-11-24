@@ -19,7 +19,7 @@ schema.
 
 DataLad = git + git-annex (subprocesses + free filesystem access) — a non-starter
 on iOS (see `AGENTS.md`). So we do **not** embed DataLad as the engine. Instead we
-make the `.nvbundle` carry **standards-shaped metadata** (SHA-256 identity,
+make the `.nvb` carry **standards-shaped metadata** (SHA-256 identity,
 PROV-JSON activities, BIDS `GeneratedBy`) so it round-trips with DataLad/BIDS
 tooling **without depending on it**, and works on mobile. A desktop-only
 import/export adapter for real DataLad datasets can come later.
@@ -32,7 +32,7 @@ uses, so bundle files are addressable/interoperable. It replaces the
 non-cryptographic `file_content_hash` (FNV-1a) for integrity use; keep
 `id` as the single dataset-facing identity.
 
-## `.nvbundle` manifest, provenance-aware
+## `.nvb` manifest, provenance-aware
 
 Extends the current manifest (`source` / `volumes` / `view`) with two additions:
 per-volume **`generatedBy`** (BIDS-Derivatives shape) and a bundle-level
@@ -127,7 +127,7 @@ guarantee git gives DataLad, without git). Verify the chain on load.
 ## Assign → work-offline → resync
 
 A **unit of work** = `{ datasetId, volumeIds | sliceRange, assignee, baseSha256 }`.
-Generate a per-assignee `.nvbundle` (data subset + this manifest). On resync:
+Generate a per-assignee `.nvb` (data subset + this manifest). On resync:
 verify each returned artifact's `baseSha256` against the current dataset, **append**
 the assignee's changelog entries (their PROV activities) to the dataset log, and
 flag conflicts (two assignees touching the same unit) instead of last-write-wins.
@@ -141,6 +141,6 @@ transport-agnostic bundle (file-in / file-out → AirDrop, shared folder, or ser
 | File identity              | `sha256_file` (bundle) / FNV-1a `file_content_hash` (cache) | SHA-256 everywhere for integrity; keep `id` as identity |
 | Derivation record          | `VolumeDerivation { operation, source_path, output_path }` | per-volume `generatedBy` (BIDS) + PROV activity |
 | Op provenance              | `provenance.jsonl` `correction.save` (NeuroFlow-only) | dataset-level hash-chained PROV log, always on |
-| Transport                  | `.nvbundle` (export/import)             | same, with the provenance block above               |
+| Transport                  | `.nvb` (export/import)             | same, with the provenance block above               |
 | Sync engine (desktop opt.) | —                                       | optional DataLad import/export adapter              |
 ```

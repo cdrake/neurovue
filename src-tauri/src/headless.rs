@@ -3,7 +3,7 @@
 //! `--check` reports readiness for NeuroFlow's app-cli probe.
 //! `--neuroflow-session <dir>` reads the session's context.json, opens its
 //! `inputs` (`bids_dir`, `volumes`, `match`), and writes `correction.patch.json`
-//! and `review.state.json` (and `review.nvbundle` when `inputs.bundle` is true)
+//! and `review.state.json` (and `review.nvb` when `inputs.bundle` is true)
 //! to the step's output dir, with one `review.headless` provenance line.
 
 use crate::volumetric_server::{
@@ -77,13 +77,13 @@ pub fn review(session_dir: PathBuf) -> Result<Value, String> {
     if inputs["bundle"].as_bool() == Some(true) {
         export_bundle(
             &handle,
-            &ctx.output_dir.join("review.nvbundle"),
+            &ctx.output_dir.join("review.nvb"),
             &ids,
             &[],
             &[BundleView::single(view.clone())],
             &iso8601_utc_now(),
         )?;
-        outputs["review.nvbundle"] = json!("review.nvbundle");
+        outputs["review.nvb"] = json!("review.nvb");
     }
     append_provenance(&ctx, "review.headless", outputs.clone());
     Ok(outputs)

@@ -1902,7 +1902,7 @@ export function App(): JSX.Element {
     }
   }
 
-  // Verify a `.nvbundle`, open its extracted volumes as the working dataset, and
+  // Verify a `.nvb`, open its extracted volumes as the working dataset, and
   // replay the recorded view. Throws; callers own the importing flag. False
   // when nothing opened, with the reason in the status line.
   async function runBundleImport(path: string): Promise<boolean> {
@@ -2238,7 +2238,7 @@ export function App(): JSX.Element {
                     setIsRecentMenuOpen(false)
                     void handleImportBundle()
                   }}
-                  title="Open a NeuroVue bundle (.nvbundle) — loads its volumes and restores the saved view"
+                  title="Open a NeuroVue bundle (.nvb) — loads its volumes and restores the saved view"
                   type="button"
                   role="menuitem"
                 >
@@ -2367,7 +2367,7 @@ export function App(): JSX.Element {
                       </span>
                       <span className="nv-recent-item-path">
                         {selected
-                          ? 'Volumes plus this view, as a .nvbundle file'
+                          ? 'Volumes plus this view, as a .nvb file'
                           : 'Select a volume first'}
                       </span>
                     </span>

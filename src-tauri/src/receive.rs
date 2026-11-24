@@ -37,7 +37,7 @@ const OFFER_EVENT: &str = "neurovue-send-offered";
 const OFFER_CLOSED_EVENT: &str = "neurovue-send-offer-closed";
 const OFFER_TIMEOUT: Duration = Duration::from_secs(120);
 /// What the page can open; checked longest first so .nii.gz isn't read as .gz.
-const EXTENSIONS: [&str; 4] = [".nvbundle", ".nii.gz", ".nvd", ".nii"];
+const EXTENSIONS: [&str; 4] = [".nvb", ".nii.gz", ".nvd", ".nii"];
 
 #[derive(Deserialize)]
 struct OfferRequest {
@@ -401,8 +401,8 @@ mod tests {
     #[test]
     fn offered_names_keep_only_openable_files() {
         assert_eq!(
-            offered_name("anat.nvbundle").as_deref(),
-            Some("anat.nvbundle")
+            offered_name("anat.nvb").as_deref(),
+            Some("anat.nvb")
         );
         assert_eq!(
             offered_name("../../etc/T1w.nii.gz").as_deref(),
@@ -413,7 +413,7 @@ mod tests {
             Some("Motor-Demo.nvd")
         );
         assert_eq!(offered_name("notes.txt"), None);
-        assert_eq!(offered_name(".nvbundle"), None);
+        assert_eq!(offered_name(".nvb"), None);
         assert_eq!(offered_name("archive.gz"), None);
     }
 
@@ -424,8 +424,8 @@ mod tests {
         std::fs::write(dir.join("T1w.nii.gz"), b"").unwrap();
         assert_eq!(unused_path(&dir, "T1w.nii.gz"), dir.join("T1w-2.nii.gz"));
         assert_eq!(
-            unused_path(&dir, "anat.nvbundle"),
-            dir.join("anat.nvbundle")
+            unused_path(&dir, "anat.nvb"),
+            dir.join("anat.nvb")
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

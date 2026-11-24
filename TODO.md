@@ -155,20 +155,20 @@ still the separate dataset-acquisition item below.
   gap for a shippable phone app.
 - [~] **[P3] (M) AirDrop / share-sheet dataset hand-off (Apple-only, one-shot).**
   **macOS send landed (2026-07-06):** `export_bundle` writes a portable
-  `.nvbundle` (manifest + hashed data), and the **Share2** button
+  `.nvb` (manifest + hashed data), and the **Share2** button
   (`shareViewViaAirDrop` → `share_view_via_airdrop` command) stages the current
-  view to `cache_root/shares/<name>.nvbundle` and hands it to
+  view to `cache_root/shares/<name>.nvb` and hands it to
   `NSSharingService(.sendViaAirDrop).performWithItems` on the main thread via
   `share.rs` (`objc2`/`objc2-app-kit`, macOS-only dep; gated in the UI by the new
   `airdropAvailable` runtime capability). No Swift plugin, no iOS project.
   Verified live: sent a bundle to an iPhone; cancel is clean. **Remaining:**
   - **iOS send** — the `UIActivityViewController` equivalent (needs a Swift
     plugin + the `tauri ios` project).
-  - **Receive side** — register NeuroVue as a handler for the `.nvbundle` type so
+  - **Receive side** — register NeuroVue as a handler for the `.nvb` type so
     an AirDropped bundle opens straight into the existing import seam
     (`read_bundle` + open) instead of landing in Downloads for a manual open.
   - **Single-item AirDrop polish** — the bundle is a *directory*; AirDrop sends
-    it fine (verified), but zipping to one file or registering `.nvbundle` as a
+    it fine (verified), but zipping to one file or registering `.nvb` as a
     macOS package UTI would make it read as a single item.
   Transport for the assign→work→resync flow (see "Assign → work-offline → resync"
   under Reproducibility), not live sync. Apps can't initiate AirDrop directly —
@@ -461,7 +461,7 @@ RAS+value widget.)
 ### Reproducibility & data-trust (researcher)
 
 - [~] **[P2] (M) Save/share full view state.** The **export** half landed with
-  the bundle foundation (2026-07-06): the new `.nvbundle` (Package button →
+  the bundle foundation (2026-07-06): the new `.nvb` (Package button →
   `exportDatasetBundle` → `export_dataset_bundle` command →
   `volumetric_server::export_bundle`) serializes the full view into
   `manifest.json` alongside the copied volumes. The `view` blob is deliberately
@@ -495,8 +495,8 @@ RAS+value widget.)
   `…/data` subdir into recent datasets. That path lives under `cache_root()` (the
   OS temp dir) and is `remove_dir_all`'d on every re-import, so the entry was both
   ephemeral and — since `recentDatasetLabel` takes the last path segment — shown
-  as a bare `data` for *every* bundle. Recents now records the `.nvbundle` itself
-  (`openRecentDataset(dataDir, { promoteAs: path })`), and clicking a `.nvbundle`
+  as a bare `data` for *every* bundle. Recents now records the `.nvb` itself
+  (`openRecentDataset(dataDir, { promoteAs: path })`), and clicking a `.nvb`
   recent routes through `importBundleFromPath` so it is re-verified and its view
   replayed, rather than opened as a plain directory. Pre-fix entries already in
   `localStorage` are pruned once the server reports its `cacheRoot`
@@ -533,7 +533,7 @@ RAS+value widget.)
 **Provenance direction (decided 2026-07-07): align with the accepted stack —
 W3C PROV → NIDM → BIDS-prov (BEP028) / BIDS-Derivatives `GeneratedBy`, and
 DataLad's content-addressed `run`/`rerun` model — instead of a proprietary
-schema. The `.nvbundle` carries standards-shaped metadata (SHA-256 identity,
+schema. The `.nvb` carries standards-shaped metadata (SHA-256 identity,
 PROV-JSON activities, BIDS `GeneratedBy`) so it interoperates without depending
 on git-annex (which can't run on iOS). Full design + manifest sketch:
 `docs/provenance.md`. The two items below are the implementation.**
@@ -700,7 +700,7 @@ under "Backend correctness / hardening". These are the frontend/UX findings.
 
 ## Review pass 2026-07-07 (bundle / share / iOS correctness)
 
-Correctness sweep of the code that landed this session (zip `.nvbundle`, iOS
+Correctness sweep of the code that landed this session (zip `.nvb`, iOS
 share sheet, share caching, import/export, touch). Two parallel review agents;
 these are the findings that survived verification against the code (several were
 discarded — e.g. the pinch handler *does* `delete(pointerId)` on pointerup/cancel

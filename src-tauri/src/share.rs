@@ -5,7 +5,7 @@
 //! `airdrop_available` runtime capability, so this is a belt-and-braces guard.
 
 /// Present the native share sheet for the given file paths (a finished
-/// `.nvbundle` directory). Apple platforms only.
+/// `.nvb` directory). Apple platforms only.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub fn share_via_airdrop(app: &tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() {
