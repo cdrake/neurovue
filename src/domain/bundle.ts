@@ -8,20 +8,13 @@ import { keepPickedFile } from './openedFiles'
 import type { RenderShading } from './shading'
 
 // A NeuroVue bundle (`.nvbundle`) is a self-describing, transport-agnostic
-// hand-off of one or more volumes plus the view that was set up over them. It
-// is the payload the Apple share / AirDrop flow will carry, and the same format
-// the integrity-check + assign/resync work builds on. See the Rust
-// `export_bundle` for the on-disk layout (manifest.json + data/).
+// hand-off of one or more volumes plus the views set up over them. See the Rust
+// `export_bundle` for the on-disk layout (manifest.json + data/ + views/) and
+// docs/nvbundle-v2.md.
 //
-// The `view` blob below is deliberately shaped to mirror niivue's
-// `NVDocumentData` / `NVDocumentVolume` field names (`volumes[]` with role +
-// `colormap`/`opacity`/`calMin`/`calMax`, a `scene` with `crosshairPos` +
-// `clipPlanes`). It is NOT yet a real NVDocument — mono's `serialize()` always
-// embeds volume bytes and lacks the old-niivue sparse/linked path
-// (`json(embedImages=false)` + `fetchLinkedData`; tracked in
-// mono `packages/niivue/FEATURE_PARITY.md` §5). Once that lands, this maps to a
-// *linked* NVDocument (volumes reference the bundle's `data/` files) and this
-// hand-rolled shape retires with a near-mechanical rename.
+// Each view's pane holds a NiiVue document (NVDocument JSON, linkData) whose
+// volumes and meshes link to bundle data by id, plus the NeuroVue state the
+// document has no field for (`app`) and the tools' control values.
 
 /** App-side per-layer settings (matches `LayerSettings` in `App.tsx`). */
 export interface BundleLayerSettings {
@@ -29,31 +22,6 @@ export interface BundleLayerSettings {
   opacity?: number
   hidden?: boolean
   window?: { min: number; max: number }
-}
-
-/**
- * One volume's display state, named after niivue's `NVDocumentVolume` so the
- * future port is a rename, not a redesign. `role` + array order capture layer
- * membership (base first, then overlays, then atlas) — no separate id lists.
- */
-export interface BundleDocumentVolume {
-  /** neurovue volume id; the bundle-data reference + future NVDocument url/name. */
-  id: string
-  role: 'base' | 'overlay' | 'atlas'
-  colormap?: string
-  opacity?: number
-  /** Display window low — niivue's `calMin` (NOT the NIfTI `cal_min` header). */
-  calMin?: number
-  /** Display window high — niivue's `calMax`. */
-  calMax?: number
-  /**
-   * neurovue visibility flag with no direct `NVDocumentVolume` field: renders at
-   * opacity 0 without losing the stored `opacity`. Maps to effective opacity 0
-   * on port.
-   */
-  hidden?: boolean
-  /** Label values the legend hides — niivue's `hiddenLabels`. */
-  hiddenLabels?: number[]
 }
 
 /** The 3D camera and 2D pan/zoom, named after `NVDocumentData.scene`. */
@@ -65,6 +33,14 @@ export interface BundleCamera {
   pan2Dxyzmm: [number, number, number, number]
 }
 
+/** Camera keys a sparse document would drop at their defaults. */
+export const BUNDLE_CAMERA_KEYS = [
+  'scene.azimuth',
+  'scene.elevation',
+  'scene.scaleMultiplier',
+  'scene.pan2Dxyzmm',
+]
+
 /** Cut sub-volumes, whole volume first, and the blocks each was left at. */
 export interface BundleSubvolumeStack {
   levels: string[]
@@ -72,51 +48,55 @@ export interface BundleSubvolumeStack {
 }
 
 /**
- * The view-state blob stored inside the bundle manifest. Loose/forward-
- * compatible: an importer tolerates missing fields (older bundles) and ignores
- * unknown ones (newer bundles). Field names track `NVDocumentData`.
+ * The parts of a NiiVue document (mono `NVDocumentData`, as JSON) NeuroVue
+ * reads back. A volume's `url` is its NeuroVue volume id; a mesh's is its
+ * bundle part id (its mesh id before export).
  */
-export interface BundleViewState {
-  version: 1
-  /** Scene-level state, named toward `NVDocumentData.scene`. */
-  scene: {
-    /** RAS+ world-mm crosshair — niivue's `scene.crosshairPos`. */
-    crosshairPos: [number, number, number] | null
-    /**
-     * Enabled clip planes. neurovue's `ClipPlane` is richer than niivue's flat
-     * clip-plane params; it converts on port.
-     */
-    clipPlanes: ClipPlane[]
-  } & Partial<BundleCamera>
-  /** Volumes in render order (base → overlays → atlas); mirrors `NVDocumentData.volumes`. */
-  volumes: BundleDocumentVolume[]
+export interface BundleDocument {
+  scene?: Partial<BundleCamera>
+  volumes?: Array<{
+    url?: string
+    colormap?: string
+    opacity?: number
+    calMin?: number
+    calMax?: number
+    hiddenLabels?: number[]
+  }>
+  meshes?: Array<{
+    url?: string
+    color?: number[]
+    opacity?: number
+    visible?: boolean
+  }>
+  [key: string]: unknown
+}
+
+/** NeuroVue state a NiiVue document has no field for. */
+export interface BundleAppState {
+  layers: { base: string; overlays: string[]; atlas: string | null }
+  /** Hidden layers render at opacity 0; this keeps the opacity they return to
+   *  (null: the default). */
+  hidden?: Record<string, number | null>
   viewMode: string
-  /**
-   * Block (volume-chunk explode) settings applied across the loaded layers.
-   * Optional and forward-compatible: bundles written before this feature omit
-   * it, and the importer falls back to the untiled default.
-   */
+  /** Enabled clip planes, NeuroVue's shape. */
+  clipPlanes: ClipPlane[]
+  /** RAS+ world mm; the document's `scene.crosshairPos` is a fraction. */
+  crosshairMm: [number, number, number] | null
   blocks?: BlockSettings
   /** Vector shapes and measurements per base volume id, as NiiVue's getAnnotationsJSON. */
   annotations?: Record<string, unknown[]>
   shading?: RenderShading
   stack?: BundleSubvolumeStack
-  /**
-   * The tools' stage control values (`stageControlStates` ids), a hint replayed
-   * on open. Moves to the pane beside the NVDocument with PR 4.
-   */
-  controls?: Record<string, ControlValue>
-  /** Mesh display state by resource id, in draw order. */
-  meshes?: BundleMesh[]
   /** The resource id of the view's drawing. */
   drawing?: string
 }
 
-export interface BundleMesh {
-  id: string
-  color: [number, number, number]
-  opacity: number
-  visible: boolean
+/** One viewer in a saved view (docs/nvbundle-v2.md). */
+export interface BundlePane {
+  document: BundleDocument
+  app: BundleAppState
+  /** The tools' stage control values (`stageControlStates` ids), replayed on open. */
+  controls?: { version: 1; values: Record<string, ControlValue> }
 }
 
 /** A drawing or mesh staged for an export (see `stageBundlePart`). */
@@ -132,7 +112,7 @@ export interface BundlePart {
 export interface BundleExportView {
   title: string
   notes: string
-  document: BundleViewState
+  pane: BundlePane
   thumbnail?: string
 }
 
@@ -143,88 +123,78 @@ export function stageBundleBytes(bytes: Uint8Array): Promise<string> {
 }
 
 /**
- * Assemble the NVDocument-shaped view blob from the app's raw layer state.
- * Centralizes the `LayerSettings` → `NVDocumentVolume` field mapping (the part
- * that becomes a real NVDocument later).
+ * Assemble a pane from the stage's document and the app's layer state. Without
+ * a document (no viewer yet), the volumes are listed by id with no display state.
  */
-export function buildBundleViewState(params: {
+export function buildBundlePane(params: {
+  document: BundleDocument | null
   baseId: string
   overlayIds: string[]
   atlasId: string | null
   layerSettings: Record<string, BundleLayerSettings>
   viewMode: string
   clipPlanes: ClipPlane[]
-  crosshairPos: [number, number, number] | null
+  crosshairMm: [number, number, number] | null
   blocks?: BlockSettings
   annotations?: Record<string, unknown[]>
-  camera?: BundleCamera
-  hiddenLabels?: Record<string, number[]>
   shading?: RenderShading
   stack?: BundleSubvolumeStack
   controls?: Record<string, ControlValue>
-}): BundleViewState {
-  const toVolume = (
-    id: string,
-    role: BundleDocumentVolume['role'],
-  ): BundleDocumentVolume => {
-    const settings = params.layerSettings[id]
-    const volume: BundleDocumentVolume = { id, role }
-    if (settings?.colormap !== undefined) volume.colormap = settings.colormap
-    if (settings?.opacity !== undefined) volume.opacity = settings.opacity
-    if (settings?.hidden !== undefined) volume.hidden = settings.hidden
-    if (settings?.window) {
-      volume.calMin = settings.window.min
-      volume.calMax = settings.window.max
-    }
-    const hiddenLabels = params.hiddenLabels?.[id]
-    if (hiddenLabels?.length) volume.hiddenLabels = hiddenLabels
-    return volume
-  }
-
-  const volumes: BundleDocumentVolume[] = [toVolume(params.baseId, 'base')]
-  const seen = new Set<string>([params.baseId])
-  for (const id of params.overlayIds) {
-    if (seen.has(id)) continue
-    seen.add(id)
-    volumes.push(toVolume(id, 'overlay'))
-  }
-  if (params.atlasId && !seen.has(params.atlasId)) {
-    seen.add(params.atlasId)
-    volumes.push(toVolume(params.atlasId, 'atlas'))
-  }
+}): BundlePane {
+  const overlays = [...new Set(params.overlayIds)].filter(
+    (id) => id !== params.baseId,
+  )
+  const atlas =
+    params.atlasId &&
+    params.atlasId !== params.baseId &&
+    !overlays.includes(params.atlasId)
+      ? params.atlasId
+      : null
+  const layerIds = [params.baseId, ...overlays, ...(atlas ? [atlas] : [])]
+  const hidden = Object.fromEntries(
+    layerIds.flatMap((id) => {
+      const settings = params.layerSettings[id]
+      return settings?.hidden ? [[id, settings.opacity ?? null]] : []
+    }),
+  )
 
   // The stack's levels travel as volumes too, so annotations may sit on any of them.
   const stack =
     params.stack && params.stack.levels.length > 1 ? params.stack : undefined
-  const exported = new Set([...seen, ...(stack?.levels ?? [])])
+  const exported = new Set([...layerIds, ...(stack?.levels ?? [])])
   const annotations = Object.fromEntries(
     Object.entries(params.annotations ?? {}).filter(
       ([id, shapes]) => exported.has(id) && shapes.length > 0,
     ),
   )
   return {
-    version: 1,
-    scene: {
-      crosshairPos: params.crosshairPos,
-      clipPlanes: params.clipPlanes.filter((plane) => plane.enabled),
-      ...params.camera,
+    document: params.document ?? {
+      volumes: layerIds.map((url) => ({ url })),
     },
-    volumes,
-    viewMode: params.viewMode,
-    ...(params.blocks ? { blocks: params.blocks } : {}),
-    ...(Object.keys(annotations).length ? { annotations } : {}),
-    ...(params.shading ? { shading: params.shading } : {}),
-    ...(stack ? { stack } : {}),
-    ...(params.controls ? { controls: params.controls } : {}),
+    app: {
+      layers: { base: params.baseId, overlays, atlas },
+      ...(Object.keys(hidden).length ? { hidden } : {}),
+      viewMode: params.viewMode,
+      clipPlanes: params.clipPlanes.filter((plane) => plane.enabled),
+      crosshairMm: params.crosshairMm,
+      ...(params.blocks ? { blocks: params.blocks } : {}),
+      ...(Object.keys(annotations).length ? { annotations } : {}),
+      ...(params.shading ? { shading: params.shading } : {}),
+      ...(stack ? { stack } : {}),
+    },
+    ...(params.controls
+      ? { controls: { version: 1, values: params.controls } }
+      : {}),
   }
 }
 
-/** Volume ids a view's bundle carries: its layers, then any other stack levels. */
-export function bundleViewVolumeIds(view: BundleViewState): string[] {
-  const ids = view.volumes.map((volume) => volume.id)
+/** Volume ids a pane's bundle carries: its layers, then any other stack levels. */
+export function bundleViewVolumeIds(pane: BundlePane): string[] {
+  const { base, overlays, atlas } = pane.app.layers
+  const ids = [base, ...overlays, ...(atlas ? [atlas] : [])]
   return [
     ...ids,
-    ...(view.stack?.levels ?? []).filter((id) => !ids.includes(id)),
+    ...(pane.app.stack?.levels ?? []).filter((id) => !ids.includes(id)),
   ]
 }
 
@@ -242,13 +212,14 @@ export interface AppliedBundleView {
 }
 
 /**
- * Map a saved view onto this session: `idFor` gives a recorded volume id's
+ * Map a saved pane onto this session: `idFor` gives a recorded volume id's
  * loaded id, or undefined when that volume didn't load (it's then skipped).
  */
 export function applyBundleView(
-  view: BundleViewState,
+  pane: BundlePane,
   idFor: (recordedId: string) => string | undefined,
 ): AppliedBundleView {
+  const { app, document } = pane
   const applied: AppliedBundleView = {
     layerSettings: {},
     baseId: null,
@@ -256,36 +227,45 @@ export function applyBundleView(
     atlasId: null,
     hiddenLabels: {},
     annotations: {},
-    crosshairPos: null,
+    crosshairPos: app.crosshairMm,
     camera: null,
     stack: null,
   }
-  for (const volume of view.volumes) {
-    const id = idFor(volume.id)
-    if (!id) continue
+  for (const volume of document.volumes ?? []) {
+    const url = volume.url
+    const id = url && idFor(url)
+    if (!url || !id) continue
     const settings: BundleLayerSettings = {}
-    if (volume.colormap !== undefined) settings.colormap = volume.colormap
-    if (volume.opacity !== undefined) settings.opacity = volume.opacity
-    if (volume.hidden !== undefined) settings.hidden = volume.hidden
+    // The atlas draws with its label colormap, not this one.
+    if (volume.colormap !== undefined && url !== app.layers.atlas) {
+      settings.colormap = volume.colormap
+    }
+    if (app.hidden && url in app.hidden) {
+      const opacity = app.hidden[url]
+      if (opacity !== null) settings.opacity = opacity
+      settings.hidden = true
+    } else if (volume.opacity !== undefined) {
+      settings.opacity = volume.opacity
+    }
     if (volume.calMin !== undefined && volume.calMax !== undefined) {
       settings.window = { min: volume.calMin, max: volume.calMax }
     }
     if (Object.keys(settings).length > 0) applied.layerSettings[id] = settings
     if (volume.hiddenLabels?.length)
       applied.hiddenLabels[id] = volume.hiddenLabels
-    if (volume.role === 'base') applied.baseId = id
-    else if (volume.role === 'overlay') applied.overlayIds.add(id)
-    else if (volume.role === 'atlas') applied.atlasId = id
   }
-  for (const [recordedId, shapes] of Object.entries(view.annotations ?? {})) {
+  applied.baseId = idFor(app.layers.base) ?? null
+  for (const overlay of app.layers.overlays) {
+    const id = idFor(overlay)
+    if (id) applied.overlayIds.add(id)
+  }
+  applied.atlasId = (app.layers.atlas && idFor(app.layers.atlas)) || null
+  for (const [recordedId, shapes] of Object.entries(app.annotations ?? {})) {
     const id = idFor(recordedId)
     if (id) applied.annotations[id] = shapes
   }
-  const { crosshairPos, azimuth, elevation, scaleMultiplier, pan2Dxyzmm } =
-    view.scene ?? {}
-  if (Array.isArray(crosshairPos) && crosshairPos.length >= 3) {
-    applied.crosshairPos = [crosshairPos[0], crosshairPos[1], crosshairPos[2]]
-  }
+  const { azimuth, elevation, scaleMultiplier, pan2Dxyzmm } =
+    document.scene ?? {}
   if (
     azimuth !== undefined &&
     elevation !== undefined &&
@@ -294,10 +274,10 @@ export function applyBundleView(
   ) {
     applied.camera = { azimuth, elevation, scaleMultiplier, pan2Dxyzmm }
   }
-  if (view.stack) {
-    const levels = view.stack.levels.flatMap((level) => idFor(level) ?? [])
+  if (app.stack) {
+    const levels = app.stack.levels.flatMap((level) => idFor(level) ?? [])
     const blocks: Record<string, BlockSettings> = {}
-    for (const [recordedId, settings] of Object.entries(view.stack.blocks)) {
+    for (const [recordedId, settings] of Object.entries(app.stack.blocks)) {
       const id = idFor(recordedId)
       if (id) blocks[id] = settings
     }
@@ -539,12 +519,6 @@ export interface BundleReadView {
   view: BundleView | null
 }
 
-/** One viewer in a saved view. */
-export interface BundlePane {
-  documentKind?: string
-  document?: BundleViewState
-}
-
 /** A saved view: its viewers, keyed by id (docs/nvbundle-v2.md). */
 export interface BundleView {
   panes: Record<string, BundlePane>
@@ -681,13 +655,10 @@ function fnv1a32Hex(value: string): string {
   return hash.toString(16).padStart(8, '0')
 }
 
-/** The view state of a saved view's focused viewer. */
-export function focusedViewState(
-  view: BundleView | null,
-): BundleViewState | undefined {
+/** A saved view's focused viewer, else its first. */
+export function focusedPane(view: BundleView | null): BundlePane | undefined {
   if (!view) return undefined
-  const pane = view.panes[view.focus ?? ''] ?? Object.values(view.panes)[0]
-  return pane?.document
+  return view.panes[view.focus ?? ''] ?? Object.values(view.panes)[0]
 }
 
 /** Count the files in a verification list that failed the integrity check. */
